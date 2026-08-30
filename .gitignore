@@ -1,0 +1,16 @@
+.venv/
+.pytest_cache/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+
+.env
+*.part
+
+data/*
+!data/README.md
+tmp/
+
+# The CSV equivalent is ~61 MB; keep the compact Parquet catalog in Git.
+catalogs/gpm_to_emma_pf_2020.csv
+

@@ -1,0 +1,31 @@
+{
+  "year": 2020,
+  "start": "2020-05-01T00:00:00Z",
+  "end": "2020-09-30T23:59:59Z",
+  "domain": {
+    "lon_min": -10.0,
+    "lon_max": 45.0,
+    "lat_min": 25.0,
+    "lat_max": 55.0
+  },
+  "time_tolerance_minutes": 30.0,
+  "emma": {
+    "record_id": 18234276,
+    "doi": "10.5281/zenodo.18234276",
+    "version": "v1.0",
+    "raw_archive": "data/raw/emma/EMMA_MCS_Climatology_Europe_2020_v1.tar.gz",
+    "extracted_root": "data/interim/emma/2020"
+  },
+  "gpm_pf": {
+    "version": "V07A PF production archived in 2022",
+    "gmi_root": "data/raw/gpm_pf_1c",
+    "dpr_root": "data/raw/gpm_pf_dpr"
+  },
+  "outputs": {
+    "interim": "data/interim",
+    "catalogs": "catalogs",
+    "figures": "figures",
+    "metrics": "results"
+  }
+}
+
