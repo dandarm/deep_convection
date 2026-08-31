@@ -13,6 +13,12 @@ I raw e gli intermedi non sono versionati. Prima di eseguire la pipeline:
 export EMMA_GPM_DATA_ROOT=/home/daniele/Datasets/Deep_convection
 ```
 
+Su Windows PowerShell, impostare invece il percorso scelto sul nuovo computer:
+
+```powershell
+$env:EMMA_GPM_DATA_ROOT = "D:\Datasets\Deep_convection"
+```
+
 Senza questa variabile, il fallback è la directory locale `data/`, mantenuta
 fuori da Git tramite `.gitignore`.
 
@@ -95,3 +101,6 @@ PYTHONPATH=src .venv/bin/python -m pytest -q
 
 Configurazione del pilot: `config/pilot_2020.json`. Stato e percorso di
 estensione: `PLAN_COMPLETAMENTO.md`.
+
+Per trasferire il progetto e riprendere il lavoro su Windows, vedere
+`HANDOFF_WINDOWS.md`.
