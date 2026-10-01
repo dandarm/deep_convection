@@ -5,12 +5,21 @@
 *.egg-info/
 
 .env
+.env.txt
 *.part
 
 data/*
 !data/README.md
+
+# PPS order download scripts contain the registered account identifier.
+ftps_get_*.py
 tmp/
 
 # The CSV equivalent is ~61 MB; keep the compact Parquet catalog in Git.
 catalogs/gpm_to_emma_pf_2020.csv
+
+# Generated VideoMAE checkpoints, videos, and executed notebook previews.
+results/videomae_pretraining_smoke*/
+figures/videomae_pretraining/
+results/*.executed.ipynb
 

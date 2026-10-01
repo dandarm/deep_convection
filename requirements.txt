@@ -3,7 +3,15 @@ pandas>=2.2,<3
 h5py>=3.11,<4
 pyarrow>=16,<25
 matplotlib>=3.8,<4
+scipy>=1.13,<2
+cartopy>=0.24,<1
 requests>=2.32,<3
 fsspec>=2024.6
+aiohttp>=3.10,<4
+eumdac>=3.1,<4
+satpy>=0.60,<1
+xarray>=2025.1
+zarr>=3,<4
 pyhdf>=0.11.6
+pytest>=8,<10
 
