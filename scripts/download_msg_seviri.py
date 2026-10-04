@@ -35,7 +35,10 @@ def load_dotenv(path: Path) -> None:
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
         key, value = stripped.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ.setdefault(key.strip().removeprefix('export '), value)
 
 
 def parse_utc(value: str) -> datetime:
@@ -101,6 +104,19 @@ def download_interval(
         product_id = str(product)
         product_dir = output / product_id
         product_dir.mkdir(parents=True, exist_ok=True)
+        # Standard RSS entry name equals product ID + .nat. Our downloader
+        # publishes payloads atomically only after Content-Length verification.
+        # Reuse this exact local entry without a serial remote metadata lookup;
+        # native metadata/radiometry are checked again during conversion.
+        standard_target = product_dir / (product_id + '.nat')
+        if is_valid_native(standard_target):
+            print(f'skip existing {standard_target.name}', flush=True)
+            continue
+        # Empty product directories cannot contain a reusable native payload.
+        # Avoid serial per-product entry requests before parallel downloads.
+        if not any(product_dir.glob("*.nat")):
+            pending.append(product_id)
+            continue
         entries = [entry for entry in product.entries if entry.endswith(".nat")]
         if len(entries) != 1:
             raise RuntimeError(f"Expected one .nat entry for {product}, got {entries}")

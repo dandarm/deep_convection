@@ -89,8 +89,8 @@ def append_batch(store: Path, crops, dtype: str) -> None:
 def existing_times(store: Path) -> set[pd.Timestamp]:
     if not store.exists():
         return set()
-    dataset = xr.open_zarr(store, consolidated=True)
-    return set(pd.DatetimeIndex(dataset.time.values))
+    with xr.open_zarr(store, consolidated=True) as dataset:
+        return set(pd.DatetimeIndex(dataset.time.values))
 
 
 def main() -> int:

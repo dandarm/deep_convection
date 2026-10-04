@@ -83,7 +83,7 @@ Segmentation Head: Projects to the 5 semantic classes.
 Loss Function: A combination of Focal Loss (to handle extreme class imbalance, especially for Class 4 OT pixels) and Soft Dice Loss.
 
 5. Preliminary Atmospheric Pretraining Phase
-The primary backbone is a VideoMAE-Small with a seven-channel patch embedding. Pretraining is self-supervised and must not use RDT-CW, EMMA, OPERA, or any other downstream label. Complete 16-frame RSS windows are sampled from the regional SEVIRI archive, and 224 x 224 spatial crops are drawn on the fly rather than materialized as duplicated clip files.
+The primary backbone is a VideoMAE V2 Small with a seven-channel patch embedding. It uses encoder tube masking and independent decoder running-cell masking (50%); reconstruction loss is computed only on decoder-selected targets hidden from the encoder. Prior integration runs used V1, without decoder masking. Pretraining is self-supervised and must not use RDT-CW, EMMA, OPERA, or any other downstream label. Complete 16-frame RSS windows are sampled from the regional SEVIRI archive, and 224 x 224 spatial crops are drawn on the fly rather than materialized as duplicated clip files.
 
 The initial masking strategy is 90% tube masking. A single global mean and standard deviation, computed exclusively over all pixels and all seven channels in the pretraining split, define one affine transform shared by every channel and clip. Per-channel, per-clip, and per-patch normalization are disabled because absolute brightness temperature and inter-channel brightness-temperature differences are physical signals needed by the downstream task. Time reversal, channel permutation, and RGB color jitter are not valid augmentations for this experiment.
 

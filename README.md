@@ -21,6 +21,14 @@ rappresentazioni self-supervised.
 
 ## Pretraining SEVIRI
 
+Il protocollo corrente usa **VideoMAE V2 Small** a sette canali, con masking
+separato dell'encoder e del decoder (running cell 50%). I training precedenti
+erano V1. La coda `scripts/run_seviri_v2_experiments.py` confronta encoder
+masking 50/75/90% su 2.000 clip, poi il masking selezionato su 4.000 e 8.000
+clip annidate, 150 epoche da zero per ciascun run. Protocollo e ripresa
+nell'ultima sezione di `VIDEOMAE_PRETRAINING.md`; risultati locali in
+`results/videomae_v2_small_scaling/` e monitor nel notebook.
+
 Ogni campione contiene 16 frame RSS consecutivi a cinque minuti, cioè 75
 minuti fra primo e ultimo frame. Il tensore fornito a Hugging Face ha forma:
 

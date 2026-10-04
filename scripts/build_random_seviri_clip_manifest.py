@@ -4,6 +4,11 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor
+import hashlib
+import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 import sys
@@ -46,6 +51,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cadence-minutes", type=int, default=5)
     parser.add_argument("--crop-size", type=int, default=224)
     parser.add_argument("--max-attempts", type=int, default=5000)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--stats-output", type=Path,
+                        help="Save shared scalar moments of all accepted training pixels.")
+    parser.add_argument("--starts-file", type=Path,
+                        help="CSV of allowed start_time values from a temporal split.")
     return parser.parse_args()
 
 
@@ -58,7 +68,7 @@ def inventory(root: Path, crop_size: int) -> tuple[pd.DatetimeIndex, int, int]:
     times: list[np.datetime64] = []
     grid_shapes: set[tuple[int, int]] = set()
     for store in stores:
-        with xr.open_zarr(store, consolidated=True) as dataset:
+        with xr.open_zarr(store, consolidated=True, chunks=None) as dataset:
             channels = tuple(str(value) for value in dataset.channel.values)
             if channels != VIDEO_MAE_CHANNELS:
                 raise RuntimeError(
@@ -103,55 +113,128 @@ def utc_iso(timestamp: pd.Timestamp) -> str:
     return timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def candidates(starts, height, width, args):
+    generator = np.random.default_rng(args.seed)
+    start_order = []
+    seen = set()
+    for _ in range(args.max_attempts):
+        if not start_order:
+            start_order = generator.permutation(len(starts)).tolist()
+        timestamp = starts[start_order.pop()]
+        y = int(generator.integers(0, height - args.crop_size + 1))
+        x = int(generator.integers(0, width - args.crop_size + 1))
+        key = (int(timestamp.value), y, x)
+        if key not in seen:
+            seen.add(key)
+            yield (utc_iso(timestamp), y, x)
+
+
+def initialize_validator(root, num_frames, cadence_minutes, crop_size, moments):
+    global _validation_reader, _collect_moments
+    import zarr
+    from numcodecs import blosc
+
+    zarr.config.set({"async.concurrency": 8, "threading.max_workers": 4})
+    blosc.set_nthreads(1)
+    _validation_reader = SeviriZarrClipReader(
+        root, num_frames=num_frames, cadence_minutes=cadence_minutes, crop_size=crop_size)
+    _collect_moments = moments
+
+
+def validate_candidate(candidate):
+    timestamp, y, x = candidate
+    try:
+        clip = _validation_reader.load(timestamp, origin_y=y, origin_x=x)
+    except IncompleteSeviriClipError:
+        return None
+    if _collect_moments:
+        values = clip.astype(np.float64)
+        moments = (float(values.sum()), float(np.square(values).sum()), values.size)
+    else:
+        moments = (0.0, 0.0, 0)
+    return candidate, moments
+
+
+def parallel_candidates(stream, workers, init_args):
+    """Bound pending reads and let workers finish gracefully on early stop."""
+    with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),
+                             initializer=initialize_validator, initargs=init_args) as executor:
+        pending = deque()
+        for _ in range(2 * workers):
+            candidate = next(stream, None)
+            if candidate is None:
+                break
+            pending.append(executor.submit(validate_candidate, candidate))
+        while pending:
+            yield pending.popleft().result()
+            candidate = next(stream, None)
+            if candidate is not None:
+                pending.append(executor.submit(validate_candidate, candidate))
+
+
 def main() -> int:
     args = parse_args()
     if args.count < 1 or args.num_frames < 1 or args.crop_size < 1:
         raise SystemExit("count, num-frames, and crop-size must be positive")
+    if args.num_workers < 0:
+        raise SystemExit("num-workers must be nonnegative")
+    if args.stats_output and (args.num_frames != 16 or args.cadence_minutes != 5 or args.crop_size != 224):
+        raise SystemExit("VideoMAE training statistics require 16 frames, 5-minute cadence and 224 crops")
     times, height, width = inventory(args.zarr_root, args.crop_size)
     starts = complete_start_times(
         times,
         num_frames=args.num_frames,
         cadence_minutes=args.cadence_minutes,
     )
+    if args.starts_file:
+        allowed = pd.DatetimeIndex(pd.to_datetime(pd.read_csv(args.starts_file).start_time, utc=True)).tz_localize(None)
+        if not allowed.is_unique or not allowed.isin(starts).all():
+            raise SystemExit("Split contains duplicate or incomplete temporal starts")
+        starts = starts[starts.isin(allowed)]
     if starts.empty:
         raise SystemExit("No complete temporal windows are available.")
 
-    generator = np.random.default_rng(args.seed)
-    start_order = generator.permutation(len(starts)).tolist()
     accepted: list[dict[str, object]] = []
-    seen: set[tuple[int, int, int]] = set()
     attempts = 0
-    with SeviriZarrClipReader(
-        args.zarr_root,
-        num_frames=args.num_frames,
-        cadence_minutes=args.cadence_minutes,
-        crop_size=args.crop_size,
-    ) as reader:
-        while len(accepted) < args.count and attempts < args.max_attempts:
-            if not start_order:
-                start_order = generator.permutation(len(starts)).tolist()
-            timestamp = starts[start_order.pop()]
-            origin_y = int(generator.integers(0, height - args.crop_size + 1))
-            origin_x = int(generator.integers(0, width - args.crop_size + 1))
-            key = (int(timestamp.value), origin_y, origin_x)
+    total = squared_total = 0.0
+    pixel_count = 0
+    init_args = (args.zarr_root, args.num_frames, args.cadence_minutes, args.crop_size,
+                 bool(args.stats_output))
+    results = None
+    try:
+        stream = candidates(starts, height, width, args)
+        if args.num_workers:
+            results = parallel_candidates(stream, args.num_workers, init_args)
+        else:
+            initialize_validator(*init_args)
+            results = map(validate_candidate, stream)
+        for result in results:
             attempts += 1
-            if key in seen:
+            if result is None:
                 continue
-            seen.add(key)
-            try:
-                reader.load(timestamp, origin_y=origin_y, origin_x=origin_x)
-            except IncompleteSeviriClipError:
-                continue
+            (timestamp, origin_y, origin_x), (clip_sum, clip_square_sum, clip_count) = result
+            total += clip_sum
+            squared_total += clip_square_sum
+            pixel_count += clip_count
             accepted.append(
                 {
                     "clip_id": f"random_{len(accepted):03d}",
-                    "start_time": utc_iso(timestamp),
+                    "start_time": timestamp,
                     "origin_y": origin_y,
                     "origin_x": origin_x,
                     "selection": "uniform_random_complete_window_and_crop",
                     "seed": args.seed,
                 }
             )
+            if len(accepted) % 256 == 0:
+                print(f"validated={len(accepted)}/{args.count} attempts={attempts}", flush=True)
+            if len(accepted) == args.count:
+                break
+    finally:
+        if args.num_workers and results is not None:
+            results.close()
+        else:
+            _validation_reader.close()
 
     if len(accepted) < args.count:
         raise SystemExit(
@@ -160,6 +243,20 @@ def main() -> int:
     frame = pd.DataFrame(accepted)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(args.output, index=False)
+    if args.stats_output:
+        mean = total / pixel_count
+        std = float(np.sqrt(max(squared_total / pixel_count - mean * mean, 0.0)))
+        if not np.isfinite(mean) or not np.isfinite(std) or std <= 0:
+            raise RuntimeError("Invalid training statistics")
+        stats = dict(channels=list(VIDEO_MAE_CHANNELS),
+                     normalization="single_global_affine_transform",
+                     global_mean_k=mean, global_std_k=std,
+                     scope="all pixels, channels, and clips in the training split",
+                     manifest_sha256=hashlib.sha256(args.output.read_bytes()).hexdigest(),
+                     samples=len(frame), pixel_count=pixel_count,
+                     zarr_root=str(args.zarr_root.resolve()))
+        args.stats_output.parent.mkdir(parents=True, exist_ok=True)
+        args.stats_output.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
     print(
         f"Wrote {len(frame)} clips to {args.output.resolve()} from "
         f"{len(starts)} complete temporal starts on a {height}x{width} grid "

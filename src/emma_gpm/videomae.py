@@ -105,7 +105,7 @@ def patchify_videomae_pixels(pixel_values: Any, config: Any) -> Any:
     )
 
 
-def forward_seviri_mae(model: Any, pixel_values: Any, bool_masked_pos: Any) -> Any:
+def forward_seviri_mae(model: Any, pixel_values: Any, bool_masked_pos: Any, decode_mask: Any = None) -> Any:
     """Run VideoMAE with physically appropriate seven-channel targets.
 
     Transformers 5.18 raises for non-RGB data when ``norm_pix_loss=False``
@@ -115,6 +115,10 @@ def forward_seviri_mae(model: Any, pixel_values: Any, bool_masked_pos: Any) -> A
     targets.  This also keeps the intended behavior stable if upstream changes.
     """
 
+    if getattr(model.config, 'videomae_version', 'v1') == 'v2':
+        return model(pixel_values=pixel_values, bool_masked_pos=bool_masked_pos, decode_mask=decode_mask)
+    if decode_mask is not None:
+        raise ValueError('Decoder masking requires VideoMAE V2')
     import torch.nn.functional as functional
 
     requested_norm_pix_loss = bool(model.config.norm_pix_loss)
@@ -138,6 +142,37 @@ def forward_seviri_mae(model: Any, pixel_values: Any, bool_masked_pos: Any) -> A
     )
     output.loss = functional.mse_loss(output.logits, labels)
     return output
+
+
+def unpatchify_videomae_pixels(patches: Any, config: Any) -> Any:
+    """Invert patchify, retaining the exact temporal, spatial and channel order."""
+    size = config.patch_size
+    ph, pw = (map(int, size) if isinstance(size, (tuple, list)) else (int(size), int(size)))
+    height = width = int(config.image_size)
+    time, channels, tubelet = int(config.num_frames), int(config.num_channels), int(config.tubelet_size)
+    batch = patches.shape[0]
+    expected = ((time // tubelet) * (height // ph) * (width // pw), channels * tubelet * ph * pw)
+    if tuple(patches.shape[1:]) != expected:
+        raise ValueError(f"Unexpected patch shape {tuple(patches.shape)}; expected {expected}.")
+    values = patches.reshape(batch, time // tubelet, height // ph, width // pw, tubelet, ph, pw, channels)
+    return values.permute(0, 1, 4, 7, 2, 5, 3, 6).contiguous().reshape(batch, time, channels, height, width)
+
+
+def restore_masked_videomae_pixels(pixel_values: Any, logits: Any, mask: Any, config: Any) -> tuple[Any, Any]:
+    """Fill only masked tubelets with predictions; return reconstruction and pixel mask.
+
+    Visible pixels are copied from the input and must never count as predicted
+    pixels when evaluating reconstruction error.
+    """
+    patches = patchify_videomae_pixels(pixel_values, config).clone()
+    patches[mask] = logits.reshape(-1, reconstruction_values_per_tubelet(config))
+    reconstruction = unpatchify_videomae_pixels(patches, config)
+    ph, pw = (map(int, config.patch_size) if isinstance(config.patch_size, (tuple, list))
+              else (int(config.patch_size), int(config.patch_size)))
+    batch, time, _, height, width = pixel_values.shape
+    pixel_mask = mask.reshape(batch, time // int(config.tubelet_size), height // ph, width // pw)
+    pixel_mask = pixel_mask.repeat_interleave(int(config.tubelet_size), 1).repeat_interleave(ph, 2).repeat_interleave(pw, 3)
+    return reconstruction, pixel_mask.unsqueeze(2)
 
 
 def inflate_rgb_patch_embedding(rgb_weight: Any, target_channels: int = 7) -> Any:

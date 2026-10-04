@@ -6,6 +6,7 @@
 
 .env
 .env.txt
+/env
 *.part
 
 data/*
@@ -20,6 +21,6 @@ catalogs/gpm_to_emma_pf_2020.csv
 
 # Generated VideoMAE checkpoints, videos, and executed notebook previews.
 results/videomae_pretraining_smoke*/
+results/videomae_v2_small_scaling/
 figures/videomae_pretraining/
 results/*.executed.ipynb
-

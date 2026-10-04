@@ -9,6 +9,8 @@ boundary explicit and refuses incomplete or reordered spectral cubes.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +111,9 @@ class SeviriZarrClipReader:
         if path not in self._stores:
             if not path.exists():
                 raise IncompleteSeviriClipError(f"Missing daily SEVIRI store: {path}")
-            dataset = xr.open_zarr(path, consolidated=True).sortby("time")
+            # Let Zarr fetch the selected chunks directly. Dask graphs for the
+            # entire daily array add substantial overhead to these small crops.
+            dataset = xr.open_zarr(path, consolidated=True, chunks=None).sortby("time")
             if "seviri" not in dataset:
                 dataset.close()
                 raise IncompleteSeviriClipError(f"No 'seviri' array in {path}")
@@ -265,3 +269,46 @@ class SeviriVideoMAEDataset:
             global_std=self.global_std,
         )
         return {"pixel_values": torch.from_numpy(np.ascontiguousarray(clip))}
+
+
+class MaterializedSeviriDataset:
+    """Load losslessly materialized, north-up Kelvin samples in manifest order."""
+
+    def __init__(self, root, manifest_path, *, zarr_root, global_mean, global_std):
+        self.root = Path(root)
+        metadata = json.loads((self.root / "metadata.json").read_text())
+        manifest_hash = hashlib.sha256(Path(manifest_path).read_bytes()).hexdigest()
+        if metadata.get("manifest_sha256") != manifest_hash:
+            raise ValueError("Materialized samples belong to a different manifest.")
+        expected = dict(channels=list(VIDEO_MAE_CHANNELS), shape=[16, 7, 224, 224],
+                        dtype="float16", units="K", orientation="north-up west-left",
+                        cadence_minutes=5, lossless=True)
+        for key, value in expected.items():
+            if metadata.get(key) != value:
+                raise ValueError(f"Unexpected materialized sample metadata: {key}")
+        if Path(metadata["zarr_root"]).resolve() != Path(zarr_root).resolve():
+            raise ValueError("Materialized samples belong to a different Zarr root.")
+        self.samples = metadata["samples"]
+        if len(self.samples) != len(pd.read_csv(manifest_path)):
+            raise ValueError("Materialized sample count does not match the manifest.")
+        for index, sample in enumerate(self.samples):
+            expected_name = f"sample_{index:06d}.npy"
+            path = self.root / expected_name
+            if sample["file"] != expected_name or path.stat().st_size != sample["bytes"]:
+                raise ValueError(f"Missing or truncated sample: {expected_name}")
+        self.global_mean = global_mean
+        self.global_std = global_std
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        import torch
+
+        clip = np.load(self.root / self.samples[index]["file"], allow_pickle=False)
+        if clip.shape != (16, 7, 224, 224) or clip.dtype != np.float16 or not clip.flags.c_contiguous:
+            raise IncompleteSeviriClipError("Unexpected materialized sample shape or dtype.")
+        if not np.isfinite(clip).all():
+            raise IncompleteSeviriClipError("Materialized clip contains non-finite values.")
+        clip = normalize_seviri_clip(clip, self.global_mean, self.global_std)
+        return {"pixel_values": torch.from_numpy(clip)}
