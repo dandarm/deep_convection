@@ -1,0 +1,2 @@
+-r requirements-notebook.txt
+scikit-image>=0.25,<0.27

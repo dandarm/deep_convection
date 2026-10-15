@@ -3,6 +3,8 @@
 Queste istruzioni valgono per l'intero repository. Il progetto attivo è il
 pretraining self-supervised di VideoMAE su SEVIRI seguito dal probing delle
 dinamiche convettive mediante pseudo-label deterministiche RDT-CW-inspired.
+Il teacher principale aggiornato è multispettrale UTLS v0, secondo
+`HANDOFF_RDT_TEACHER_IMPLEMENTATION.md` (decisione del 13 ottobre 2026).
 
 ## Letture obbligatorie
 
@@ -14,6 +16,9 @@ integralmente e in quest'ordine:
 3. `VIDEOMAE_PRETRAINING.md`
 4. `HANDOFF_VIDEOMAE_PRETRAINING_GPU.md` per attività di trasferimento,
    configurazione CUDA o training GPU
+
+Per il teacher leggere inoltre `HANDOFF_RDT_TEACHER_IMPLEMENTATION.md` e
+consultare `src/emma_gpm/rdt/` e `scripts/build_rdt_pseudolabels.py`.
 
 Consultare inoltre direttamente i file che definiscono il comportamento
 eseguibile:
@@ -77,9 +82,21 @@ entrare nel pretraining, direttamente o attraverso il campionamento.
 
 ## Teacher RDT e interpretazione
 
-Il teacher usa esclusivamente WV 6.2 µm e IR 10.8 µm e produce le classi:
+Il teacher principale usa i sette canali in Kelvin: IR 10.8 definisce la
+topologia e i contorni sul dominio completo; le sei BTD selezionano il plateau
+e la confidenza della proxy UTLS/incudine. La proxy v0 è la mediana pesata
+del plateau, filtrata causalmente; non è una retrieval della tropopausa WMO.
+La profondità relativa D e i criteri OT non usano soglie assolute
+240/230/220/210/215 K. Il teacher fisso a due canali rimane una baseline
+separata. Le classi restano:
 sfondo, nube fredda non convettiva, sviluppo, maturità/decadimento e
 overshooting top.
+
+Rilevare e tracciare sul dominio completo prima di ritagliare clip.
+Preservare le osservazioni mancanti come maschera esplicita; rifiutare
+le clip finali incomplete, senza riempimenti. Cooling e area change a
+15 minuti confrontano tre intervalli RSS reali, non differenze a 5 minuti
+moltiplicate per tre.
 
 Usare la dicitura `RDT-CW-inspired` finché soglie, tracking, gestione di
 split/merge e transizioni del ciclo di vita non saranno validati contro la

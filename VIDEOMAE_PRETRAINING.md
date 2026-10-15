@@ -585,6 +585,36 @@ non coincide con la loss sul subset running cell del training.
 
 ### Ripresa del download e prodotti inconsistenti
 
+Il recovery automatico è disponibile con `--recover-native-read-errors`.
+Si applica esclusivamente al `ValueError: buffer is smaller than requested size`
+riprodotto anche nell'apertura diretta dell'header con Satpy. Riscarica il
+singolo prodotto in una directory separata: se è leggibile usa i nuovi byte,
+conservando l'originale; se resta illeggibile e ha SHA-256 identico mette il
+prodotto in quarantena e registra il gap, poi prosegue nella stessa giornata.
+Due payload differenti ma entrambi illeggibili restano un errore bloccante,
+come tutti gli altri errori e le violazioni spettrali/radiometriche.
+Originali, download di verifica e report persistono sotto
+`_acquisition/2020/recovery/`; le esclusioni compaiono anche nei report
+giornalieri. Il download di verifica viene riusato nei tentativi successivi.
+Il comando aggiornato di ripresa, incluse le precedenti esclusioni esplicite,
+è in `launcher.json`. Il recovery non interpola né ripete i frame mancanti.
+
+Il 6 ottobre l'acquisizione è stata fermata dal prodotto dello slot
+2020-07-22 06:05 UTC, filename
+`MSG2-SEVI-MSG15-0100-NA-20200722060918.305000000Z-NA.nat`.
+La lettura diretta Satpy fallisce nel trailer: il layout richiede 102.210.123
+byte, ma il file contiene 100.734.873 byte e riporta qualità NOK. Un nuovo
+download ha lo stesso SHA-256 e lo stesso errore. Non è una troncatura locale
+introdotta dalla conversione Zarr.
+
+`acquire_seviri_year.py --exclude-native FILENAME` permette di escludere
+esplicitamente un singolo prodotto diagnosticato (flag ripetibile).
+Il file resta in `_acquisition/2020/quarantine/`, con dimensione e SHA-256
+nei report `rejected_products/` e `completed_days/`; lo slot è un gap, senza
+interpolazione o sostituzione. Errori su file non elencati restano bloccanti
+e riportano ora il filename. Il comando di ripresa aggiornato è conservato
+in `launcher.json`. Le clip che attraversano il gap non sono ammissibili.
+
 L'acquisizione si era fermata il 2 marzo dopo 61 giornate. Il prodotto
 `MSG3-SEVI-MSG15-0100-NA-20200302113915.987000000Z-NA.nat` indica slot11:35
 nel nome, ma Satpy riporta start/end11:40 e qualità non valida. Non viene
@@ -614,3 +644,242 @@ in `mask90_scaling_launcher.json`. La selezione originale non viene riscritta.
 le baseline 2.000 al 75/90% e i due run originali 4.000/8.000 al 75%; aggiungono
 le nuove misure man mano che terminano. Il notebook monitora tutti i sette
 run e mostra le due curve per dimensione in validation MSE Kelvin² comune.
+
+## Descrittori primitivi e clustering degli encoder (5 ottobre 2026)
+
+`scripts/analyze_seviri_embeddings.py` confronta i checkpoint **finali** a
+150 epoche dei tre run V2 Small `mask50`, `mask75`, `mask90` sulle medesime
+2.000 clip, più un encoder casuale con la stessa configurazione e seed fisso.
+Non usa il decoder MAE, non aggiorna pesi e non addestra un predittore.
+Il vantaggio del 90% è un'ipotesi, non un risultato imposto alle metriche.
+
+```bash
+.venv/bin/python -m pip install -r requirements-analysis.txt
+.venv/bin/python scripts/analyze_seviri_embeddings.py
+.venv/bin/python scripts/compare_seviri_neighbor_scores.py
+```
+
+La radice Zarr è letta dal piano della coda. Il comando rifiuta training
+incompleti e salva in `results/seviri_embedding_clustering/`, ignorato da Git.
+`progress.json`, `analysis.log` e `launcher.json` monitorano il processo
+separato dalla chat. Un lock evita duplicati; ripetere il comando riusa cache
+verificate mediante hash di manifest, sorgenti, pesi e normalizzazione.
+Non salva clip materializzate. Modificare i sorgenti richiede una nuova
+directory di output o rigenerare esplicitamente le cache incompatibili.
+
+Tre split separati: tutto il training da 2.000 clip, la validation storica da
+256 e 256 clip su un nuovo holdout diagnostico. Quest'ultimo usa le prime
+sette giornate verificate con finestre complete oltre la validation, con
+embargo di almeno 24 ore. Lo snapshot è congelato: finestre distanti almeno
+80 minuti e crop su griglia a offset casuale, senza overlap spazio-temporale;
+i candidati non finiti sono rifiutati. `reserved_days.json` e la copia
+`videomae_v2_small_scaling/clustering_reserved_days.json` registrano le date
+da **escludere da qualsiasi futuro ampliamento del pretraining**. I manifest
+esistenti non cambiano. Questo holdout è esplorativo: se guida la scelta del
+modello, non è un test finale intatto; sette giorni non garantiscono sette
+episodi meteorologici indipendenti.
+
+`atmospheric_descriptors.py` misura osservabili deterministiche in Kelvin:
+media per banda; quantili IR10.8; contrasto e gradienti spaziali in K/pixel;
+percentuali di pixel sotto 240/260 K; numero e frazione della regione maggiore
+a 260 K con connettività 8; cinque differenze fra bande; tendenze OLS con segno
+in K/15min o punti percentuali/15min; differenze consecutive a pixel fissi in
+K/5min. Non sono etichette di nube o convezione, non usano tracking o
+previsione. Le aree sono frazioni di pixel, non km². I cambiamenti sono
+**Euleriani**, comprendono evoluzione e advezione e non identificano il
+raffreddamento di una nube inseguita. Ogni colonna ha unità, gruppo e formula
+in `descriptor_schema.json`. I descrittori non entrano nel pretraining né nel
+campionamento. I loro momenti training-only sono diagnostiche, non
+normalizzazioni radiometriche degli input.
+
+Gli encoder ricevono clip complete in FP32, con la sola trasformazione
+globale originale del training, senza masking. I token sono mediati nello
+spazio per ogni tubelet. Si conservano la media (`mean`, 384 valori) e la
+media concatenata alla variazione OLS stimata sui 75 minuti
+(`mean_slope`, 768 valori). La seconda conserva il primo momento temporale,
+non tutte le dinamiche locali; eventi piccoli possono essere diluiti dal
+pooling. Si normalizza soltanto la norma dell'embedding per misurare angoli.
+
+Clustering gerarchico **average/coseno** e **Ward/euclideo** sugli embedding a
+norma unitaria, senza PCA o proiezioni 2D prima del clustering. Tagli fissati
+a 4/8/16/32 gruppi, senza scegliere retrospettivamente il più favorevole.
+Ward usa distanze euclidee, come richiesto da
+[SciPy](https://docs.scipy.org/doc/scipy/reference/generated/scipy.cluster.hierarchy.linkage.html).
+Ogni combinazione salva albero, assegnazioni, dendrogramma troncato e indici
+di medoidi/casi periferici/casuali per ispezione.
+
+Metriche in CSV e grafici:
+
+- `cluster_metrics.csv`: silhouette nello spazio originale (sottoinsieme
+  deterministico massimo 1.024 clip), distribuzione delle dimensioni, frazione
+  di gruppi singoli, stabilità ARI su otto ricampionamenti dell'80% di intere
+  giornate e informazione mutua corretta fra cluster e giorno UTC.
+- `descriptor_agreement.csv`: per ogni osservabile la quota di varianza
+  spiegata dai gruppi, corretta sottraendo l'atteso casuale `(K-1)/(N-1)` e
+  riscalando. Variabili costanti sono NaN, mai accordo perfetto; valori
+  negativi restano negativi. Origini native del crop e seno/coseno dell'ora
+  sono controlli separati di contesto, non descrittori atmosferici.
+- `neighbor_agreement.csv`: guadagno `1 - errore_fisico_vicini / errore_coppie`
+  per descrittore. Dieci vicini esclusivamente di altre giornate UTC; baseline
+  su tutte le coppie ammissibili per query. Errore = differenza quadratica;
+  il rapporto cancella scala/unità del descrittore. Zero indica nessun
+  vantaggio; valori negativi sono possibili. Media con pari peso a ciascuna
+  giornata e intervalli percentile 95% da bootstrap di giornate, descrittivi
+  e non test indipendenti su migliaia di clip. Giorni meteorologici consecutivi
+  possono essere correlati e ridurre l'indipendenza effettiva.
+
+Silhouette maggiore non dimostra di per sé una rappresentazione più utile:
+temperatura media o geografia possono creare gruppi netti. Esaminare accordo
+statico e dinamico separatamente, stabilità, controllo casuale e contesto.
+La media per famiglia non sostituisce i singoli descrittori né produce
+automaticamente un vincitore. I modelli hanno un solo seed di pretraining:
+le differenze restano esplorative.
+
+Al termine dell'analisi, `scripts/compare_seviri_neighbor_scores.py` salva
+anche confronti appaiati 90%-50%, 90%-75% e 90%-casuale per ogni descrittore.
+Sottrae i guadagni sulle stesse clip prima del bootstrap delle medesime
+giornate; segno positivo favorisce 90%. Il grafico nel notebook mostra le
+differenze e gli intervalli descrittivi, senza dichiarare significatività
+su 45 confronti. Default `mean_slope`/average; gli argomenti `--pooling` e
+`--method` permettono i controlli di sensibilità sulle altre combinazioni.
+
+Prima della ricostruzione, il notebook contiene una sezione autonoma per
+leggere i grafici, scegliere split/run/pooling/linkage/taglio, mostrare le
+distribuzioni dei descrittori nei gruppi e riprodurre le clip rappresentative
+con Play. La cella non carica modelli sulla GPU; gli output parziali sono
+leggibili dopo il completamento della combinazione.
+
+Analisi completata: 45 descrittori, 4 encoder (tre addestrati e controllo
+casuale), 3 split, 2 pooling e 2 linkage, 4 tagli = 192 righe di metriche
+di clustering. 405 confronti appaiati per descrittore sul default
+`mean_slope`/average. Nuovo holdout 3–9 marzo 2020: 230 coppie concorrenti
+verificate, IoU massima zero; tutti i descrittori e gli embedding sono finiti.
+
+Nel nuovo holdout, il 90% ha un guadagno dei vicini maggiore del 50% per 10/45
+descrittori e del 75% per 19/45 (stime puntuali, non test di significatività).
+Il50% ha guadagno medio maggiore nelle quattro famiglie, ma il 90% ha
+silhouette/stabilità maggiori fra i modelli addestrati al taglio 8 average.
+Il controllo casuale è competitivo su termica e dinamica primitive, mentre
+alcuni vantaggi del pretraining emergono nelle misure spaziali/spettrali.
+Questo protocollo misura geometria e accordo con queste osservabili, non
+una graduatoria universale di utilità downstream. Grafici e dati permettono
+di esaminare anche gli altri tagli/pooling/linkage senza cambiare il protocollo.
+Suite: 60 test passati; dashboard eseguita in kernel `.venv` con dati reali.
+
+### Interfaccia riassuntiva e densità (5 ottobre 2026)
+
+La cella del notebook ora usa `clustering_dashboard.py`. Ogni menu aggiorna
+automaticamente; **Rileggi file** serve soltanto dopo aggiornamenti dei dati
+sul disco. Le schede separano confronto globale e dettaglio del modello:
+Sintesi, Albero/gruppi, Clip, Profili fisici, 90% vs altri. Encoder sceglie
+l'albero, i profili e i rappresentanti, mentre i confronti globali continuano
+a mostrare tutti i modelli. Dati/Embedding cambiano tutte le viste.
+Linkage/Taglio cambiano l'accordo della partizione e i dettagli; i vicini
+non dipendono da questi parametri. I grafici globali ora leggono i CSV per
+il pooling/linkage effettivamente scelti, senza il vecchio default fisso.
+
+Default **Albero, senza taglio**: K non è visibile, nessuna partizione o
+silhouette singola è inventata. L'albero agglomerativo era già calcolato
+senza K: 4/8/16/32 erano tagli successivi. Il dendrogramma è troncato solo
+graficamente agli ultimi 20 rami; include tutte le clip. Taglio in K gruppi
+rimane disponibile come ispezione facoltativa a diverse scale.
+
+`scripts/analyze_seviri_density.py` aggiunge **HDBSCAN** leggendo gli
+embedding già estratti, senza GPU. Gerarchia di densità, selezione EOM,
+euclidea su vettori a norma unitaria, nessuna PCA; dimensione minima
+`max(10, ceil(0.03*N))`, min_samples 5, stessi parametri per tutti i modelli,
+K inferito dall'algoritmo. Questo non elimina la scelta della scala, ma
+evita un numero di gruppi imposto. `-1` indica clip non assegnate, non una
+classe atmosferica o un cluster. Una partizione tutta non assegnata è un
+esito valido, non viene riparata o premiata con silhouette/stabilità perfetta.
+
+```bash
+.venv/bin/python scripts/analyze_seviri_density.py
+```
+
+Risultati in `density_metrics.csv`, `density_descriptor_agreement.csv`,
+`density_protocol.json` e per split `*_hdbscan_assignments.csv` /
+`*_hdbscan_representatives.csv`. Hash degli embedding e dei sorgenti,
+parametri e gestione dei non assegnati sono persistenti. Stabilità ARI su
+punti assegnati in entrambi i ricampionamenti di giornate, con almeno due
+gruppi; Jaccard degli insiemi assegnati salvato separatamente nel CSV.
+Silhouette/accordo fisico sono condizionati alle sole clip assegnate:
+**leggere sempre la copertura** e non confrontarli ingenuamente con punteggi
+agglomerativi su tutte le clip. Per non assegnati si mostrano esempi casuali,
+senza fingere un medoide della classe rumore.
+
+La sintesi principale mostra quattro famiglie fisiche con pari peso ai
+descrittori all'interno della famiglia. Nei Profili fisici, una heatmap
+cluster×famiglia mostra `1 - varianza_interna / varianza_complessiva`, usando
+varianze campionarie ddof 1 per ogni descrittore prima di fare la media.
+Riferimento: tutto lo split per il taglio, solo assegnati per HDBSCAN;
+gruppi con meno di 5 clip sono NaN. 1 indica omogeneità massima, 0 nessuna
+riduzione, valori negativi maggiore variabilità. Il boxplot singolo rimane
+in un pannello facoltativo chiuso. Il confronto 90%-altri riassume il
+guadagno dei vicini per famiglia prima del bootstrap appaiato delle giornate;
+non cambia con la partizione e non implica significatività statistica.
+
+HDBSCAN completato per 4 encoder×3 split×2 pooling. Con mean_slope nel nuovo
+holdout: 3 gruppi per 50% (43,4% assegnato), 3 per 75% (52,0%), 2 per 90% (65,2%)
+e 3 per casuale (60,9%). Sul training 75%/mean_slope, tutti non assegnati a
+questa scala. Sono risultati dipendenti da geometria e parametri, non una
+prova di classi atmosferiche discrete. Gerarchia e densità sono diagnostiche
+complementari: nessuna garantisce una partizione vera di un continuum.
+
+### Separazione delle diagnostiche fisiche
+
+La dashboard distingue ora «Dentro i cluster», «Tra i cluster» e «Vicini:
+guadagno». Il guadagno dei vicini è una definizione locale della diagnostica:
+`1 - errore_quadratico_vicini / errore_quadratico_riferimento`, calcolato
+per clip e descrittore e poi mediato con pari peso alle giornate. I vicini
+sono i 10 più prossimi provenienti da altre giornate; il riferimento usa
+tutte le coppie ammissibili con altre giornate. Non dipende dal taglio o
+da HDBSCAN e non è varianza spiegata dalla partizione.
+
+Un profilo medio contiene le medie dei descrittori nel singolo cluster.
+«Tra i cluster» mostra, per famiglia, la distanza RMS fra queste medie,
+espressa in deviazioni standard dei descrittori del solo training. La
+standardizzazione riguarda esclusivamente la diagnostica, mai gli input
+all'encoder. Le quattro matrici usano una scala cromatica comune nella vista
+corrente; valori alti indicano medie diverse, senza dimostrare assenza di
+sovrapposizione delle distribuzioni. Descrittori costanti sul training sono
+esclusi; coppie con un gruppo di meno di 5 clip non sono valutate. I non
+assegnati HDBSCAN non formano un cluster. Nel boxplot facoltativo i triangoli
+verdi indicano le medie, distinte dalle mediane.
+
+La vista «Dentro i cluster» usa ora anch'essa quattro matrici cluster×cluster:
+RMS della differenza dei descrittori di due clip estratte indipendentemente
+con reinserimento dai rispettivi gruppi. Per ogni descrittore la distanza
+quadratica attesa è `(media_i-media_j)^2 + var_i + var_j`, con varianze
+empiriche ddof=0, divisa per la varianza del descrittore nel training.
+La diagonale misura quindi `sqrt(2 * varianza interna)` dopo la media
+sui descrittori validi della famiglia. Fuori diagonale comprende anche
+dispersione interna: non è separazione pura. La precedente heatmap della
+riduzione di varianza è sostituita da questa vista nelle medesime unità delle
+distanze fra profili medi. Non sono matrici di correlazione o covarianza.
+
+Il riepilogo per famiglia mostra RMS delle distanze fra medie sulle coppie
+distinte valide (pari peso alle coppie), RMS della dispersione interna
+(diagonale pesata per numero di clip) e rapporto fra le due. La sintesi
+complessiva media ciascuna metrica sulle quattro famiglie con pari peso e
+richiede tutte valide; rapporto NaN se dispersione zero. Non è una metrica
+corretta per K, né una graduatoria indipendente dalla copertura HDBSCAN.
+Il guadagno mostra ora barre per ciascuno dei 45 descrittori e quattro encoder,
+con graffe sotto i tick per delimitare le famiglie e scorrimento orizzontale;
+le formule e le cache dei vicini non cambiano.
+
+### Separazione relativa e compattezza (12 ottobre 2026)
+
+Le due viste matriciali precedenti sono sostituite da una sola serie di
+quattro matrici di separazione relativa e da barre di dispersione interna.
+Per famiglia, `S_ij = sqrt(mean_d((mu_i-mu_j)^2/std_train^2) /
+mean_d((var_i+var_j)/std_train^2))`. Varianze empiriche ddof=0; descrittori
+costanti sul training esclusi, gruppi <5 clip e non assegnati non valutati.
+Dispersione nulla rende la coppia NaN, mai infinita. Diagonale valida zero
+per convenzione. Non è una correlazione né una misura delle differenze di
+forma delle distribuzioni. Le sintesi mediano le coppie distinte valide;
+la complessiva media le quattro famiglie, tutte richieste valide.
+Le barre della compattezza mostrano `sqrt(mean_d(var_i/std_train^2))`, basso
+indica maggiore omogeneità. Scale cromatiche comuni nella vista corrente,
+confrontare le barre colori fra viste. K e copertura restano parte necessaria
+dell'interpretazione. Il grafico per singolo descrittore dei vicini è conservato.

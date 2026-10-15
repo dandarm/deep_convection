@@ -8,6 +8,7 @@ and native files outside this buffer are never removed.
 import argparse
 from datetime import datetime, timedelta, timezone
 import fcntl
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -37,6 +38,80 @@ def product_slot(product):
     if value.tzinfo is not None:
         value=value.astimezone(timezone.utc).replace(tzinfo=None)
     return value.replace(minute=(value.minute//5)*5,second=0,microsecond=0)
+
+
+def native_digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream,'sha256').hexdigest()
+
+
+def check_native_header(path):
+    # Independent of our crop/conversion code: fail only on the known reader
+    # buffer error. Other parser errors must remain visible and blocking.
+    from satpy import Scene
+    try:
+        Scene(reader='seviri_l1b_native',filenames=[str(path)])
+    except ValueError as error:
+        if str(error)=='buffer is smaller than requested size':
+            return False
+        raise
+    return True
+
+
+def recover_native(native,slot,products,bounds,args,work,key,secret,error):
+    if not getattr(args,'recover_native_read_errors',False) or not isinstance(error,ValueError) or str(error)!='buffer is smaller than requested size':
+        raise error
+    if check_native_header(native):
+        raise error  # The error is not independently reproducible in the file.
+    matches=[p for p in products if product_slot(p)==slot]
+    if len(matches)!=1:
+        raise ValueError('Cannot uniquely identify provider product for recovery')
+    directory=work/'recovery'/native.stem
+    directory.mkdir(parents=True,exist_ok=True)
+    original=directory/'original.nat'
+    digest=native_digest(native)
+    if original.exists() and native_digest(original)!=digest:
+        raise ValueError('Recovery original differs from current native')
+    if not original.exists():
+        shutil.copy2(native,original)
+    class SingleProduct:
+        def search(self,**kwargs):return matches
+    print(f'recovery redownload native={native.name}',flush=True)
+    download_interval(SingleProduct(),slot,slot+timedelta(minutes=5),directory/'redownload',False,
+        collection_id=DEFAULT_COLLECTION,key=key,secret=secret,workers=1,retries=2,read_timeout=300)
+    candidates=list((directory/'redownload').rglob('*.nat'))
+    if len(candidates)!=1 or candidates[0].name!=native.name:
+        raise ValueError('Unexpected recovery payload')
+    fresh=candidates[0]
+    fresh_digest=native_digest(fresh)
+    readable=check_native_header(fresh)
+    report=dict(file=native.name,filename_slot=slot.isoformat(),sha256=digest,
+        redownload_sha256=fresh_digest,size_bytes=native.stat().st_size,
+        redownload_size_bytes=fresh.stat().st_size,original=str(original),
+        redownload=str(fresh),error_type=type(error).__name__,error=str(error))
+    if readable:
+        crop=load_native_crop(fresh,bounds,calibration='brightness_temperature')
+        # Keep the original for audit and publish repaired bytes atomically.
+        temporary=native.with_suffix('.nat.recovered.part')
+        shutil.copy2(fresh,temporary);temporary.replace(native)
+        report['status']='recovered_by_redownload'
+        atomic_json(directory/'report.json',report)
+        print(f'recovery successful native={native.name}',flush=True)
+        return crop,None
+    if digest!=fresh_digest:
+        report['status']='different_unreadable_payloads'
+        atomic_json(directory/'report.json',report)
+        raise ValueError('Recovery payload differs but remains unreadable; refusing automatic exclusion')
+    quarantine=work/'quarantine'/f'{slot:%Y%m%d}'/native.name
+    quarantine.parent.mkdir(parents=True,exist_ok=True)
+    if quarantine.exists() and native_digest(quarantine)!=digest:
+        raise ValueError('Quarantine differs from recovery original')
+    if not quarantine.exists():shutil.copy2(native,quarantine)
+    report.update(status='quarantined_identical_unreadable_payload',quarantine=str(quarantine),
+        reason='independent header failure reproduced after identical redownload; frame excluded, no replacement')
+    atomic_json(directory/'report.json',report)
+    print(f'recovery quarantined native={native.name} slot={slot}',flush=True)
+    return None,report
 
 
 def verify_store(store,expected_times):
@@ -108,7 +183,36 @@ def acquire_day(day,collection,args,work,key,secret):
             raise ValueError('Native belongs to a different requested day')
         if pd.Timestamp(slot) in before or pd.Timestamp(slot) in converted:
             continue
-        crop=load_native_crop(native,bounds,calibration='brightness_temperature')
+        if native.name in getattr(args,'exclude_native',[]):
+            # Explicit, file-specific exclusion after diagnosis; preserve bytes
+            # outside the disposable buffer and expose the missing RSS slot.
+            quarantine=work/'quarantine'/f'{day:%Y%m%d}'/native.name
+            quarantine.parent.mkdir(parents=True,exist_ok=True)
+            with native.open('rb') as stream:
+                digest=hashlib.file_digest(stream,'sha256').hexdigest()
+            if quarantine.exists():
+                with quarantine.open('rb') as stream:
+                    if hashlib.file_digest(stream,'sha256').hexdigest()!=digest:
+                        raise ValueError('Quarantine file differs from excluded native')
+            else:
+                shutil.copy2(native,quarantine)
+            rejected.append(dict(file=native.name,filename_slot=slot.isoformat(),
+                reason='explicit exclusion of diagnosed unreadable native; no replacement',
+                size_bytes=native.stat().st_size,sha256=digest,quarantine=str(quarantine)))
+            atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
+            print(f'excluded native={native.name} slot={slot} quarantine={quarantine}',flush=True)
+            continue
+        try:
+            crop=load_native_crop(native,bounds,calibration='brightness_temperature')
+        except Exception as error:
+            try:
+                crop,rejection=recover_native(native,slot,products,bounds,args,work,key,secret,error)
+            except Exception as recovery_error:
+                raise RuntimeError(f'Cannot read native {native.name}: {type(recovery_error).__name__}: {recovery_error}') from recovery_error
+            if rejection is not None:
+                rejected.append(rejection)
+                atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
+                continue
         if crop.channels!=THERMAL_CHANNELS or crop.units!='K':
             raise ValueError('Native spectral/radiometric metadata mismatch')
         if crop.start_time!=slot:
@@ -158,9 +262,15 @@ def main():
     parser.add_argument('--workers',type=int,default=4)
     parser.add_argument('--crop-batch-size',type=int,default=4)
     parser.add_argument('--env-file',type=Path,default=ROOT/'.env')
+    parser.add_argument('--recover-native-read-errors',action='store_true',
+        help='Redownload independently unreadable native files; quarantine only identical payloads with the same reader buffer error')
+    parser.add_argument('--exclude-native',action='append',default=[],metavar='FILENAME',
+        help='Explicitly exclude a diagnosed native filename, retain it in quarantine and report its slot as missing; repeatable')
     args=parser.parse_args()
     if args.workers<1 or args.crop_batch_size<1:
         parser.error('Worker and batch counts must be positive')
+    if any(Path(name).name!=name or not name.endswith('.nat') for name in args.exclude_native):
+        parser.error('exclude-native must be an exact .nat filename without a path')
     args.zarr_root=args.zarr_root.resolve();args.zarr_root.mkdir(parents=True,exist_ok=True)
     work=args.zarr_root/'_acquisition'/str(args.year)
     work.mkdir(parents=True,exist_ok=True)

@@ -152,3 +152,94 @@ def test_inconsistent_native_timestamp_is_reported_as_gap_without_repair(tmp_pat
     assert len(report['rejected_products'])==1
     assert (work/'rejected_products'/'20200101.json').exists()
     assert not (tmp_path/'2020'/'20200101.zarr').exists()
+
+
+def test_explicit_exclusion_retains_native_and_reports_gap(tmp_path,monkeypatch):
+    import hashlib
+    from scripts import acquire_seviri_year as job
+    day=datetime(2020,1,1)
+    name='SCENE-20200101000400.000Z-NA.nat'
+    args=SimpleNamespace(zarr_root=tmp_path,workers=1,crop_batch_size=1,exclude_native=[name])
+    work=tmp_path/'_acquisition'/'2020'
+    payload=b'diagnosed unreadable native'
+    def download(*args,**kwargs):
+        buffer=args[3];buffer.mkdir(parents=True)
+        (buffer/name).write_bytes(payload)
+    monkeypatch.setattr(job,'download_interval',download)
+    def read(*args,**kwargs):raise AssertionError('Excluded native must not be converted')
+    monkeypatch.setattr(job,'load_native_crop',read)
+    class Collection:
+        def search(self,**kwargs):return [SimpleNamespace(sensing_start=day)]
+    report=acquire_day(day,Collection(),args,work,'fake','fake')
+    assert report['stored_frames']==0 and len(report['missing_nominal_slots'])==288
+    rejected=report['rejected_products'][0]
+    assert rejected['sha256']==hashlib.sha256(payload).hexdigest()
+    assert Path(rejected['quarantine']).read_bytes()==payload
+    assert not (work/'native_buffer'/'20200101').exists()
+    assert not (tmp_path/'2020'/'20200101.zarr').exists()
+    assert acquire_day(day,Collection(),args,work,'fake','fake')==report
+
+
+def test_unlisted_native_read_failure_still_stops_acquisition(tmp_path,monkeypatch):
+    from scripts import acquire_seviri_year as job
+    day=datetime(2020,1,1)
+    name='SCENE-20200101000400.000Z-NA.nat'
+    args=SimpleNamespace(zarr_root=tmp_path,workers=1,crop_batch_size=1,exclude_native=[])
+    work=tmp_path/'_acquisition'/'2020'
+    def download(*args,**kwargs):
+        buffer=args[3];buffer.mkdir(parents=True)
+        (buffer/name).write_bytes(b'bad native')
+    monkeypatch.setattr(job,'download_interval',download)
+    def read(*args,**kwargs):raise ValueError('buffer is smaller than requested size')
+    monkeypatch.setattr(job,'load_native_crop',read)
+    class Collection:
+        def search(self,**kwargs):return [SimpleNamespace(sensing_start=day)]
+    with pytest.raises(RuntimeError,match=name):
+        acquire_day(day,Collection(),args,work,'fake','fake')
+    assert not (work/'completed_days'/'20200101.json').exists()
+    assert (work/'native_buffer'/'20200101'/name).exists()
+
+
+@pytest.mark.parametrize('fresh_payload,readable,outcome',[
+    (b'bad',False,'excluded'),
+    (b'fixed',True,'recovered'),
+    (b'other bad',False,'blocked'),
+])
+def test_automatic_native_recovery_checks_redownload_and_preserves_original(tmp_path,monkeypatch,fresh_payload,readable,outcome):
+    from scripts import acquire_seviri_year as job
+    day=datetime(2020,1,1)
+    native=tmp_path/'buffer'/'SCENE-20200101000400.000Z-NA.nat'
+    native.parent.mkdir();native.write_bytes(b'bad')
+    work=tmp_path/'work'
+    args=SimpleNamespace(recover_native_read_errors=True)
+    monkeypatch.setattr(job,'check_native_header',lambda p: False if p==native else readable)
+    def download(*args,**kwargs):
+        directory=args[3];directory.mkdir(parents=True,exist_ok=True)
+        (directory/native.name).write_bytes(fresh_payload)
+    monkeypatch.setattr(job,'download_interval',download)
+    crop=object()
+    monkeypatch.setattr(job,'load_native_crop',lambda *args,**kwargs:crop)
+    call=lambda:job.recover_native(native,day,[SimpleNamespace(sensing_start=day)],None,args,work,'fake','fake',ValueError('buffer is smaller than requested size'))
+    if outcome=='blocked':
+        with pytest.raises(ValueError,match='refusing automatic exclusion'):call()
+        assert native.read_bytes()==b'bad'
+    else:
+        result,rejection=call()
+        if outcome=='excluded':
+            assert result is None and rejection['sha256']==rejection['redownload_sha256']
+            assert Path(rejection['quarantine']).read_bytes()==b'bad'
+            assert native.read_bytes()==b'bad'
+        else:
+            assert result is crop and rejection is None and native.read_bytes()==b'fixed'
+    assert (work/'recovery'/native.stem/'original.nat').read_bytes()==b'bad'
+    assert (work/'recovery'/native.stem/'report.json').exists()
+
+
+@pytest.mark.parametrize('error,independent_readable',[(ValueError('unexpected parser error'),False),(ValueError('buffer is smaller than requested size'),True)])
+def test_automatic_recovery_does_not_hide_unrelated_errors(tmp_path,monkeypatch,error,independent_readable):
+    from scripts import acquire_seviri_year as job
+    monkeypatch.setattr(job,'check_native_header',lambda p:independent_readable)
+    def download(*args,**kwargs):raise AssertionError('Unexpected redownload')
+    monkeypatch.setattr(job,'download_interval',download)
+    with pytest.raises(ValueError,match=str(error)):
+        job.recover_native(tmp_path/'bad.nat',datetime(2020,1,1),[],None,SimpleNamespace(recover_native_read_errors=True),tmp_path,'fake','fake',error)

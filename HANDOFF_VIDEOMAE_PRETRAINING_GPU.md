@@ -420,3 +420,91 @@ Stato/log/PID: `mask90_scaling_status.json`, `mask90_scaling_queue.log`,
 le curve 2.000/4.000/8.000 al 75% e 90%, sulla stessa validation comune.
 Il monitor del notebook include i due nuovi run e segue lo stato più recente;
 il selettore di ricostruzione li rende disponibili dopo il primo checkpoint.
+
+### Descrittori primitivi e clustering — 5 ottobre 2026
+
+I tre run V2 da 2.000 clip e anche i due run aggiuntivi al 90% da 4.000/8.000
+sono conclusi. Avviata una diagnostica separata degli encoder finali a 150
+epoche 50/75/90% da 2.000, con controllo casuale: nessuna previsione, teacher
+o modifica dei training. Script `scripts/analyze_seviri_embeddings.py`,
+dipendenze `requirements-analysis.txt`, stato/log/PID sotto
+`results/seviri_embedding_clustering/`. Comando predefinito riprendibile;
+cache di descrittori/embedding verificate con hash, senza materializzare clip.
+
+Descrittori in Kelvin, 45 osservabili termiche, spaziali, spettrali e di
+variazione Euleriana; input completo e trasformazione globale originale.
+Clustering average/coseno e Ward/euclideo, media dei token e variante con
+primo momento temporale, tagli 4/8/16/32. Metriche geometriche, stabilità per
+giornata, accordo con descrittori e vicini esclusivamente di altre giornate.
+Nuova sezione autonoma nel notebook prima della ricostruzione: grafici,
+distribuzioni dei descrittori e player di medoidi/casi periferici/casuali.
+
+Training 2.000 e validation 256 invariati; nuovo holdout diagnostico 256 sulle
+giornate 3–9 marzo 2020, sette giorni verificati con embargo temporale.
+**Escludere queste intere giornate da qualsiasi futuro pretraining**: elenco
+in `results/seviri_embedding_clustering/reserved_days.json` e copia
+`results/videomae_v2_small_scaling/clustering_reserved_days.json`. Non è un
+test finale intatto se usato per scelta del modello. Nessuna metrica impone
+che il 90% debba essere migliore. Suite: 60 test passati, inclusi controlli su
+segno/unità delle tendenze, regioni connesse, ordine temporale dei token,
+accordo esterno e rifiuto dei vicini della stessa giornata.
+
+Analisi conclusa su tutti i 12 accoppiamenti modello/split: 192 valutazioni
+di clustering e 405 confronti appaiati per descrittore (default
+`mean_slope`/average). Risultati esplorativi: il 90% non domina tutte le
+osservabili; nel nuovo holdout supera il 50% in 10/45 guadagni dei vicini e
+il 75% in 19/45, come stime puntuali e non significatività statistica. Il
+controllo casuale è competitivo sulle misure termiche e dinamiche semplici.
+Confronti spaziali/spettrali e geometria raccontano aspetti diversi; leggere
+i grafici e gli intervalli per descrittore senza una graduatoria universale.
+Player verificato in kernel `.venv` con cambio run, split, pooling, linkage,
+numero di gruppi, membro e frame. Notebook versionabile senza output.
+
+### Interfaccia e HDBSCAN
+
+Dashboard rifatta in `src/emma_gpm/clustering_dashboard.py`, cella notebook
+breve e schede Sintesi/Albero-gruppi/Clip/Profili fisici/90% vs altri.
+Default albero senza taglio: nessun K. Menu reattivi, Rileggi file soltanto
+per aggiornamenti su disco. I confronti globali seguono pooling/linkage
+effettivi; Encoder sceglie il dettaglio, non filtra il confronto fra modelli.
+Quattro famiglie fisiche sostituiscono la lettura obbligata dei 45 boxplot;
+il dettaglio in unità fisiche rimane facoltativo e chiuso.
+
+`scripts/analyze_seviri_density.py` completato dagli embedding esistenti,
+senza GPU: HDBSCAN/EOM, minimo 3% delle clip e almeno 10, min_samples 5,
+euclidea su vettori unitari. K trovato automaticamente; non assegnati
+separati. Leggere sempre copertura: silhouette/accordo fisico/stabilità
+sono condizionati ai sottoinsiemi assegnati. Nuove tabelle `density_*` e
+assegnazioni/rappresentanti `*_hdbscan_*` sotto la diagnostica originale.
+Non cambia i manifest o i checkpoint. Dettagli e limiti nella sezione
+«Interfaccia riassuntiva e densità» di `VIDEOMAE_PRETRAINING.md`.
+Suite: 63 test passati; integrazione dashboard verificata anche con nessun
+cluster trovato, passaggio albero/taglio/densità, menu automatici e player.
+
+### Grafici fisici separati
+
+La dashboard ha ora sette schede: Sintesi gruppi, Albero / gruppi, Clip,
+Dentro i cluster, Tra i cluster, Vicini: guadagno, 90% vs altri. Il guadagno
+dei vicini ha un grafico dedicato e non dipende dalla partizione. Le nuove
+matrici inter-cluster confrontano i profili medi mediante distanza RMS in
+deviazioni standard dei descrittori del training; non rappresentano varianza
+spiegata né separazione completa delle distribuzioni. Dettagli e gestione
+dei gruppi piccoli/non assegnati in VIDEOMAE_PRETRAINING.md.
+La cella ricarica il modulo della dashboard: rieseguirla aggiorna la UI
+senza riavviare il kernel. Suite aggiornata: 67 test passati.
+
+Ulteriore aggiornamento: «Dentro i cluster» usa quattro matrici RMS fra clip
+(diagonale dispersione interna, fuori diagonale dispersione più differenza
+delle medie), nelle stesse unità dei profili medi. «Tra i cluster» include
+riepiloghi per famiglia e complessivo con pari peso alle quattro famiglie,
+più rapporto distanza delle medie/dispersione. Il guadagno mostra tutti i
+45 descrittori, con graffe per famiglia e scorrimento orizzontale. La cella
+ricarica anche il modulo delle metriche fisiche. Suite: 71 test passati;
+formula delle distanze verificata contro coppie di clip enumerate.
+
+12 ottobre: eliminate le matrici ridondanti. «Tra i cluster» ora mostra
+separazione delle medie rapportata alla dispersione dei due gruppi, con
+quattro matrici e sintesi per famiglia/complessiva. «Dentro i cluster» usa
+barre della dispersione interna per gruppo/famiglia. Coppie a dispersione
+nulla non valutate; input e cache di embedding/vicini invariati. Dettagli in
+«Separazione relativa e compattezza» di VIDEOMAE_PRETRAINING.md.

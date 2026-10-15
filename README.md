@@ -9,8 +9,8 @@ Il disegno sperimentale ha tre fasi:
 1. **Pretraining self-supervised SEVIRI.** Un VideoMAE-Small ricostruisce
    tubelet mascherati di sequenze multispettrali non etichettate.
 2. **Pseudo-ground truth deterministico RDT.** Un algoritmo riproducibile,
-   ispirato a RDT-CW, usa soltanto WV 6.2 µm e IR 10.8 µm per rilevare,
-   inseguire e classificare l'evoluzione delle celle convettive.
+   ispirato a RDT-CW, usa i sette canali SEVIRI per una proxy radiometrica
+   UTLS/incudine e IR 10.8 µm per rilevare e inseguire le celle.
 3. **Probing a backbone congelato.** Un decoder 3D FPN leggero esegue la
    segmentazione volumetrica a cinque classi senza aggiornare l'encoder.
 
@@ -26,8 +26,16 @@ separato dell'encoder e del decoder (running cell 50%). I training precedenti
 erano V1. La coda `scripts/run_seviri_v2_experiments.py` confronta encoder
 masking 50/75/90% su 2.000 clip, poi il masking selezionato su 4.000 e 8.000
 clip annidate, 150 epoche da zero per ciascun run. Protocollo e ripresa
-nell'ultima sezione di `VIDEOMAE_PRETRAINING.md`; risultati locali in
+nella sezione «Coda V2 Small» di `VIDEOMAE_PRETRAINING.md`; risultati locali in
 `results/videomae_v2_small_scaling/` e monitor nel notebook.
+
+La diagnostica degli encoder congelati confronta ora descrittori atmosferici
+primitivi e clustering gerarchici sui tre checkpoint finali da 2.000 clip:
+`scripts/analyze_seviri_embeddings.py`, dipendenze in
+`requirements-analysis.txt`, risultati in `results/seviri_embedding_clustering/`.
+Il notebook mostra metriche e clip rappresentative con Play. Le giornate del
+nuovo holdout diagnostico sono registrate in `clustering_reserved_days.json`
+e vanno escluse da futuri ampliamenti del pretraining.
 
 Ogni campione contiene 16 frame RSS consecutivi a cinque minuti, cioè 75
 minuti fra primo e ultimo frame. Il tensore fornito a Hugging Face ha forma:
@@ -84,8 +92,11 @@ essere completamente deterministici e verificabili. Il sistema va indicato
 come **RDT-CW-inspired** finché soglie e regole non saranno state validate
 contro la specifica operativa autorevole.
 
-Durante il probing il backbone VideoMAE rimane congelato. Il teacher riceve
-solo WV 6.2 e IR 10.8, mentre l'encoder riceve l'intero cubo a sette canali.
+Durante il probing il backbone VideoMAE rimane congelato. Il teacher principale
+usa i sette canali in Kelvin sul dominio completo: watershed di IR108,
+plateau multispettrale, proxy UTLS v0 e profondità termica relativa D.
+La proxy non è una temperatura di tropopausa WMO. Il teacher fisso a due
+canali resta disponibile come baseline; nessuna pseudo-label entra nel pretraining.
 Il confronto con un encoder casuale, un encoder RGB adattato e le ablazioni
 temporali e spettrali è parte necessaria dell'esperimento.
 
@@ -119,7 +130,13 @@ La specifica scientifica e tecnica autorevole è distribuita in questi file:
    smoke test e visualizzazione;
 3. [`HANDOFF_VIDEOMAE_PRETRAINING_GPU.md`](HANDOFF_VIDEOMAE_PRETRAINING_GPU.md):
    trasferimento e ripresa del lavoro sul computer GPU;
-4. [`AGENTS.md`](AGENTS.md): regole operative per Codex e altri agenti.
+4. [`AGENTS.md`](AGENTS.md): regole operative per Codex e altri agenti;
+5. [`HANDOFF_RDT_TEACHER_IMPLEMENTATION.md`](HANDOFF_RDT_TEACHER_IMPLEMENTATION.md):
+   aggiornamento del teacher multispettrale e limiti della proxy UTLS.
+
+Per scaricare altri anni e monitorare acquisizione, errori e ripresa sul PC GPU,
+vedere [`download_data.md`](download_data.md), anche per installare la sola
+acquisizione su un altro PC Linux/WSL senza GPU (`requirements-download.txt`).
 
 ## Ambiente
 
@@ -159,6 +176,12 @@ seguire l'handoff GPU anziché riutilizzare alla cieca il comando CPU.
 
 ## Notebook
 
+[`notebooks/visualize_seviri_rdt_rules.ipynb`](notebooks/visualize_seviri_rdt_rules.ipynb)
+esplora l'archivio scaricato con clip, Play sincronizzato e pseudo-classi
+deterministiche **RDT-CW-inspired**. Mostra contorni adattivi, plateau, proxy
+UTLS, indice D e confidenza, da mappe calcolate prima sul dominio completo. Non carica VideoMAE e non modifica
+il pretraining; regole e limiti nella sezione di implementazione di RDT_plan.md.
+
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-notebook.txt
 .\.venv\Scripts\python.exe -m jupyter lab `
@@ -167,3 +190,16 @@ seguire l'handoff GPU anziché riutilizzare alla cieca il comando CPU.
 
 I dataset, i prodotti nativi, i checkpoint, gli optimizer, i log, le figure e
 i video generati restano locali e non devono essere aggiunti al repository.
+
+## Teacher sul dominio completo
+
+Installare `requirements-rdt.txt`, poi avviare una giornata:
+
+```bash
+.venv/bin/python scripts/build_rdt_pseudolabels.py --start-date 2020-07-11
+```
+
+Output incrementali in `results/rdt_preview/domain_utls_july2020/`; aggiungere
+`--end-date 2020-07-17` per estendere alla settimana preservando lo stato.
+Il notebook legge crop successivi delle mappe pubblicate e non ricalcola il
+teacher per clip. Regole e valori v0 sono esplorativi, ancora da validare.
