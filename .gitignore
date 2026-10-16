@@ -27,6 +27,25 @@ catalogs/
 *.mp4
 Codex Image *.png
 
+# Historical local reports and superseded experiment drafts. These contain
+# provisional results or protocols that do not define the current RDT/VideoMAE
+# workflow.
+DATASET_SCALE_ESTIMATE.md
+DEEPSTORM_DATASET.md
+HANDOFF_TRAINING_EMMA.md
+NX_LABELING_METHODS.md
+OPERA_2020_REPORT.md
+PRESENTATION_ALGORITHM_SLIDE.md
+TRAINING_EMMA_DECISIONS.md
+approach.md
+convection.md
+gpm_precipitation_features.md
+docs/Sept-2026.md
+config/emma_videomae_v1.json
+notebooks/visualize_opera_ir108_overlay.ipynb
+scripts/continue_n1_after_download.ps1
+scripts/prepare_emma_training_catalog.py
+
 # The CSV equivalent is ~61 MB; keep the compact Parquet catalog in Git.
 catalogs/gpm_to_emma_pf_2020.csv
 
