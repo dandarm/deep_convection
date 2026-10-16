@@ -12,7 +12,7 @@ def nearest_emma_hour(times: pd.Series) -> pd.Series:
     """Nearest top-of-hour timestamp; exact +30 min is kept at the earlier hour."""
     floor = times.dt.floor("h")
     delta = (times - floor).dt.total_seconds() / 60.0
-    return floor.where(delta <= 30.0, floor + pd.Timedelta(hours=1))
+    return floor.where(delta <= 30.0, floor + np.timedelta64(1, "h"))
 
 
 def _ellipse_mask_indices(
