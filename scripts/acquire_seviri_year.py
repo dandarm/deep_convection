@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import re
+import signal
 from pathlib import Path
 import shutil
 import sys
@@ -24,6 +25,7 @@ import xarray as xr
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
+from emma_gpm.seviri_conversion import ordered_native_conversions
 from download_msg_seviri import credentials, download_interval, DEFAULT_COLLECTION
 from crop_msg_seviri_native import append_batch, existing_times
 from emma_gpm.seviri import geographic_bbox_to_geos_bounds,load_native_crop,native_slot_start_from_name,THERMAL_CHANNELS
@@ -33,6 +35,13 @@ def atomic_json(path,value):
     path.parent.mkdir(parents=True,exist_ok=True)
     temporary=path.with_suffix('.json.part')
     temporary.write_text(json.dumps(value,indent=2)+'\n');temporary.replace(path)
+
+
+def update_phase(work,phase,**values):
+    path=work/'progress.json'
+    state=json.loads(path.read_text()) if path.exists() else {}
+    state.update(status='running',phase=phase,updated_unix=time.time(),**values)
+    atomic_json(path,state)
 
 
 def product_slot(product):
@@ -200,6 +209,7 @@ def acquire_day(day,collection,args,work,key,secret):
     store=args.zarr_root/f'{day:%Y}'/f'{day:%Y%m%d}.zarr'
     marker=work/'completed_days'/f'{day:%Y%m%d}.json'
     if marker.exists():
+        update_phase(work,'verifying_completed_day')
         previous=json.loads(marker.read_text())
         if previous['stored_frames']:
             verify_store(store,pd.to_datetime(previous['stored_times']))
@@ -239,6 +249,7 @@ def acquire_day(day,collection,args,work,key,secret):
     missing=[p for p in products if pd.Timestamp(product_slot(p)) not in before]
     buffer=work/'native_buffer'/f'{day:%Y%m%d}'
     if missing:
+        update_phase(work,'downloading',download_workers=args.workers,products_to_download=len(missing))
         class SelectedCollection:
             def search(self,**kwargs):
                 return missing
@@ -249,72 +260,98 @@ def acquire_day(day,collection,args,work,key,secret):
     if store.exists():
         shutil.copytree(store,staging)
     bounds=geographic_bbox_to_geos_bounds(-20.,40.,30.,70.)
-    pending=[]; converted=set(); rejected=[]
-    for native in sorted(buffer.rglob('*.nat'),key=lambda p:(native_slot_start_from_name(p),p.name)):
-        slot=native_slot_start_from_name(native)
-        if not day<=slot<following:
-            raise ValueError('Native belongs to a different requested day')
-        decision=resolved.get(pd.Timestamp(slot))
-        if decision and native.stem!=decision['selected_product']:
-            if native.stem not in decision['unselected_products']:
-                raise ValueError('Unexpected cached native at resolved satellite overlap')
-            retained.append(retain_unselected_native(native,day,work))
-            atomic_json(selection_path,selection)
-            continue
-        if pd.Timestamp(slot) in before or pd.Timestamp(slot) in converted:
-            continue
-        if native.name in getattr(args,'exclude_native',[]):
-            # Explicit, file-specific exclusion after diagnosis; preserve bytes
-            # outside the disposable buffer and expose the missing RSS slot.
-            quarantine=work/'quarantine'/f'{day:%Y%m%d}'/native.name
-            quarantine.parent.mkdir(parents=True,exist_ok=True)
-            with native.open('rb') as stream:
-                digest=hashlib.file_digest(stream,'sha256').hexdigest()
-            if quarantine.exists():
-                with quarantine.open('rb') as stream:
-                    if hashlib.file_digest(stream,'sha256').hexdigest()!=digest:
-                        raise ValueError('Quarantine file differs from excluded native')
-            else:
-                shutil.copy2(native,quarantine)
-            rejected.append(dict(file=native.name,filename_slot=slot.isoformat(),
-                reason='explicit exclusion of diagnosed unreadable native; no replacement',
-                size_bytes=native.stat().st_size,sha256=digest,quarantine=str(quarantine)))
-            atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
-            print(f'excluded native={native.name} slot={slot} quarantine={quarantine}',flush=True)
-            continue
-        try:
-            crop=load_native_crop(native,bounds,calibration='brightness_temperature')
-        except Exception as error:
-            try:
-                crop,rejection=recover_native(native,slot,products,bounds,args,work,key,secret,error)
-            except Exception as recovery_error:
-                raise RuntimeError(f'Cannot read native {native.name}: {type(recovery_error).__name__}: {recovery_error}') from recovery_error
-            if rejection is not None:
-                rejected.append(rejection)
-                atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
+    pending=[]; converted=set(); rejected=[]; scheduled=set()
+    def eligible_natives():
+        for native in sorted(buffer.rglob('*.nat'),key=lambda p:(native_slot_start_from_name(p),p.name)):
+            slot=native_slot_start_from_name(native)
+            if not day<=slot<following:
+                raise ValueError('Native belongs to a different requested day')
+            decision=resolved.get(pd.Timestamp(slot))
+            if decision and native.stem!=decision['selected_product']:
+                if native.stem not in decision['unselected_products']:
+                    raise ValueError('Unexpected cached native at resolved satellite overlap')
+                retained.append(retain_unselected_native(native,day,work))
+                atomic_json(selection_path,selection)
                 continue
-        if crop.channels!=THERMAL_CHANNELS or crop.units!='K':
-            raise ValueError('Native spectral/radiometric metadata mismatch')
-        if crop.start_time!=slot:
-            rejected.append(dict(file=native.name,filename_slot=slot.isoformat(),
-                metadata_start=crop.start_time.isoformat(),metadata_end=crop.end_time.isoformat(),
-                reason='filename/Satpy timestamp mismatch; frame excluded, no replacement'))
-            atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
-            print(f'rejected native={native.name} filename_slot={slot} metadata_start={crop.start_time}',flush=True)
-            continue
-        if crop.data.shape!=(7,763,1762):
-            raise ValueError('Native crop shape mismatch')
-        pending.append(crop);converted.add(pd.Timestamp(slot))
-        if len(pending)>=args.crop_batch_size:
-            append_batch(staging,pending,'float16');pending=[]
-            print(f'converted day={day:%Y-%m-%d} frames={len(converted)}/{len(missing)}',flush=True)
+            if pd.Timestamp(slot) in before or pd.Timestamp(slot) in converted:
+                continue
+            if native.name in getattr(args,'exclude_native',[]):
+                # Explicit, file-specific exclusion after diagnosis; preserve bytes
+                # outside the disposable buffer and expose the missing RSS slot.
+                quarantine=work/'quarantine'/f'{day:%Y%m%d}'/native.name
+                quarantine.parent.mkdir(parents=True,exist_ok=True)
+                with native.open('rb') as stream:
+                    digest=hashlib.file_digest(stream,'sha256').hexdigest()
+                if quarantine.exists():
+                    with quarantine.open('rb') as stream:
+                        if hashlib.file_digest(stream,'sha256').hexdigest()!=digest:
+                            raise ValueError('Quarantine file differs from excluded native')
+                else:
+                    shutil.copy2(native,quarantine)
+                rejected.append(dict(file=native.name,filename_slot=slot.isoformat(),
+                    reason='explicit exclusion of diagnosed unreadable native; no replacement',
+                    size_bytes=native.stat().st_size,sha256=digest,quarantine=str(quarantine)))
+                atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
+                print(f'excluded native={native.name} slot={slot} quarantine={quarantine}',flush=True)
+                continue
+            if slot in scheduled:
+                raise ValueError('Multiple cached natives for the same RSS slot')
+            scheduled.add(slot)
+            yield native
+    conversion_started=time.monotonic()
+    conversion_workers=getattr(args,'conversion_workers',0)
+    stream=ordered_native_conversions(eligible_natives(),bounds,workers=conversion_workers,
+        threads=getattr(args,'conversion_threads',2),prefetch=getattr(args,'conversion_prefetch',2),
+        serial_loader=load_native_crop)
+    def conversion_progress():
+        elapsed=time.monotonic()-conversion_started
+        update_phase(work,'converting',current_day=f'{day:%Y-%m-%d}',
+            converted_frames=len(converted),frames_to_convert=len(missing),
+            conversion_workers=conversion_workers,conversion_threads=getattr(args,'conversion_threads',2),
+            conversion_prefetch=getattr(args,'conversion_prefetch',2),conversion_batch_size=args.crop_batch_size,
+            conversion_elapsed_seconds=elapsed,conversion_frames_per_second=len(converted)/elapsed)
+    conversion_progress()
+    try:
+        for native,read_crop in stream:
+            slot=native_slot_start_from_name(native)
+            try:
+                crop=read_crop()
+            except Exception as error:
+                try:
+                    crop,rejection=recover_native(native,slot,products,bounds,args,work,key,secret,error)
+                except Exception as recovery_error:
+                    raise RuntimeError(f'Cannot read native {native.name}: {type(recovery_error).__name__}: {recovery_error}') from recovery_error
+                if rejection is not None:
+                    rejected.append(rejection)
+                    atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
+                    continue
+            if crop.channels!=THERMAL_CHANNELS or crop.units!='K':
+                raise ValueError('Native spectral/radiometric metadata mismatch')
+            if crop.start_time!=slot:
+                rejected.append(dict(file=native.name,filename_slot=slot.isoformat(),
+                    metadata_start=crop.start_time.isoformat(),metadata_end=crop.end_time.isoformat(),
+                    reason='filename/Satpy timestamp mismatch; frame excluded, no replacement'))
+                atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
+                print(f'rejected native={native.name} filename_slot={slot} metadata_start={crop.start_time}',flush=True)
+                continue
+            if crop.data.shape!=(7,763,1762):
+                raise ValueError('Native crop shape mismatch')
+            pending.append(crop);converted.add(pd.Timestamp(slot))
+            if len(pending)>=args.crop_batch_size:
+                append_batch(staging,pending,'float16');pending=[]
+                conversion_progress()
+                print(f'converted day={day:%Y-%m-%d} frames={len(converted)}/{len(missing)}',flush=True)
+    finally:
+        stream.close()
     if pending:
         append_batch(staging,pending,'float16')
+    conversion_seconds=time.monotonic()-conversion_started
     rejected_slots={pd.Timestamp(row['filename_slot']) for row in rejected}
     if not (expected_slots-rejected_slots).issubset(before | converted):
         raise ValueError('Some provider products were not converted')
     all_times=before | converted
     if all_times:
+        update_phase(work,'verifying_and_publishing')
         verify_store(staging,all_times)
         store.parent.mkdir(parents=True,exist_ok=True)
         if store.exists():
@@ -327,6 +364,9 @@ def acquire_day(day,collection,args,work,key,secret):
         selected_provider_products=len(products),selected_satellites=selection['selected_satellites'],
         satellite_selection_policy=selection['policy'],satellite_selection_decisions=decisions,
         product_selection_report=str(selection_path),previous_frames=len(before),
+        conversion_workers=conversion_workers,conversion_threads=getattr(args,'conversion_threads',2),
+        conversion_prefetch=getattr(args,'conversion_prefetch',2),conversion_batch_size=args.crop_batch_size,
+        conversion_seconds=conversion_seconds,conversion_frames_per_second=len(converted)/conversion_seconds,
         new_frames=len(converted),stored_frames=len(all_times),stored_times=[t.isoformat() for t in sorted(all_times)],
         missing_nominal_slots=[t.isoformat() for t in sorted(expected_nominal-all_times)],
         rejected_products=rejected,
@@ -338,11 +378,17 @@ def acquire_day(day,collection,args,work,key,secret):
 
 
 def main():
+    def stop_on_signal(signum,frame):
+        raise KeyboardInterrupt(f'Acquisition interrupted by signal {signum}')
+    signal.signal(signal.SIGTERM,stop_on_signal)
     import eumdac
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zarr-root',type=Path,required=True)
     parser.add_argument('--year',type=int,default=2020)
     parser.add_argument('--workers',type=int,default=4)
+    parser.add_argument('--conversion-workers',type=int,default=0,help='Independent native readers/calibrators; one parent writes Zarr')
+    parser.add_argument('--conversion-threads',type=int,default=2,help='Dask threads per conversion process')
+    parser.add_argument('--conversion-prefetch',type=int,default=2,help='Bound outstanding native conversions per process')
     parser.add_argument('--crop-batch-size',type=int,default=4)
     parser.add_argument('--env-file',type=Path,default=ROOT/'.env')
     parser.add_argument('--preferred-satellite',choices=['MSG1','MSG2','MSG3','MSG4'],
@@ -352,7 +398,8 @@ def main():
     parser.add_argument('--exclude-native',action='append',default=[],metavar='FILENAME',
         help='Explicitly exclude a diagnosed native filename, retain it in quarantine and report its slot as missing; repeatable')
     args=parser.parse_args()
-    if args.workers<1 or args.crop_batch_size<1:
+    if (args.workers<1 or args.crop_batch_size<1 or args.conversion_workers<0
+            or args.conversion_threads<1 or args.conversion_prefetch<1):
         parser.error('Worker and batch counts must be positive')
     if any(Path(name).name!=name or not name.endswith('.nat') for name in args.exclude_native):
         parser.error('exclude-native must be an exact .nat filename without a path')
@@ -369,7 +416,7 @@ def main():
         day=datetime(args.year,1,1);stop=datetime(args.year+1,1,1)
         completed=0
         while day<stop:
-            atomic_json(work/'progress.json',dict(status='running',current_day=f'{day:%Y-%m-%d}',completed_days=completed,
+            atomic_json(work/'progress.json',dict(status='running',phase='checking_or_searching',current_day=f'{day:%Y-%m-%d}',completed_days=completed,
                 requested_days=(stop-datetime(args.year,1,1)).days,updated_unix=time.time()))
             succeeded=False
             for attempt in range(1,6):

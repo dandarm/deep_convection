@@ -50,13 +50,14 @@ def test_satellite_policy_is_persisted_and_cannot_change_on_resume(tmp_path):
         pin_selection_policy(tmp_path,'MSG2')
 
 
-def test_overlap_never_converts_cached_unselected_satellite_and_writes_in_time_order(tmp_path,monkeypatch):
+@pytest.mark.parametrize('conversion_workers',[0,2])
+def test_overlap_never_converts_cached_unselected_satellite_and_writes_in_time_order(tmp_path,monkeypatch,conversion_workers):
     from scripts import acquire_seviri_year as job
     from emma_gpm.seviri import THERMAL_CHANNELS
     day=datetime(2021,1,7);slot=day+timedelta(hours=9)
     a,b=SatelliteProduct('MSG2',slot),SatelliteProduct('MSG3',slot)
     following=SatelliteProduct('MSG2',slot+timedelta(minutes=5))
-    args=SimpleNamespace(zarr_root=tmp_path,workers=1,crop_batch_size=1,preferred_satellite='MSG3')
+    args=SimpleNamespace(zarr_root=tmp_path,workers=1,crop_batch_size=1,preferred_satellite='MSG3',conversion_workers=conversion_workers)
     work=tmp_path/'_acquisition/2021';buffer=work/'native_buffer/20210107';buffer.mkdir(parents=True)
     # Simulate a cached alternative from an interrupted earlier attempt.
     (buffer/(str(a)+'.nat')).write_bytes(b'unselected MSG2 payload')
@@ -74,10 +75,15 @@ def test_overlap_never_converts_cached_unselected_satellite_and_writes_in_time_o
     monkeypatch.setattr(job,'load_native_crop',load)
     monkeypatch.setattr(job,'append_batch',append)
     monkeypatch.setattr(job,'verify_store',lambda path,times:len(times))
+    if conversion_workers:
+        from concurrent.futures import ThreadPoolExecutor
+        from emma_gpm import seviri_conversion
+        monkeypatch.setattr(seviri_conversion,'ProcessPoolExecutor',lambda **kw:ThreadPoolExecutor(max_workers=kw['max_workers']))
+        monkeypatch.setattr(seviri_conversion,'_convert',lambda path,bounds:load(path,bounds))
     class Collection:
         def search(self,**kwargs):return [a,b,following]
     report=acquire_day(day,Collection(),args,work,'fake','fake')
-    assert loaded==[str(b),str(following)]
+    assert sorted(loaded)==sorted([str(b),str(following)])
     assert written==[slot,slot+timedelta(minutes=5)]
     assert report['provider_products']==3 and report['selected_provider_products']==2
     assert report['selected_satellites']=={'MSG2':1,'MSG3':1}

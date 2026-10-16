@@ -63,6 +63,10 @@ SEVIRI_YEAR=2021
 SEVIRI_ROOT=/media/fenrir/disk1/Datasets/MSG-SEVIRI
 SEVIRI_ENV_FILE="$PWD/env"
 SEVIRI_WORKERS=8
+SEVIRI_CONVERSION_WORKERS=16
+SEVIRI_CONVERSION_THREADS=2
+SEVIRI_CONVERSION_PREFETCH=4
+SEVIRI_CROP_BATCH=64
 SEVIRI_STATUS_DIR="$SEVIRI_ROOT/_acquisition/$SEVIRI_YEAR"
 mkdir -p "$SEVIRI_STATUS_DIR"
 ```
@@ -70,14 +74,17 @@ mkdir -p "$SEVIRI_STATUS_DIR"
 ## Avviare in background
 
 ```bash
-nohup env PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+nohup env PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
   .venv/bin/python scripts/acquire_seviri_year.py \
   --year "$SEVIRI_YEAR" \
   --zarr-root "$SEVIRI_ROOT" \
   --env-file "$SEVIRI_ENV_FILE" \
   --workers "$SEVIRI_WORKERS" \
   --preferred-satellite MSG3 \
-  --crop-batch-size 2 \
+  --conversion-workers "$SEVIRI_CONVERSION_WORKERS" \
+  --conversion-threads "$SEVIRI_CONVERSION_THREADS" \
+  --conversion-prefetch "$SEVIRI_CONVERSION_PREFETCH" \
+  --crop-batch-size "$SEVIRI_CROP_BATCH" \
   --recover-native-read-errors \
   >> "$SEVIRI_STATUS_DIR/acquisition.log" 2>&1 &
 
@@ -103,8 +110,17 @@ conservando la cronologia dei tentativi precedenti.
   filtro che elimina tutti i frame MSG2. Senza il flag i duplicati restano
   bloccanti; duplicati dello stesso satellite, nomi non riconosciuti o assenza
   del satellite preferito in uno slot ambiguo restano sempre un errore.
-- `--crop-batch-size 2`: due frame per batch di conversione nel dominio regionale;
-  non crea le clip spaziali 224×224 del probing o del pretraining.
+- `--conversion-workers`: processi separati di lettura, calibrazione e crop dei
+  nativi. Sono distinti dagli otto thread di download. Zero mantiene il percorso
+  seriale originale. Un solo processo valida e scrive gli Zarr in ordine temporale;
+  recovery e quarantena restano nel processo principale.
+- `--conversion-threads`: thread Dask per processo di conversione. Il prefetch
+  limita i task in attesa a `conversion-workers × conversion-prefetch`.
+- `--crop-batch-size`: frame accumulati in RAM per ogni scrittura Zarr; non crea
+  le clip spaziali 224×224 del probing o del pretraining. Batch grandi e prefetch
+  sovrappongono preparazione e scrittura, usando più RAM. Un frame float32 a sette
+  canali occupa circa 36 MiB; stack temporanei e processi aumentano il picco reale.
+  I valori sopra sono per il PC GPU da 256 GiB, non per un portatile.
 - I limiti dei thread numerici e il batch di conversione contengono la competizione
   con RDT per CPU e memoria. Otto worker possono aumentare il throughput di rete,
   ma non accelerano la conversione e non garantiscono il doppio della velocità.
@@ -140,6 +156,13 @@ scaricati o la completezza della copertura. I report `completed_days/*.json`
 contengono `stored_frames`, `stored_times`, `missing_nominal_slots` e prodotti
 rifiutati. Anche il contatore può ripartire da zero durante una ripresa,
 mentre lo script verifica le giornate già completate.
+
+Con il nuovo convertitore il JSON mostra anche `phase`: verifica delle giornate
+già complete, download, conversione, verifica/pubblicazione. Durante la conversione
+aggiorna dopo ogni batch `converted_frames`, `frames_to_convert`,
+`conversion_frames_per_second`, worker, thread, prefetch e batch. Il throughput
+include avvio dei processi e scritture; dopo pochi frame è ancora transitorio.
+I report giornalieri conservano tempi e configurazione della conversione.
 
 Processo e spazio libero:
 
@@ -187,6 +210,32 @@ e backup prima di pubblicare il nuovo Zarr e mantiene i frame preesistenti.
 I nuovi nativi del buffer giornaliero vengono rimossi soltanto dopo la verifica
 e pubblicazione degli Zarr. I prodotti originali esterni al buffer non vengono
 rimossi; recovery e quarantena conservano i file previsti dai relativi report.
+
+### Conversione parallela e RAM sul PC GPU
+
+La configurazione del 16 ottobre 2026 usa 16 processi, due thread Dask per
+processo, prefetch quattro e batch 64. I convertitori preparano frame diversi;
+il processo principale li riceve in ordine, valida metadati e timestamp,
+gestisce gli errori nativi e rimane l'unico writer dello Zarr. La coda ha al
+massimo 64 task; non si accumula un intero anno in RAM. Lo stop via SIGTERM
+chiude il pool; durante la conversione la giornata non ancora pubblicata può
+dover essere ricalcolata alla ripresa. I giorni completi e i nativi validi
+rimangono riutilizzabili.
+
+Benchmark locale, stesso batch 2, 12 nativi reali e scrittura inclusa:
+seriale 30,71 s, quattro processi 10,67 s, otto processi 10,04 s. Kelvin grezzi,
+coordinate, metadati e chunk Zarr compressi risultano identici.
+Su ulteriori 72 frame, otto processi/batch2/prefetch2 richiedono 42,26 s con
+picco RSS cumulata 2,94 GiB; dodici/batch32/prefetch4 39,63 s e 7,16 GiB;
+sedici/batch64/prefetch4 36,40 s e 9,87 GiB. Tutti i valori e le coordinate
+salvati coincidono; batch diversi possono avere chunk diversi per le coordinate
+temporali, senza cambiare i dati. Le misure includono l'avvio dei processi;
+la cache disco non è stata svuotata e il carico del PC può influire. Report e
+script sono in `_acquisition/2021/conversion_benchmark/`, fuori da Git.
+
+La RAM vista come cache del filesystem contiene già molti dati riutilizzabili.
+Aumentare batch/prefetch usa ulteriore memoria dei processi; scegliere i valori
+con throughput e picco misurati, non in base alla sola percentuale di RAM libera.
 
 ## Diagnosticare un errore
 
@@ -273,6 +322,10 @@ SEVIRI_YEAR=2022
 SEVIRI_ROOT="$HOME/Datasets/MSG-SEVIRI"
 SEVIRI_ENV_FILE="$PWD/env"
 SEVIRI_WORKERS=4
+SEVIRI_CONVERSION_WORKERS=2
+SEVIRI_CONVERSION_THREADS=2
+SEVIRI_CONVERSION_PREFETCH=2
+SEVIRI_CROP_BATCH=8
 SEVIRI_STATUS_DIR="$SEVIRI_ROOT/_acquisition/$SEVIRI_YEAR"
 mkdir -p "$SEVIRI_STATUS_DIR"
 ```
