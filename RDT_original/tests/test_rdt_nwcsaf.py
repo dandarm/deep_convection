@@ -250,3 +250,94 @@ def test_full_pipeline_lifecycle_and_forecasts() -> None:
     assert int(out["semantic_label"][4].max()) == 4
     # Lagrangian forecasts (+15, +30, +45, +60 min) must be generated for convective slots
     assert len(out["forecast_table"]) >= 4
+
+
+def test_wmo_tropopause_computation() -> None:
+    from rdt_nwcsaf import compute_wmo_tropopause
+
+    levels = np.array([500, 400, 300, 250, 200, 150, 100, 70], dtype=np.float32)
+    z_km = np.array([5.5, 7.2, 9.2, 10.4, 11.8, 13.6, 16.2, 18.4], dtype=np.float32)
+    # Standard mid-latitude profile cooling at 6.5 K/km up to 11.8 km (200 hPa, 215 K), then isothermal/inversion
+    t_1d = np.array([256.0, 245.0, 232.0, 224.0, 215.0, 215.5, 216.0, 217.0], dtype=np.float32)
+
+    temp_3d = np.broadcast_to(t_1d[:, None, None], (len(levels), 4, 4)).copy()
+    geopot_3d = np.broadcast_to((z_km * 9.80665 * 1000.0)[:, None, None], (len(levels), 4, 4)).copy()
+
+    t_tropo, p_tropo, z_tropo = compute_wmo_tropopause(levels, temp_3d, geopot_3d)
+    assert t_tropo.shape == (4, 4)
+    assert np.all((t_tropo >= 213.0) & (t_tropo <= 218.0))
+    assert np.all((p_tropo >= 170.0) & (p_tropo <= 230.0))
+    assert np.all((z_tropo >= 11.0) & (z_tropo <= 13.0))
+
+
+def test_nwcsaf_cloud_type_and_hrw_amv() -> None:
+    from rdt_nwcsaf import compute_hrw_amv_guess_field, compute_nwcsaf_cloud_type
+
+    h, w = 48, 48
+    ir108 = np.full((h, w), 288.0, dtype=np.float32)
+    ir120 = np.full((h, w), 287.0, dtype=np.float32)
+    ir087 = np.full((h, w), 286.5, dtype=np.float32)
+    wv062 = np.full((h, w), 236.0, dtype=np.float32)
+    wv073 = np.full((h, w), 252.0, dtype=np.float32)
+
+    # Region 1: Detached thin semitransparent cirrus (IR108=250K, large split-window BTD=4.0K, WV62-IR108=-14K)
+    ir108[5:12, 5:12] = 250.0
+    ir120[5:12, 5:12] = 246.0
+    ir087[5:12, 5:12] = 251.0
+
+    # Region 2: Deep opaque convective core (IR108=212K, small split-window BTD=0.3K, WV62-IR108=+1.0K)
+    ir108[28:38, 28:38] = 212.0
+    ir120[28:38, 28:38] = 211.7
+    ir087[28:38, 28:38] = 212.5
+    wv062[28:38, 28:38] = 213.0
+
+    ct = compute_nwcsaf_cloud_type(
+        ir108, ir120=ir120, ir087=ir087, wv062=wv062, wv073=wv073, t_tropo_k=215.0, t_surf_k=292.0
+    )
+    assert bool(ct.thin_cirrus_mask[8, 8]) is True
+    assert bool(ct.opaque_cloud_mask[8, 8]) is False
+    assert bool(ct.opaque_cloud_mask[32, 32]) is True
+    assert int(ct.ct_class[32, 32]) == 4
+
+    # Test HRW + NWP 700 hPa guess motion field
+    u700 = np.full((h, w), 10.0, dtype=np.float32)  # 10 m/s eastward -> +1 px per 300s at 3 km
+    v700 = np.full((h, w), 0.0, dtype=np.float32)
+    dy_px, dx_px = compute_hrw_amv_guess_field(
+        ir108, ir108, prev_wv062=wv062, curr_wv062=wv062, u700_ms=u700, v700_ms=v700
+    )
+    assert dy_px.shape == (h, w)
+    assert dx_px.shape == (h, w)
+    assert float(np.mean(dx_px)) > 0.2
+
+
+def test_calibrated_rdt_model_and_seviri_surrogates() -> None:
+    from rdt_nwcsaf import fit_calibrated_rdt_model, predict_seviri_only_nwp_surrogates
+
+    rng = np.random.default_rng(42)
+    records = []
+    for vcat in range(6):
+        for has_hist in (0, 1):
+            for i in range(12):
+                y = 1 if i >= 6 else 0
+                base = 0.8 if y == 1 else -0.8
+                feats = [1.0] + (base + 0.3 * rng.standard_normal(11)).tolist()
+                records.append({"vertical_cat": vcat, "has_history": has_hist, "features": feats, "label": y})
+
+    cal_model = fit_calibrated_rdt_model(records, [], [])
+    assert len(cal_model.weights) == 12
+    assert len(cal_model.thresholds) == 6
+
+    ch = {
+        "WV_062": np.full((16, 16), 232.0, dtype=np.float32),
+        "WV_073": np.full((16, 16), 248.0, dtype=np.float32),
+        "IR_087": np.full((16, 16), 282.0, dtype=np.float32),
+        "IR_097": np.full((16, 16), 245.0, dtype=np.float32),
+        "IR_108": np.full((16, 16), 285.0, dtype=np.float32),
+        "IR_120": np.full((16, 16), 283.0, dtype=np.float32),
+        "IR_134": np.full((16, 16), 260.0, dtype=np.float32),
+    }
+    t_tropo, nwpconv = predict_seviri_only_nwp_surrogates(cal_model, ch, lat_deg=45.0)
+    assert t_tropo.shape == (16, 16)
+    assert nwpconv.shape == (16, 16)
+    assert np.all((t_tropo >= 198.0) & (t_tropo <= 228.0))
+

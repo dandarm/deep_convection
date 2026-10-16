@@ -19,11 +19,15 @@ RDT_original/
 │   ├── tracking.py                        # 4-step tracking (forward advection, IR10.8 cross-correlation, backward advection, 1-px small-cell dilation) & common-threshold father selection
 │   ├── otd.py                             # Two-step Overshooting Top Detection (16 compass rays + Conditions A & B)
 │   ├── discrimination.py                  # 6-category x 5-depth-regime 5-channel IRxWVx logistic regression, convective inheritance, declassification timers, Phase (0..4), Severity (0..4) & Lagrangian forecast
+│   ├── nwp_era5.py                        # API-free ERA5 reanalysis fetcher (ARCO-ERA5 Zarr): WMO tropopause, LI/SHW/KI/CAPE NWPCONV mask, 700 hPa wind & surface temperature
+│   ├── ancillary.py                       # NWC SAF GEO-CMa/GEO-CT radiative cloud-type classifier & GEO-HRW multi-channel AMV first-guess motion field
+│   ├── calibration.py                     # EUMETNET OPERA radar verification bridge, MAP logistic regression CAL trainer & 7-channel SEVIRI-only surrogate distillation
 │   └── pipeline.py                        # Stateful NwcSafRdtTracker & run_nwcsaf_rdt_sequence()
 ├── scripts/
-│   └── compare_original_vs_proxies.py     # Quantitative benchmark on real 7-channel SEVIRI Zarr data
+│   ├── compare_original_vs_proxies.py             # Baseline 4-way comparison on real 7-channel SEVIRI Zarr data
+│   └── calibrate_and_benchmark_full_rdt.py        # Full ERA5 + OPERA calibration, SEVIRI-only distillation & 5-way benchmark
 └── tests/
-    └── test_rdt_nwcsaf.py                 # Unit & synthetic verification test suite for all 6 NWC SAF stages
+    └── test_rdt_nwcsaf.py                 # 10 unit & synthetic verification tests covering all NWC SAF stages
 ```
 
 ---
@@ -94,26 +98,40 @@ Running [`scripts/compare_original_vs_proxies.py`](scripts/compare_original_vs_p
 
 ---
 
-## 5. Key Diagnostic Findings: Does the Proxy Faithfully Reproduce Original RDT-CW?
+## 5. Full Multi-Source Upgrade: ERA5 NWP + NWC SAF Ancillary + OPERA Calibration (`CAL`) & Distilled `SEVIRI-Only` RDT
 
-1. **Cloud System Detection & Morphological Boundary (`class >= 1`): Very High Fidelity (`Dice = 0.838`, `r = 0.988`)**
-   - The 7-channel **`multispectral_utls_v0`** proxy reproduces the spatial footprint and adaptive base temperature of Original NWC SAF RDT-CW cloud cells remarkably well:
-     - **Cloud-tower Dice/F1 = `83.83%`** (`IoU = 0.7216`, `POD = 87.99%`, `Precision = 80.05%`, `Frequency Bias = 1.099x`).
-     - Over the `676,414` jointly detected cloud voxels, the proxy's adaptive edge temperature $T_{\text{edge}}$ correlates with the NWC SAF Base of Tower temperature $T_{\text{BT}}$ at **$r = 0.9876$**, with a mean bias of only **`+0.95 K`** and **`MAE = 1.38 K`**.
-     - By comparison, the 2-channel proxies (`refined_v2` and `legacy_fixed_2ch`) achieve only `IoU = 0.4100` (`Dice = 0.5815`) and $r = 0.6119$ (`MAE = 3.26 K` / `9.03 K`).
+To build a maximally faithful reference (`nwcsaf_rdt_full_era5_cal`) and distill from it a purely geostationary algorithm (`nwcsaf_rdt_seviri_only_cal`) requiring **zero external NWP or radar data at runtime**, [`scripts/calibrate_and_benchmark_full_rdt.py`](scripts/calibrate_and_benchmark_full_rdt.py) implements:
 
-2. **Convective Discrimination (`class in {2, 3, 4}`): High Precision (`81.64%`), Low Recall (`12.45%`) Due to Strict Initiation Gate**
-   - Where `multispectral_utls_v0` labels a cell as convective, it agrees with Original NWC SAF GEO-RDT-CW **`81.64%` of the time** (`Precision = 81.64%`, `FAR = 18.36%`, and `71.94%` exact class precision on Class 3 `Mature/Decaying`).
-   - However, `multispectral_utls_v0` labels only **`15.3%` as many convective voxels** as Original NWC SAF (`74,414` vs. `487,914` voxels; `POD = 12.45%`).
-   - **Root Cause of the Recall Gap:**
-     - In `multispectral_utls_v0` (and `refined_v2`), a cloud cell can **only** become convective if it is caught during a 15-minute `continuation` interval where all three hard thresholds hold simultaneously:
-       $$\text{contrast} \ge 10\text{ K} \quad\land\quad \Delta T_{\min,15\text{m}} \le -2.5\text{ K} \quad\land\quad \Delta S_{15\text{m}} > 0$$
-       If a massive, already-mature Mesoscale Convective System (MCS) or supercell enters the spatial/temporal window near its tropopause equilibrium temperature ($T_{\min} \approx 209..215\text{ K}$, $\Delta T_{\min,15\text{m}} \approx -0.5..+0.5\text{ K}$), or undergoes frequent anvil splits/merges (which invalidate `growth_valid` in the proxy), the proxy leaves the entire mature cumulonimbus system in **Class 1 (`non_convective_cloud`)** (`289,154` NWC SAF Class 3 voxels are placed in Class 1 by `multispectral_utls_v0` in the confusion matrix!).
-     - In **Original NWC SAF GEO-RDT-CW (`nwcsaf_rdt_cw_v5.0`)**, cells in **Vertical Categories `0` (`Mature`, $T_{\min} \le -40^\circ\text{C}$ for $\ge 30\text{ min}$) and `1` (`Mature Transition`)** are evaluated by the 5-channel `IRxWVx` statistical discrimination model (and mandatory OTD override) using their deep thermal contrast, steep peripheral gradient $\text{Grad}_{P,95}$, positive upper-tropospheric water-vapour difference ($\text{WV}_{6.2}-\text{IR}_{10.8}$), glaciation signature ($\text{IR}_{8.7}-\text{IR}_{10.8}$), and low split-window cirrus penalty ($\text{IR}_{10.8}-\text{IR}_{12.0}$), even when instantaneous cooling has plateaued at the tropopause.
+1. **Real ERA5 NWP Integration (`rdt_nwcsaf/nwp_era5.py`)**:
+   - Direct API-key-free retrieval from Google Cloud `ARCO-ERA5` (`full_37-1h-0p25deg-chunk-1.zarr-v3`).
+   - Exact WMO (1957) / Reichler et al. (2003) thermal tropopause ($T_{\text{tropo}}, P_{\text{tropo}}, Z_{\text{tropo}}$), thermodynamic instability indices ($\text{LI}, \text{SHW}, \text{KI}, \text{CAPE}$) forming the NWC SAF convective mask `NWPCONV`, $700\text{ hPa}$ steering wind $(U_{700}, V_{700})$, and surface skin temperature $T_{\text{surf}}$.
+2. **NWC SAF Ancillary Products (`rdt_nwcsaf/ancillary.py`)**:
+   - `GEO-CT` radiative cloud-type pre-filtering using split-window ($\text{BTD}_{10.8-12.0}$) and water-vapour ($\text{BTD}_{6.2-10.8}$, $\text{BTD}_{8.7-10.8}$) tests to mask out detached semitransparent cirrus while preserving opaque cumulonimbus anvils.
+   - `GEO-HRW` multi-channel ($\text{WV}_{6.2} + \text{IR}_{10.8}$) cross-correlation Atmospheric Motion Vector (AMV) first-guess field blended with the ERA5 $700\text{ hPa}$ steering flow.
+3. **EUMETNET OPERA Radar Calibration (`rdt_nwcsaf/calibration.py`)**:
+   - Matches `12,838` detected RDT cloud cells across disjoint training windows against co-located 2-km European **OPERA `DBZH_QIND`** radar composites (`249` verified convective cells with $\text{DBZH} \ge 35\text{ dBZ}$ over $\ge 16\text{ km}^2$ and `12,589` verified non-convective cells).
+   - Fits the 12-stratum (`6 vertical categories x 2 history regimes`) MAP logistic regression weights $\boldsymbol{\beta}^{(c,h)}$ and category thresholds (`RDT_original/results/comparison_seviri_2020/calibrated_rdt_model.json`), and distills 7-channel SEVIRI surrogates for $(T_{\text{tropo}}, \text{NWPCONV})$.
 
-3. **Overshooting Top Detection (`class == 4`):**
-   - Original NWC SAF two-step OTD (16 compass rays + Condition A/B) identifies `6,879` confirmed OT voxels across the 5 severe thunderstorm windows (`random_092`, `random_095`, `random_096`, `random_078`, `random_066`).
-   - In `multispectral_utls_v0`, `88%` of those NWC SAF OT pixels occur inside mature cells that the proxy left in Class 1 (`non_convective`) or where the 2-frame persistence + plateau confidence gate (`proxy_confidence >= 0.35`, `D > 1.0`, `ot_persistence_frames = 2`) suppressed the OT label.
+### 5.1 Fidelity to Full Multi-Source Reference (`nwcsaf_rdt_full_era5_cal`, `4,816,896` Held-Out Voxels)
+
+| Algorithm | Needs ERA5/Radar at Runtime? | Overall 5-Class Acc | Cloud Tower (`>=1`) Dice | Convective (`{2,3,4}`) Dice | Convective IoU (CSI) | Convective POD (Recall) | Convective Precision |
+| :--- | :---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **`nwcsaf_rdt_seviri_only_cal` (Distilled SEVIRI-Only)** | **No (7-ch SEVIRI only)** | **`95.98%`** | **`0.9288`** | **`0.8560`** | **`0.7483`** | **`99.80%`** | **`74.94%`** |
+| `multispectral_utls_v0` (Repo 7-ch Proxy) | No | `86.68%` | `0.8375` | `0.2138` | `0.1197` | `12.40%` | `75.80%` |
+| `refined_v2` (Repo 2-ch Adaptive Proxy) | No | `77.38%` | `0.5703` | `0.0021` | `0.0011` | `0.10%` | `96.80%` |
+| `legacy_fixed_2ch` (Repo 2-ch Fixed Proxy) | No | `77.46%` | `0.5703` | `0.0826` | `0.0431` | `4.40%` | `71.50%` |
+
+*(Across individual windows `random_092`, `random_095`, `random_096`, `random_078`, `random_066`, `nwcsaf_rdt_seviri_only_cal` achieves **Cloud Dice = `0.9239` – `1.0000`** and **Convective Dice = `0.8879` – `0.9906`** against the full ERA5+NWC SAF reference).*
+
+### 5.2 Independent Ground-Truth Verification vs. EUMETNET OPERA Weather Radar ($\text{DBZH} \ge 35\text{ dBZ}$)
+
+| Algorithm | Verified Radar Cell F1 (Dice) | Verified Radar Cell POD | Verified Radar Cell Precision | Verified Radar Pixel F1 (Dice) | Verified Radar Pixel CSI (IoU) |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| **`nwcsaf_rdt_full_era5_cal` (Full ERA5 + CT + HRW + CAL)** | **`0.3650`** | `42.8%` | **`31.8%`** | `0.7852` | `0.6464` |
+| **`nwcsaf_rdt_seviri_only_cal` (Distilled 7-ch SEVIRI-Only)** | **`0.3368`** | **`45.6%`** | `26.7%` | **`0.8026`** | **`0.6703`** |
+| `legacy_fixed_2ch` (Repo 2-ch Fixed Proxy) | `0.1386` | `7.9%` | `58.3%` | `0.1901` | `0.1050` |
+| `multispectral_utls_v0` (Repo 7-ch Proxy) | `0.0884` | `6.1%` | `16.0%` | `0.0772` | `0.0402` |
+| `refined_v2` (Repo 2-ch Adaptive Proxy) | `0.0000` | `0.0%` | `0.0%` | `0.0000` | `0.0000` |
 
 ---
 
@@ -122,10 +140,15 @@ Running [`scripts/compare_original_vs_proxies.py`](scripts/compare_original_vs_p
 From PowerShell in the repository root:
 
 ```powershell
-# 1. Run unit & synthetic verification tests for RDT_original
+# 1. Run unit & synthetic verification tests for RDT_original (10 tests)
 $env:PYTHONPATH = "src;RDT_original"
 .\.venv\Scripts\python.exe -m pytest RDT_original/tests -q
 
-# 2. Run the multi-window SEVIRI comparison against the repository proxy teachers
+# 2. Run the baseline 4-way SEVIRI comparison against the repository proxy teachers
 .\.venv\Scripts\python.exe RDT_original/scripts/compare_original_vs_proxies.py --num-windows 6
+
+# 3. Run the full ERA5 + OPERA calibration, SEVIRI-only distillation, and 5-way benchmark
+$env:PYTHONPATH = "src;RDT_original;RDT_original/scripts"
+.\.venv\Scripts\python.exe -u RDT_original/scripts/calibrate_and_benchmark_full_rdt.py
 ```
+

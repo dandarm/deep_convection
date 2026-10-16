@@ -50,8 +50,18 @@ def _to_timestamp_minutes(ts: Any, index: int, default_cadence_min: float) -> fl
 class NwcSafRdtTracker:
     """Stateful causal tracker implementing the full NWC SAF GEO-RDT-CW v5.0 algorithm."""
 
-    def __init__(self, cfg: NwcSafRdtConfig | None = None) -> None:
+    def __init__(
+        self,
+        cfg: NwcSafRdtConfig | None = None,
+        *,
+        calibrated_model: Any | None = None,
+        use_ancillary_ct: bool = False,
+        use_hrw_amv: bool = False,
+    ) -> None:
         self.cfg = cfg or NwcSafRdtConfig()
+        self.calibrated_model = calibrated_model
+        self.use_ancillary_ct = use_ancillary_ct
+        self.use_hrw_amv = use_hrw_amv
         self.reset()
 
     def reset(self) -> None:
@@ -60,6 +70,7 @@ class NwcSafRdtTracker:
         self.prev_cells: dict[int, dict[str, Any]] = {}
         self.prev_hierarchy: ThresholdSliceHierarchy | None = None
         self.prev_ir: np.ndarray | None = None
+        self.prev_wv062: np.ndarray | None = None
         self.prev_time_min: float | None = None
         self.track_histories: dict[int, list[dict[str, Any]]] = {}
         self.next_track_id: int = 1
@@ -79,6 +90,9 @@ class NwcSafRdtTracker:
         vis_refl_2d: np.ndarray | None = None,
         guess_motion_yx: np.ndarray | None = None,
         lightning_counts: dict[int, int] | None = None,
+        u700_ms: np.ndarray | float | None = None,
+        v700_ms: np.ndarray | float | None = None,
+        t_surf_k: np.ndarray | float | None = None,
     ) -> dict[str, Any]:
         """Process a single 7-channel SEVIRI slot (7, H, W) in Kelvin."""
         frame = np.asarray(frame_7ch, dtype=np.float32)
@@ -108,8 +122,39 @@ class NwcSafRdtTracker:
                 self.prev_cells = {}
                 self.prev_hierarchy = None
                 self.prev_ir = None
+                self.prev_wv062 = None
                 self.track_histories.clear()
                 dt_minutes = float(self.cfg.expected_cadence_minutes)
+
+        # Optional NWC SAF GEO-CT radiative cloud mask & thin cirrus filtering
+        if self.use_ancillary_ct and cloud_mask is None:
+            from .ancillary import compute_nwcsaf_cloud_type
+
+            ct_res = compute_nwcsaf_cloud_type(
+                frame[4],
+                ir120=frame[5],
+                ir087=frame[2],
+                wv062=frame[0],
+                wv073=frame[1],
+                t_tropo_k=tropopause_temp_k if tropopause_temp_k is not None else 215.0,
+                t_surf_k=t_surf_k if t_surf_k is not None else 292.0,
+            )
+            cloud_mask = ct_res.opaque_cloud_mask
+
+        # Optional NWC SAF GEO-HRW + NWP 700 hPa first-guess motion field
+        if self.use_hrw_amv and guess_motion_yx is None:
+            from .ancillary import compute_hrw_amv_guess_field
+
+            dy_px, dx_px = compute_hrw_amv_guess_field(
+                self.prev_ir if has_valid_prev else None,
+                frame[4],
+                prev_wv062=self.prev_wv062 if has_valid_prev else None,
+                curr_wv062=frame[0],
+                u700_ms=u700_ms,
+                v700_ms=v700_ms,
+                dt_seconds=dt_minutes * 60.0,
+            )
+            guess_motion_yx = np.stack([dy_px, dx_px], axis=0)
 
         # Stage 1 & 2: Detection of cloud towers and single/multi-tower contour refinement
         curr_labels, curr_cells, curr_hierarchy, valid_obs_mask = detect_rdt_cells(
@@ -219,6 +264,16 @@ class NwcSafRdtTracker:
             else:
                 nwp_val = 2
 
+            # Local tropopause temperature at cell centroid/core
+            if isinstance(tropopause_temp_k, np.ndarray):
+                loc_tropo = tropopause_temp_k[cell["bbox"]][cell["mask"]]
+                cell_tropo = float(np.nanmedian(loc_tropo)) if len(loc_tropo) > 0 else 215.0
+            elif tropopause_temp_k is not None:
+                cell_tropo = float(tropopause_temp_k)
+            else:
+                cell_tropo = 215.0
+            cell["tropopause_temp_k"] = cell_tropo
+
             lgh_strokes = int((lightning_counts or {}).get(cid, 0))
 
             # Stage 5: Convective Discrimination, Declassification, Overrides, Phase & Severity
@@ -235,6 +290,8 @@ class NwcSafRdtTracker:
                 nwp_mask_value=nwp_val,
                 lightning_strokes=lgh_strokes,
                 cell_lat_deg=cell_lat,
+                calibrated_model=self.calibrated_model,
+                cell_tropo_temp_k=cell_tropo,
             )
             cell.update(discri)
 
@@ -302,6 +359,7 @@ class NwcSafRdtTracker:
         self.prev_cells = curr_cells
         self.prev_hierarchy = curr_hierarchy
         self.prev_ir = frame[4].copy()
+        self.prev_wv062 = frame[0].copy()
         self.prev_time_min = curr_time_min
         self.track_histories = new_track_histories
         self.frame_index += 1
@@ -336,6 +394,12 @@ def run_nwcsaf_rdt_sequence(
     cloud_mask: np.ndarray | None = None,
     nwp_instability_mask: np.ndarray | None = None,
     vis_refl_thw: np.ndarray | None = None,
+    calibrated_model: Any | None = None,
+    use_ancillary_ct: bool = False,
+    use_hrw_amv: bool = False,
+    u700_ms: np.ndarray | float | None = None,
+    v700_ms: np.ndarray | float | None = None,
+    t_surf_k: np.ndarray | float | None = None,
 ) -> dict[str, Any]:
     """Run the complete NWC SAF GEO-RDT-CW algorithm over a (T, 7, H, W) SEVIRI sequence.
 
@@ -347,7 +411,12 @@ def run_nwcsaf_rdt_sequence(
             f"Expected clip_tchw shape (T, 7, H, W), got {clip.shape}"
         )
     num_t, _, h, w = clip.shape
-    tracker = NwcSafRdtTracker(cfg)
+    tracker = NwcSafRdtTracker(
+        cfg,
+        calibrated_model=calibrated_model,
+        use_ancillary_ct=use_ancillary_ct,
+        use_hrw_amv=use_hrw_amv,
+    )
 
     semantic_labels = np.zeros((num_t, h, w), dtype=np.uint8)
     cell_id_maps = np.zeros((num_t, h, w), dtype=np.int32)
@@ -387,6 +456,21 @@ def run_nwcsaf_rdt_sequence(
             if isinstance(vis_refl_thw, np.ndarray) and vis_refl_thw.ndim == 3
             else None
         )
+        u700_t = (
+            u700_ms[t_idx]
+            if isinstance(u700_ms, np.ndarray) and u700_ms.ndim == 3
+            else u700_ms
+        )
+        v700_t = (
+            v700_ms[t_idx]
+            if isinstance(v700_ms, np.ndarray) and v700_ms.ndim == 3
+            else v700_ms
+        )
+        tsurf_t = (
+            t_surf_k[t_idx]
+            if isinstance(t_surf_k, np.ndarray) and t_surf_k.ndim == 3
+            else t_surf_k
+        )
 
         step_out = tracker.step_frame(
             clip[t_idx],
@@ -398,6 +482,9 @@ def run_nwcsaf_rdt_sequence(
             cloud_mask=cmask_t,
             nwp_instability_mask=nwp_t,
             vis_refl_2d=vis_t,
+            u700_ms=u700_t,
+            v700_ms=v700_t,
+            t_surf_k=tsurf_t,
         )
 
         semantic_labels[t_idx] = step_out["semantic_label"]

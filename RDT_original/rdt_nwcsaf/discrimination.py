@@ -217,22 +217,31 @@ def evaluate_logistic_discrimination(
     vertical_cat: int,
     depth_regime: str,
     cfg: NwcSafRdtConfig,
+    *,
+    calibrated_model: Any | None = None,
+    cell_tropo_temp_k: float = 215.0,
 ) -> tuple[bool, float, float]:
     """Evaluate NWC SAF 5-channel (IR10.8, WV6.2, WV7.3, IR8.7, IR12.0) logistic regression model.
 
-    Mathematical form (ATBD Sec 3.2.1.2.3.2 & 3.2.1.2.3.3):
-        z = beta_0 + sum_k beta_k * X_k
-        P_conv = 1 / (1 + exp(-z))
-
-    Predictors X_k extracted from Lines S, H, X:
-    1. Thermal depth / contrast: (T_mean - T_min) and tower depth (T_BT - T_min)
-    2. Peripheral & inner spatial temperature gradient: Grad_P95 and Grad_P_mean (K/km)
-    3. Cooling rate: max(instantaneous, 15-min) cooling rate -dT_min/dt (K/h)
-    4. Relative common-threshold area expansion rate: (1/S)*dS/dt (1/h)
-    5. Upper-level WV-IR BTD: BTD_p90(WV6.2-IR10.8), BTD_max(WV6.2-IR10.8), SIG ratio, and trend
-    6. Water vapour differential: WBTD_p90(WV6.2-WV7.3)
-    7. Cloud-top glaciation & optical thickness: BTD_p90(IR8.7-IR10.8) and split-window BTD(IR10.8-IR12.0)
+    Supports both:
+    - ``calibrated_model`` (Météo-France empirical ``CAL`` scheme trained against OPERA radar / lightning)
+    - Default physical NWC SAF category-specific logistic regression weights.
     """
+    if calibrated_model is not None:
+        from .calibration import build_feature_vector
+
+        has_hist_flag = 1 if depth_regime != "0" else 0
+        key = f"{int(vertical_cat)}_{has_hist_flag}"
+        if key in calibrated_model.weights:
+            beta = np.asarray(calibrated_model.weights[key], dtype=np.float64)
+            x_vec = build_feature_vector(cell, trends, depth_regime, t_tropo_k=cell_tropo_temp_k)
+            z_cal = float(np.clip(np.dot(beta, x_vec), -30.0, 30.0))
+            prob_cal = float(1.0 / (1.0 + np.exp(-z_cal)))
+            p_thresh_cal = float(calibrated_model.thresholds.get(str(int(vertical_cat)), 0.50))
+            if depth_regime == "0":
+                p_thresh_cal = min(0.75, p_thresh_cal + 0.05)
+            return bool(prob_cal >= p_thresh_cal), prob_cal, float(100.0 * (1.0 - prob_cal))
+
     contrast = float(cell["contrast_k"])
     tower_depth = float(cell["tower_depth_k"])
     grad_p95 = float(cell["periph_grad_p95_k_km"])
@@ -527,6 +536,8 @@ def discriminate_and_classify_cell(
     nwp_mask_value: int = 2,
     lightning_strokes: int = 0,
     cell_lat_deg: float = 45.0,
+    calibrated_model: Any | None = None,
+    cell_tropo_temp_k: float = 215.0,
 ) -> dict[str, Any]:
     """Run complete NWC SAF RDT-CW discrimination, declassification, overrides, phase & severity.
 
@@ -666,7 +677,13 @@ def discriminate_and_classify_cell(
 
             if vertical_cat in (0, 1) or is_cooling or is_ascending:
                 stat_conv, prob_conv, error_likelihood_pct = evaluate_logistic_discrimination(
-                    cell, trends, vertical_cat, depth_regime, cfg
+                    cell,
+                    trends,
+                    vertical_cat,
+                    depth_regime,
+                    cfg,
+                    calibrated_model=calibrated_model,
+                    cell_tropo_temp_k=cell_tropo_temp_k,
                 )
                 if stat_conv:
                     is_convective = True

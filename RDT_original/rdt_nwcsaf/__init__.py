@@ -28,6 +28,28 @@ from .discrimination import (
     forecast_convective_cells,
     select_history_depth_regime,
 )
+from .ancillary import (
+    NwcSafCloudTypeResult,
+    compute_hrw_amv_guess_field,
+    compute_nwcsaf_cloud_type,
+)
+from .calibration import (
+    CalibratedRdtModel,
+    OperaCellVerification,
+    build_feature_vector,
+    build_seviri_to_opera_lookup,
+    fit_calibrated_rdt_model,
+    opera_file_path,
+    predict_seviri_only_nwp_surrogates,
+    read_opera_h5,
+    verify_cell_with_opera,
+)
+from .nwp_era5 import (
+    Era5RdtFields,
+    compute_wmo_tropopause,
+    fetch_era5_europe_hour,
+    interpolate_era5_to_seviri_grid,
+)
 from .otd import detect_cell_overshooting_tops
 from .pipeline import NwcSafRdtTracker, run_nwcsaf_rdt_sequence
 from .tracking import (
@@ -37,8 +59,12 @@ from .tracking import (
 )
 
 __all__ = [
+    "CalibratedRdtModel",
+    "Era5RdtFields",
+    "NwcSafCloudTypeResult",
     "NwcSafRdtConfig",
     "NwcSafRdtTracker",
+    "OperaCellVerification",
     "PHASE_NAMES",
     "QUALITY_GROWTH_VALID",
     "QUALITY_OBSERVATION_VALID",
@@ -49,18 +75,31 @@ __all__ = [
     "SEVIRI_7CH_NAMES",
     "ThresholdSliceHierarchy",
     "VERTICAL_CATEGORY_NAMES",
+    "build_feature_vector",
+    "build_seviri_to_opera_lookup",
     "classify_vertical_category",
     "common_threshold_area",
+    "compute_hrw_amv_guess_field",
+    "compute_nwcsaf_cloud_type",
     "compute_phase_of_development",
     "compute_severity_and_hazard",
     "compute_temporal_predictors",
+    "compute_wmo_tropopause",
     "detect_cell_overshooting_tops",
     "detect_rdt_cells",
     "discriminate_and_classify_cell",
     "estimate_local_correlation_motion",
     "evaluate_logistic_discrimination",
+    "fetch_era5_europe_hour",
+    "fit_calibrated_rdt_model",
     "forecast_convective_cells",
+    "interpolate_era5_to_seviri_grid",
+    "opera_file_path",
+    "predict_seviri_only_nwp_surrogates",
+    "read_opera_h5",
     "run_nwcsaf_rdt_sequence",
     "select_history_depth_regime",
     "track_rdt_cells",
+    "verify_cell_with_opera",
 ]
+
