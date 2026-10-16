@@ -2,7 +2,6 @@
 """Incremental full-domain multispectral teacher; crop only published outputs."""
 import argparse
 from dataclasses import asdict
-import fcntl
 import hashlib
 import json
 import os
@@ -17,6 +16,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/"src"))
+from emma_gpm.file_lock import acquire_file_lock
+from emma_gpm.process_metrics import peak_rss_gib
 from emma_gpm.rdt import RDTDomainTeacher, RDTTeacherConfig
 from emma_gpm.rdt.storage import DomainFrameReader, atomic_json, restore_latest, save_frame, sha256, publish_domain_tables
 from emma_gpm.rdt_teacher import projected_pixel_areas
@@ -114,8 +115,7 @@ def main():
     cfg = RDTTeacherConfig(**json.loads(args.config.read_text())) if args.config else RDTTeacherConfig()
     output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
-    lock = (output/"scan.lock").open("a")
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    lock = acquire_file_lock(output/"scan.lock")
     reader = DomainFrameReader(args.zarr_root)
     started = time.monotonic()
     records, prior_elapsed = [], 0.
@@ -195,7 +195,6 @@ def main():
                 raise ValueError("Cannot shrink an existing processed time range")
         atomic_json(output/"request.json", dict(start=start.isoformat(), end_exclusive=end.isoformat(), frames=len(times), crop_catalog_enabled=not args.no_crop_catalog, detector_workers=args.detector_workers, async_save=args.async_save, git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()))
         publish(output, records, len(times), start, started, "running", prior_elapsed)
-        import resource
         def frame_metadata(frame, result, frame_started):
             table = result.objects
             return dict(source_frame_sha256=hashlib.sha256(frame.tobytes()).hexdigest(),
@@ -207,7 +206,7 @@ def main():
                 mean_proxy_confidence=float(table.proxy_confidence.mean()) if len(table) else None,
                 valid_temporal_objects=int(table.temporal_valid.sum()) if len(table) else 0,
                 reset_reason=result.reset_reason, frame_seconds=time.monotonic()-frame_started,
-                rss_gib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/2**20)
+                rss_gib=peak_rss_gib())
 
         def on_commit(record):
             records.append(record)

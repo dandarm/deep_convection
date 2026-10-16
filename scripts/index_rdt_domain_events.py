@@ -2,7 +2,6 @@
 """Incremental read-only occupancy index and strongest candidate per track."""
 import argparse
 from concurrent.futures import ProcessPoolExecutor
-import fcntl
 from functools import partial
 import json
 import os
@@ -12,6 +11,7 @@ import sys
 import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
+from emma_gpm.file_lock import acquire_file_lock
 from emma_gpm.rdt.storage import atomic_json,sha256
 from emma_gpm.rdt_event_explorer import summarize_frame
 import pandas as pd
@@ -31,7 +31,7 @@ def main():
     parser.add_argument('--follow',action='store_true')
     args=parser.parse_args()
     source=args.label_root.resolve();out=source/'exploration';out.mkdir(exist_ok=True)
-    lock=(out/'index.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    lock=acquire_file_lock(out/'index.lock')
     protocol_sha=sha256(source/'protocol.json')
     min_confidence=json.loads((source/'protocol.json').read_text())['config']['min_proxy_confidence']
     prior=out/'protocol.json'

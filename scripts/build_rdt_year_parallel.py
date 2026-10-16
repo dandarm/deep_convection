@@ -5,7 +5,6 @@ Within each task every available five-minute frame is processed causally.
 Published frames are atomic, ZIP-contained lossless Zarr; tables stay partitioned.
 """
 import argparse
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -19,6 +18,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/"src"))
+from emma_gpm.file_lock import acquire_file_lock
 from emma_gpm.rdt_preview import archive_inventory
 from emma_gpm.rdt.storage import atomic_json, sha256, frame_key, read_table
 
@@ -60,8 +60,7 @@ def main():
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     (output/"frames").mkdir(exist_ok=True)
-    lock = (output/"scan.lock").open("a")
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    lock = acquire_file_lock(output/"scan.lock")
     sources = [Path(__file__), ROOT/"scripts/build_rdt_pseudolabels.py", *sorted((ROOT/"src/emma_gpm/rdt").glob("*.py")),
                ROOT/"src/emma_gpm/rdt_teacher.py", ROOT/"src/emma_gpm/rdt_preview.py", ROOT/"src/emma_gpm/seviri_clips.py"]
     fingerprint = {str(p.relative_to(ROOT)): sha256(p) for p in sources}

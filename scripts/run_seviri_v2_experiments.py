@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Resumable V2-Small masking sweep and nested 2000/4000/8000 learning curve."""
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +12,7 @@ import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
+from emma_gpm.file_lock import exclusive_file_lock
 from run_seviri_masking_experiments import write_json,run_command
 
 
@@ -219,8 +219,7 @@ def main():
     if args.epochs<1 or args.prepare_workers<1:
         parser.error('Positive epochs/workers required')
     output=args.output_dir.resolve();output.mkdir(parents=True,exist_ok=True)
-    with (output/'queue.lock').open('w') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with exclusive_file_lock(output/'queue.lock'):
         plan=dict(model='VideoMAE V2 Small 7ch',epochs=args.epochs,sizes=[2000,4000,8000],
             encoder_masks=[.5,.75,.9],decoder_mask=.5,validation_samples=256,
             common_validation_encoder_mask=.9,seed=20261003,zarr_root=str(args.zarr_root.resolve()),

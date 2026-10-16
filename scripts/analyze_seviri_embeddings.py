@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor
-import fcntl
 import hashlib
 import json
 import multiprocessing as mp
@@ -25,6 +24,7 @@ from scipy.cluster.hierarchy import cut_tree, dendrogram
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
+from emma_gpm.file_lock import exclusive_file_lock
 from emma_gpm.atmospheric_descriptors import describe_clip
 from emma_gpm.embedding_clustering import (
     pool_encoder_tokens, unit_embeddings, hierarchy, explained_variance,
@@ -333,8 +333,7 @@ def main():
         value = dict(stage=stage, pid=os.getpid(), updated_unix=time.time(), **details)
         write_json(output / 'progress.json', value)
         print(json.dumps(value), flush=True)
-    with (output / 'analysis.lock').open('w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with exclusive_file_lock(output / 'analysis.lock'):
         try:
             # Read-only analysis starts after all three identical-budget runs.
             stats = {}

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Sequential, resumable SEVIRI masking sweep and conditional crop expansion."""
 import argparse
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
+from emma_gpm.file_lock import exclusive_file_lock
 
 
 def write_json(path, value):
@@ -159,8 +159,7 @@ def main():
         parser.error('Invalid epoch count or improvement threshold')
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    with (output / 'queue.lock').open('w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with exclusive_file_lock(output / 'queue.lock'):
         plan = dict(zarr_root=str(args.zarr_root.resolve()), epochs=args.epochs, large_epochs=args.large_epochs,
                     masks=[.5, .75, .9], training_samples=4096, validation_samples=512,
                     large_samples=40000, minimum_rmse_improvement=args.minimum_improvement,

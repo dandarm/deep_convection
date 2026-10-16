@@ -4,7 +4,6 @@ import argparse
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
-import fcntl
 import hashlib
 import json
 import multiprocessing as mp
@@ -15,6 +14,7 @@ import shutil
 import time
 
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'src'))
+from emma_gpm.file_lock import acquire_file_lock
 import numpy as np
 import pandas as pd
 from pyproj import CRS,Transformer
@@ -130,7 +130,7 @@ def main():
     output=args.output_dir or ROOT/'results/rdt_preview'/('annual8192_refined' if args.teacher=='refined_v2' else 'annual8192_legacy_rerun')
     halo=args.halo if args.teacher=='refined_v2' else 0
     output.mkdir(parents=True,exist_ok=True)
-    lock=(output/'scan.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    lock=acquire_file_lock(output/'scan.lock')
     if not (output/'protocol.json').exists():atomic_json(output/'progress.json',dict(status='inventory',processed=0,requested=args.count))
     inventory,times,grid=archive_inventory(args.zarr_root)
     if args.manifest_from and (args.manifest_from/'manifest.csv').exists():
