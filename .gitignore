@@ -15,6 +15,17 @@ data/*
 # PPS order download scripts contain the registered account identifier.
 ftps_get_*.py
 tmp/
+node_modules/
+.codex-slide-build/
+
+# Local scientific outputs. Promote individual artifacts explicitly only after
+# scientific review; until then source code and tests are the versioned record.
+results/
+figures/
+logs/
+catalogs/
+*.mp4
+Codex Image *.png
 
 # The CSV equivalent is ~61 MB; keep the compact Parquet catalog in Git.
 catalogs/gpm_to_emma_pf_2020.csv
