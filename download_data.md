@@ -76,6 +76,7 @@ nohup env PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   --zarr-root "$SEVIRI_ROOT" \
   --env-file "$SEVIRI_ENV_FILE" \
   --workers "$SEVIRI_WORKERS" \
+  --preferred-satellite MSG3 \
   --crop-batch-size 2 \
   --recover-native-read-errors \
   >> "$SEVIRI_STATUS_DIR/acquisition.log" 2>&1 &
@@ -96,6 +97,12 @@ conservando la cronologia dei tentativi precedenti.
   e otto trasferimenti hanno mostrato forte variabilità, senza dimostrare un
   vantaggio stabile: valutare la velocità su intervalli lunghi durante i
   download, escludendo conversione, verifica e ripartenza.
+- `--preferred-satellite MSG3`: risolve soltanto uno slot offerto contemporaneamente
+  da satelliti diversi, scegliendo MSG3. Se c'è un unico prodotto RSS di MSG2,
+  lo conserva: il servizio ha già alternato MSG3 e MSG2 nell'archivio. Non è un
+  filtro che elimina tutti i frame MSG2. Senza il flag i duplicati restano
+  bloccanti; duplicati dello stesso satellite, nomi non riconosciuti o assenza
+  del satellite preferito in uno slot ambiguo restano sempre un errore.
 - `--crop-batch-size 2`: due frame per batch di conversione nel dominio regionale;
   non crea le clip spaziali 224×224 del probing o del pretraining.
 - I limiti dei thread numerici e il batch di conversione contengono la competizione
@@ -200,6 +207,24 @@ Un payload identico che resta illeggibile viene documentato e messo in
 quarantena, lasciando un gap; altri errori restano bloccanti.
 Duplicati di slot nel catalogo del provider richiedono diagnosi e non vengono
 risolti da questa opzione.
+
+Nel caso verificato del **7 gennaio 2021 alle 09:00 UTC**, il servizio passa
+da MSG2 a MSG3 offrendo entrambi nello slot del passaggio. I giorni 1–4 usavano
+MSG3, il 5–6 comprendevano la sostituzione con MSG2; l'8–10 tornano interamente
+MSG3. Il campionamento dei mesi successivi trova anche giornate solo MSG2:
+la selezione preserva questa continuità RSS senza richiedere un unico satellite
+per tutto l'anno. I numeri 2/3 identificano satelliti diversi della famiglia MSG.
+
+`selection_policy.json` conserva la preferenza dell'anno e impedisce di
+cambiarla accidentalmente durante la ripresa. Mantenere quindi lo stesso flag.
+Le giornate completate prima dell'introduzione della regola vengono verificate
+e conservate. `product_selection/AAAAMMGG.json` registra tutti i prodotti scelti,
+satellite e slot, le alternative escluse e i frame preesistenti non sostituiti;
+il report giornaliero distingue prodotti offerti e prodotti selezionati.
+Eventuali nativi alternativi già nel buffer vengono conservati con SHA-256 in
+`unselected_native/AAAAMMGG/`, senza convertirli per errore al posto del prodotto
+scelto. I nuovi frame sono scritti in ordine temporale anche quando cambia
+il prefisso del satellite. Nessuno slot è riempito, duplicato o interpolato.
 
 `--exclude-native NOME_ESATTO.nat` è disponibile per escludere esplicitamente
 un prodotto già diagnosticato, conservandolo in quarantena. Non riutilizzare

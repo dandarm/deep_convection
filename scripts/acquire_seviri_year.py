@@ -6,10 +6,12 @@ when the processed store has been verified and published. Existing Zarr data
 and native files outside this buffer are never removed.
 """
 import argparse
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -38,6 +40,63 @@ def product_slot(product):
     if value.tzinfo is not None:
         value=value.astimezone(timezone.utc).replace(tzinfo=None)
     return value.replace(minute=(value.minute//5)*5,second=0,microsecond=0)
+
+
+def product_satellite(product):
+    match=re.match(r'^(MSG[1-4])-SEVI-',str(product))
+    return match.group(1) if match else None
+
+
+def selection_policy(preferred_satellite):
+    return dict(version='rss-satellite-overlap-v1',preferred_satellite=preferred_satellite,
+        unique_slot='retain available RSS satellite',same_satellite_duplicates='error')
+
+
+def pin_selection_policy(work,preferred_satellite):
+    path=work/'selection_policy.json'
+    policy=selection_policy(preferred_satellite)
+    if path.exists() and json.loads(path.read_text())!=policy:
+        raise ValueError('Satellite selection policy changed; resume with the recorded --preferred-satellite')
+    atomic_json(path,policy)
+
+
+def select_slot_products(products,preferred_satellite=None):
+    """Resolve cross-satellite overlap only; never drop a unique RSS slot."""
+    grouped=defaultdict(list)
+    for product in products:
+        grouped[product_slot(product)].append(product)
+    selected,decisions=[],[]
+    for slot,group in sorted(grouped.items()):
+        if len(group)==1:
+            selected.extend(group)
+            continue
+        satellites=[product_satellite(product) for product in group]
+        if (preferred_satellite is None or None in satellites
+                or len(set(satellites))!=len(satellites)
+                or preferred_satellite not in satellites):
+            raise ValueError(f'Multiple provider products for the same RSS slot {slot.isoformat()}; '
+                f'cannot uniquely select preferred satellite {preferred_satellite}: {[str(p) for p in group]}')
+        chosen=group[satellites.index(preferred_satellite)]
+        selected.append(chosen)
+        decisions.append(dict(slot=slot.isoformat(),selected_product=str(chosen),
+            selected_satellite=preferred_satellite,
+            unselected_products=sorted(str(p) for p in group if p is not chosen),
+            reason='explicit preferred satellite at cross-satellite overlap'))
+    return selected,decisions
+
+
+def retain_unselected_native(native,day,work):
+    """Keep cached unselected bytes outside the disposable daily buffer."""
+    destination=work/'unselected_native'/f'{day:%Y%m%d}'/native.name
+    digest=native_digest(native)
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    if destination.exists():
+        if native_digest(destination)!=digest:
+            raise ValueError('Previously retained unselected native has different bytes')
+        native.unlink()  # Identical owned buffer copy; retained original remains.
+    else:
+        native.replace(destination)
+    return dict(file=native.name,path=str(destination),sha256=digest,size_bytes=destination.stat().st_size)
 
 
 def native_digest(path):
@@ -158,11 +217,25 @@ def acquire_day(day,collection,args,work,key,secret):
         else:
             verify_store(store,existing_times(store))
             shutil.rmtree(backup)
-    products=[p for p in collection.search(dtstart=day,dtend=following,set='brief') if day<=product_slot(p)<following]
+    provider_products=[p for p in collection.search(dtstart=day,dtend=following,set='brief') if day<=product_slot(p)<following]
+    preferred=getattr(args,'preferred_satellite',None)
+    products,decisions=select_slot_products(provider_products,preferred)
     before=existing_times(store)
     expected_slots={pd.Timestamp(product_slot(p)) for p in products}
-    if len(products) != len(expected_slots):
-        raise ValueError('Multiple provider products for the same RSS slot')
+    selection_path=work/'product_selection'/f'{day:%Y%m%d}.json'
+    retained_directory=work/'unselected_native'/f'{day:%Y%m%d}'
+    retained=[dict(file=p.name,path=str(p),sha256=native_digest(p),size_bytes=p.stat().st_size)
+              for p in sorted(retained_directory.glob('*.nat'))]
+    selection=dict(day=f'{day:%Y-%m-%d}',policy=selection_policy(preferred),
+        provider_products=len(provider_products),selected_provider_products=len(products),
+        selected_satellites=dict(Counter(product_satellite(p) or 'unknown' for p in products)),
+        products=[dict(id=str(p),slot=product_slot(p).isoformat(),satellite=product_satellite(p),
+            existing_frame_preserved=pd.Timestamp(product_slot(p)) in before) for p in products],
+        decisions=decisions,retained_unselected_native=retained)
+    atomic_json(selection_path,selection)
+    resolved={pd.Timestamp(d['slot']):d for d in decisions}
+    for decision in decisions:
+        print(f'selected satellite={preferred} slot={decision["slot"]} product={decision["selected_product"]}',flush=True)
     missing=[p for p in products if pd.Timestamp(product_slot(p)) not in before]
     buffer=work/'native_buffer'/f'{day:%Y%m%d}'
     if missing:
@@ -177,10 +250,17 @@ def acquire_day(day,collection,args,work,key,secret):
         shutil.copytree(store,staging)
     bounds=geographic_bbox_to_geos_bounds(-20.,40.,30.,70.)
     pending=[]; converted=set(); rejected=[]
-    for native in sorted(buffer.rglob('*.nat')):
+    for native in sorted(buffer.rglob('*.nat'),key=lambda p:(native_slot_start_from_name(p),p.name)):
         slot=native_slot_start_from_name(native)
         if not day<=slot<following:
             raise ValueError('Native belongs to a different requested day')
+        decision=resolved.get(pd.Timestamp(slot))
+        if decision and native.stem!=decision['selected_product']:
+            if native.stem not in decision['unselected_products']:
+                raise ValueError('Unexpected cached native at resolved satellite overlap')
+            retained.append(retain_unselected_native(native,day,work))
+            atomic_json(selection_path,selection)
+            continue
         if pd.Timestamp(slot) in before or pd.Timestamp(slot) in converted:
             continue
         if native.name in getattr(args,'exclude_native',[]):
@@ -243,7 +323,10 @@ def acquire_day(day,collection,args,work,key,secret):
         verify_store(store,all_times)
         shutil.rmtree(backup,ignore_errors=True)
     expected_nominal=set(pd.date_range(day,following-timedelta(minutes=5),freq='5min'))
-    report=dict(day=f'{day:%Y-%m-%d}',provider_products=len(products),previous_frames=len(before),
+    report=dict(day=f'{day:%Y-%m-%d}',provider_products=len(provider_products),
+        selected_provider_products=len(products),selected_satellites=selection['selected_satellites'],
+        satellite_selection_policy=selection['policy'],satellite_selection_decisions=decisions,
+        product_selection_report=str(selection_path),previous_frames=len(before),
         new_frames=len(converted),stored_frames=len(all_times),stored_times=[t.isoformat() for t in sorted(all_times)],
         missing_nominal_slots=[t.isoformat() for t in sorted(expected_nominal-all_times)],
         rejected_products=rejected,
@@ -262,6 +345,8 @@ def main():
     parser.add_argument('--workers',type=int,default=4)
     parser.add_argument('--crop-batch-size',type=int,default=4)
     parser.add_argument('--env-file',type=Path,default=ROOT/'.env')
+    parser.add_argument('--preferred-satellite',choices=['MSG1','MSG2','MSG3','MSG4'],
+        help='Choose this satellite only at cross-satellite overlaps; unique RSS products are retained')
     parser.add_argument('--recover-native-read-errors',action='store_true',
         help='Redownload independently unreadable native files; quarantine only identical payloads with the same reader buffer error')
     parser.add_argument('--exclude-native',action='append',default=[],metavar='FILENAME',
@@ -278,6 +363,7 @@ def main():
     load_dotenv(args.env_file)
     with (work/'acquisition.lock').open('w') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        pin_selection_policy(work,args.preferred_satellite)
         key,secret=credentials()
         collection=eumdac.DataStore(eumdac.AccessToken((key,secret))).get_collection(DEFAULT_COLLECTION)
         day=datetime(args.year,1,1);stop=datetime(args.year+1,1,1)

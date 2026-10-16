@@ -1,4 +1,4 @@
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
 from pathlib import Path
 from types import SimpleNamespace
 import json
@@ -6,6 +6,86 @@ import pandas as pd
 import pytest
 
 from scripts.acquire_seviri_year import acquire_day,product_slot
+
+
+class SatelliteProduct:
+    def __init__(self,satellite,slot,suffix=''):
+        self.sensing_start=slot+timedelta(seconds=12)
+        self.name=f'{satellite}-SEVI-MSG15-0100-NA-{slot+timedelta(minutes=4):%Y%m%d%H%M%S}.000{suffix}Z-NA'
+
+    def __str__(self):
+        return self.name
+
+
+def test_satellite_preference_resolves_only_overlap_and_keeps_single_available_satellite():
+    from scripts.acquire_seviri_year import select_slot_products
+    slot=datetime(2021,1,7,9)
+    a,b=SatelliteProduct('MSG2',slot),SatelliteProduct('MSG3',slot)
+    next_product=SatelliteProduct('MSG2',slot+timedelta(minutes=5))
+    for order in [[a,b,next_product],[next_product,b,a]]:
+        chosen,decisions=select_slot_products(order,'MSG3')
+        assert chosen==[b,next_product]
+        assert decisions[0]['selected_product']==str(b)
+        assert decisions[0]['unselected_products']==[str(a)]
+
+
+@pytest.mark.parametrize('satellites,preferred',[
+    (['MSG2','MSG3'],None),(['MSG2','MSG3'],'MSG4'),
+    (['MSG3','MSG3'],'MSG3'),(['MSG2','MSG2','MSG3'],'MSG3'),
+    (['UNKNOWN','MSG3'],'MSG3')])
+def test_ambiguous_provider_products_still_fail(satellites,preferred):
+    from scripts.acquire_seviri_year import select_slot_products
+    products=[SatelliteProduct(s,datetime(2021,1,7,9),suffix=str(i)) for i,s in enumerate(satellites)]
+    with pytest.raises(ValueError,match='Multiple provider products'):
+        select_slot_products(products,preferred)
+
+
+def test_satellite_policy_is_persisted_and_cannot_change_on_resume(tmp_path):
+    from scripts.acquire_seviri_year import pin_selection_policy
+    pin_selection_policy(tmp_path,'MSG3')
+    original=(tmp_path/'selection_policy.json').read_bytes()
+    pin_selection_policy(tmp_path,'MSG3')
+    assert (tmp_path/'selection_policy.json').read_bytes()==original
+    with pytest.raises(ValueError,match='policy changed'):
+        pin_selection_policy(tmp_path,'MSG2')
+
+
+def test_overlap_never_converts_cached_unselected_satellite_and_writes_in_time_order(tmp_path,monkeypatch):
+    from scripts import acquire_seviri_year as job
+    from emma_gpm.seviri import THERMAL_CHANNELS
+    day=datetime(2021,1,7);slot=day+timedelta(hours=9)
+    a,b=SatelliteProduct('MSG2',slot),SatelliteProduct('MSG3',slot)
+    following=SatelliteProduct('MSG2',slot+timedelta(minutes=5))
+    args=SimpleNamespace(zarr_root=tmp_path,workers=1,crop_batch_size=1,preferred_satellite='MSG3')
+    work=tmp_path/'_acquisition/2021';buffer=work/'native_buffer/20210107';buffer.mkdir(parents=True)
+    # Simulate a cached alternative from an interrupted earlier attempt.
+    (buffer/(str(a)+'.nat')).write_bytes(b'unselected MSG2 payload')
+    loaded,written=[],[]
+    def download(collection,*args,**kwargs):
+        selected=list(collection.search());assert selected==[b,following]
+        for product in selected:(buffer/(str(product)+'.nat')).write_bytes(str(product).encode())
+    def load(path,*args,**kwargs):
+        loaded.append(path.stem)
+        return SimpleNamespace(channels=THERMAL_CHANNELS,units='K',
+            start_time=job.native_slot_start_from_name(path),data=SimpleNamespace(shape=(7,763,1762)))
+    def append(path,crops,dtype):
+        path.mkdir(exist_ok=True,parents=True);written.extend(c.start_time for c in crops)
+    monkeypatch.setattr(job,'download_interval',download)
+    monkeypatch.setattr(job,'load_native_crop',load)
+    monkeypatch.setattr(job,'append_batch',append)
+    monkeypatch.setattr(job,'verify_store',lambda path,times:len(times))
+    class Collection:
+        def search(self,**kwargs):return [a,b,following]
+    report=acquire_day(day,Collection(),args,work,'fake','fake')
+    assert loaded==[str(b),str(following)]
+    assert written==[slot,slot+timedelta(minutes=5)]
+    assert report['provider_products']==3 and report['selected_provider_products']==2
+    assert report['selected_satellites']=={'MSG2':1,'MSG3':1}
+    retained=work/'unselected_native/20210107'/(str(a)+'.nat')
+    assert retained.read_bytes()==b'unselected MSG2 payload'
+    manifest=json.loads(Path(report['product_selection_report']).read_text())
+    assert manifest['retained_unselected_native'][0]['sha256']==job.native_digest(retained)
+    assert acquire_day(day,Collection(),args,work,'fake','fake')==report
 
 
 def test_product_slot_is_utc_and_on_native_five_minute_grid():
