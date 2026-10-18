@@ -1,0 +1,1051 @@
+{
+  "heldout_ablations": {
+    "pure_gen_without_ancillaries_vs_full": {
+      "overall_acc": 0.9642,
+      "cloud_dice": 0.9618,
+      "conv_dice": 0.8744,
+      "conv_pod": 0.8984,
+      "conv_prec": 0.8518
+    },
+    "pure_gen_with_ir_ancillaries_vs_full": {
+      "overall_acc": 0.9846,
+      "cloud_dice": 0.9903,
+      "conv_dice": 0.9265,
+      "conv_pod": 0.9081,
+      "conv_prec": 0.9457
+    },
+    "parallax_and_ancillary_vs_opera": {
+      "full_no_parallax": {
+        "dbz_35": {
+          "instantaneous_all_cells": {
+            "tp": 15,
+            "fp": 208,
+            "fn": 38,
+            "pod": 0.283,
+            "precision": 0.0673,
+            "f1": 0.1087,
+            "csi": 0.0575
+          },
+          "lag15min_all_cells": {
+            "tp": 27,
+            "fp": 207,
+            "fn": 100,
+            "pod": 0.2126,
+            "precision": 0.1154,
+            "f1": 0.1496,
+            "csi": 0.0808
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 12,
+            "fp": 100,
+            "fn": 25,
+            "pod": 0.3243,
+            "precision": 0.1071,
+            "f1": 0.1611,
+            "csi": 0.0876
+          },
+          "pixel_level": {
+            "tp": 2978,
+            "fp": 9932,
+            "fn": 2934,
+            "pod": 0.5037,
+            "precision": 0.2307,
+            "f1": 0.3164,
+            "csi": 0.188
+          }
+        },
+        "dbz_40": {
+          "instantaneous_all_cells": {
+            "tp": 9,
+            "fp": 208,
+            "fn": 21,
+            "pod": 0.3,
+            "precision": 0.0415,
+            "f1": 0.0729,
+            "csi": 0.0378
+          },
+          "lag15min_all_cells": {
+            "tp": 24,
+            "fp": 207,
+            "fn": 77,
+            "pod": 0.2376,
+            "precision": 0.1039,
+            "f1": 0.1446,
+            "csi": 0.0779
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 7,
+            "fp": 100,
+            "fn": 12,
+            "pod": 0.3684,
+            "precision": 0.0654,
+            "f1": 0.1111,
+            "csi": 0.0588
+          },
+          "pixel_level": {
+            "tp": 2344,
+            "fp": 9932,
+            "fn": 1948,
+            "pod": 0.5461,
+            "precision": 0.1909,
+            "f1": 0.283,
+            "csi": 0.1648
+          }
+        },
+        "dbz_45": {
+          "instantaneous_all_cells": {
+            "tp": 9,
+            "fp": 208,
+            "fn": 25,
+            "pod": 0.2647,
+            "precision": 0.0415,
+            "f1": 0.0717,
+            "csi": 0.0372
+          },
+          "lag15min_all_cells": {
+            "tp": 16,
+            "fp": 207,
+            "fn": 51,
+            "pod": 0.2388,
+            "precision": 0.0717,
+            "f1": 0.1103,
+            "csi": 0.0584
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 7,
+            "fp": 100,
+            "fn": 14,
+            "pod": 0.3333,
+            "precision": 0.0654,
+            "f1": 0.1094,
+            "csi": 0.0579
+          },
+          "pixel_level": {
+            "tp": 2569,
+            "fp": 9932,
+            "fn": 2084,
+            "pod": 0.5521,
+            "precision": 0.2055,
+            "f1": 0.2995,
+            "csi": 0.1761
+          }
+        },
+        "dbz_50": {
+          "instantaneous_all_cells": {
+            "tp": 5,
+            "fp": 208,
+            "fn": 7,
+            "pod": 0.4167,
+            "precision": 0.0235,
+            "f1": 0.0444,
+            "csi": 0.0227
+          },
+          "lag15min_all_cells": {
+            "tp": 12,
+            "fp": 207,
+            "fn": 43,
+            "pod": 0.2182,
+            "precision": 0.0548,
+            "f1": 0.0876,
+            "csi": 0.0458
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 4,
+            "fp": 100,
+            "fn": 5,
+            "pod": 0.4444,
+            "precision": 0.0385,
+            "f1": 0.0708,
+            "csi": 0.0367
+          },
+          "pixel_level": {
+            "tp": 2386,
+            "fp": 9932,
+            "fn": 399,
+            "pod": 0.8567,
+            "precision": 0.1937,
+            "f1": 0.316,
+            "csi": 0.1876
+          }
+        }
+      },
+      "full_with_parallax": {
+        "dbz_35": {
+          "instantaneous_all_cells": {
+            "tp": 20,
+            "fp": 230,
+            "fn": 27,
+            "pod": 0.4255,
+            "precision": 0.08,
+            "f1": 0.1347,
+            "csi": 0.0722
+          },
+          "lag15min_all_cells": {
+            "tp": 35,
+            "fp": 229,
+            "fn": 98,
+            "pod": 0.2632,
+            "precision": 0.1326,
+            "f1": 0.1763,
+            "csi": 0.0967
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 18,
+            "fp": 94,
+            "fn": 18,
+            "pod": 0.5,
+            "precision": 0.1607,
+            "f1": 0.2432,
+            "csi": 0.1385
+          },
+          "pixel_level": {
+            "tp": 3052,
+            "fp": 9308,
+            "fn": 2457,
+            "pod": 0.554,
+            "precision": 0.2469,
+            "f1": 0.3416,
+            "csi": 0.206
+          }
+        },
+        "dbz_40": {
+          "instantaneous_all_cells": {
+            "tp": 9,
+            "fp": 230,
+            "fn": 14,
+            "pod": 0.3913,
+            "precision": 0.0377,
+            "f1": 0.0687,
+            "csi": 0.0356
+          },
+          "lag15min_all_cells": {
+            "tp": 28,
+            "fp": 229,
+            "fn": 73,
+            "pod": 0.2772,
+            "precision": 0.1089,
+            "f1": 0.1564,
+            "csi": 0.0848
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 9,
+            "fp": 94,
+            "fn": 7,
+            "pod": 0.5625,
+            "precision": 0.0874,
+            "f1": 0.1513,
+            "csi": 0.0818
+          },
+          "pixel_level": {
+            "tp": 988,
+            "fp": 9308,
+            "fn": 1481,
+            "pod": 0.4002,
+            "precision": 0.096,
+            "f1": 0.1548,
+            "csi": 0.0839
+          }
+        },
+        "dbz_45": {
+          "instantaneous_all_cells": {
+            "tp": 5,
+            "fp": 230,
+            "fn": 13,
+            "pod": 0.2778,
+            "precision": 0.0213,
+            "f1": 0.0395,
+            "csi": 0.0202
+          },
+          "lag15min_all_cells": {
+            "tp": 15,
+            "fp": 229,
+            "fn": 45,
+            "pod": 0.25,
+            "precision": 0.0615,
+            "f1": 0.0987,
+            "csi": 0.0519
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 4,
+            "fp": 94,
+            "fn": 5,
+            "pod": 0.4444,
+            "precision": 0.0408,
+            "f1": 0.0748,
+            "csi": 0.0388
+          },
+          "pixel_level": {
+            "tp": 454,
+            "fp": 9308,
+            "fn": 414,
+            "pod": 0.523,
+            "precision": 0.0465,
+            "f1": 0.0854,
+            "csi": 0.0446
+          }
+        },
+        "dbz_50": {
+          "instantaneous_all_cells": {
+            "tp": 3,
+            "fp": 230,
+            "fn": 3,
+            "pod": 0.5,
+            "precision": 0.0129,
+            "f1": 0.0251,
+            "csi": 0.0127
+          },
+          "lag15min_all_cells": {
+            "tp": 12,
+            "fp": 229,
+            "fn": 26,
+            "pod": 0.3158,
+            "precision": 0.0498,
+            "f1": 0.086,
+            "csi": 0.0449
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 3,
+            "fp": 94,
+            "fn": 2,
+            "pod": 0.6,
+            "precision": 0.0309,
+            "f1": 0.0588,
+            "csi": 0.0303
+          },
+          "pixel_level": {
+            "tp": 398,
+            "fp": 9308,
+            "fn": 230,
+            "pod": 0.6338,
+            "precision": 0.041,
+            "f1": 0.077,
+            "csi": 0.0401
+          }
+        }
+      },
+      "pure_no_parallax": {
+        "dbz_35": {
+          "instantaneous_all_cells": {
+            "tp": 19,
+            "fp": 419,
+            "fn": 38,
+            "pod": 0.3333,
+            "precision": 0.0434,
+            "f1": 0.0768,
+            "csi": 0.0399
+          },
+          "lag15min_all_cells": {
+            "tp": 35,
+            "fp": 416,
+            "fn": 94,
+            "pod": 0.2713,
+            "precision": 0.0776,
+            "f1": 0.1207,
+            "csi": 0.0642
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 15,
+            "fp": 205,
+            "fn": 25,
+            "pod": 0.375,
+            "precision": 0.0682,
+            "f1": 0.1154,
+            "csi": 0.0612
+          },
+          "pixel_level": {
+            "tp": 3191,
+            "fp": 22531,
+            "fn": 3102,
+            "pod": 0.5071,
+            "precision": 0.1241,
+            "f1": 0.1993,
+            "csi": 0.1107
+          }
+        },
+        "dbz_40": {
+          "instantaneous_all_cells": {
+            "tp": 11,
+            "fp": 419,
+            "fn": 21,
+            "pod": 0.3438,
+            "precision": 0.0256,
+            "f1": 0.0476,
+            "csi": 0.0244
+          },
+          "lag15min_all_cells": {
+            "tp": 29,
+            "fp": 416,
+            "fn": 75,
+            "pod": 0.2788,
+            "precision": 0.0652,
+            "f1": 0.1056,
+            "csi": 0.0558
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 9,
+            "fp": 205,
+            "fn": 12,
+            "pod": 0.4286,
+            "precision": 0.0421,
+            "f1": 0.0766,
+            "csi": 0.0398
+          },
+          "pixel_level": {
+            "tp": 2456,
+            "fp": 22531,
+            "fn": 1948,
+            "pod": 0.5577,
+            "precision": 0.0983,
+            "f1": 0.1671,
+            "csi": 0.0912
+          }
+        },
+        "dbz_45": {
+          "instantaneous_all_cells": {
+            "tp": 9,
+            "fp": 419,
+            "fn": 26,
+            "pod": 0.2571,
+            "precision": 0.021,
+            "f1": 0.0389,
+            "csi": 0.0198
+          },
+          "lag15min_all_cells": {
+            "tp": 16,
+            "fp": 416,
+            "fn": 53,
+            "pod": 0.2319,
+            "precision": 0.037,
+            "f1": 0.0639,
+            "csi": 0.033
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 7,
+            "fp": 205,
+            "fn": 14,
+            "pod": 0.3333,
+            "precision": 0.033,
+            "f1": 0.0601,
+            "csi": 0.031
+          },
+          "pixel_level": {
+            "tp": 2569,
+            "fp": 22531,
+            "fn": 2102,
+            "pod": 0.55,
+            "precision": 0.1024,
+            "f1": 0.1726,
+            "csi": 0.0944
+          }
+        },
+        "dbz_50": {
+          "instantaneous_all_cells": {
+            "tp": 5,
+            "fp": 419,
+            "fn": 7,
+            "pod": 0.4167,
+            "precision": 0.0118,
+            "f1": 0.0229,
+            "csi": 0.0116
+          },
+          "lag15min_all_cells": {
+            "tp": 12,
+            "fp": 416,
+            "fn": 43,
+            "pod": 0.2182,
+            "precision": 0.028,
+            "f1": 0.0497,
+            "csi": 0.0255
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 4,
+            "fp": 205,
+            "fn": 5,
+            "pod": 0.4444,
+            "precision": 0.0191,
+            "f1": 0.0367,
+            "csi": 0.0187
+          },
+          "pixel_level": {
+            "tp": 2386,
+            "fp": 22531,
+            "fn": 399,
+            "pod": 0.8567,
+            "precision": 0.0958,
+            "f1": 0.1723,
+            "csi": 0.0942
+          }
+        }
+      },
+      "pure_ir_anc_with_parallax": {
+        "dbz_35": {
+          "instantaneous_all_cells": {
+            "tp": 21,
+            "fp": 310,
+            "fn": 25,
+            "pod": 0.4565,
+            "precision": 0.0634,
+            "f1": 0.1114,
+            "csi": 0.059
+          },
+          "lag15min_all_cells": {
+            "tp": 39,
+            "fp": 308,
+            "fn": 91,
+            "pod": 0.3,
+            "precision": 0.1124,
+            "f1": 0.1635,
+            "csi": 0.089
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 18,
+            "fp": 124,
+            "fn": 16,
+            "pod": 0.5294,
+            "precision": 0.1268,
+            "f1": 0.2045,
+            "csi": 0.1139
+          },
+          "pixel_level": {
+            "tp": 3036,
+            "fp": 12725,
+            "fn": 1671,
+            "pod": 0.645,
+            "precision": 0.1926,
+            "f1": 0.2967,
+            "csi": 0.1742
+          }
+        },
+        "dbz_40": {
+          "instantaneous_all_cells": {
+            "tp": 10,
+            "fp": 310,
+            "fn": 13,
+            "pod": 0.4348,
+            "precision": 0.0312,
+            "f1": 0.0583,
+            "csi": 0.03
+          },
+          "lag15min_all_cells": {
+            "tp": 29,
+            "fp": 308,
+            "fn": 65,
+            "pod": 0.3085,
+            "precision": 0.0861,
+            "f1": 0.1346,
+            "csi": 0.0721
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 9,
+            "fp": 124,
+            "fn": 7,
+            "pod": 0.5625,
+            "precision": 0.0677,
+            "f1": 0.1208,
+            "csi": 0.0643
+          },
+          "pixel_level": {
+            "tp": 994,
+            "fp": 12725,
+            "fn": 554,
+            "pod": 0.6421,
+            "precision": 0.0725,
+            "f1": 0.1302,
+            "csi": 0.0696
+          }
+        },
+        "dbz_45": {
+          "instantaneous_all_cells": {
+            "tp": 5,
+            "fp": 310,
+            "fn": 10,
+            "pod": 0.3333,
+            "precision": 0.0159,
+            "f1": 0.0303,
+            "csi": 0.0154
+          },
+          "lag15min_all_cells": {
+            "tp": 14,
+            "fp": 308,
+            "fn": 44,
+            "pod": 0.2414,
+            "precision": 0.0435,
+            "f1": 0.0737,
+            "csi": 0.0383
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 4,
+            "fp": 124,
+            "fn": 3,
+            "pod": 0.5714,
+            "precision": 0.0312,
+            "f1": 0.0593,
+            "csi": 0.0305
+          },
+          "pixel_level": {
+            "tp": 454,
+            "fp": 12725,
+            "fn": 218,
+            "pod": 0.6756,
+            "precision": 0.0344,
+            "f1": 0.0656,
+            "csi": 0.0339
+          }
+        },
+        "dbz_50": {
+          "instantaneous_all_cells": {
+            "tp": 3,
+            "fp": 310,
+            "fn": 2,
+            "pod": 0.6,
+            "precision": 0.0096,
+            "f1": 0.0189,
+            "csi": 0.0095
+          },
+          "lag15min_all_cells": {
+            "tp": 11,
+            "fp": 308,
+            "fn": 25,
+            "pod": 0.3056,
+            "precision": 0.0345,
+            "f1": 0.062,
+            "csi": 0.032
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 3,
+            "fp": 124,
+            "fn": 2,
+            "pod": 0.6,
+            "precision": 0.0236,
+            "f1": 0.0455,
+            "csi": 0.0233
+          },
+          "pixel_level": {
+            "tp": 397,
+            "fp": 12725,
+            "fn": 78,
+            "pod": 0.8358,
+            "precision": 0.0303,
+            "f1": 0.0584,
+            "csi": 0.0301
+          }
+        }
+      }
+    }
+  },
+  "september_2020_full_domain": {
+    "september_week_days": [
+      "20200914",
+      "20200915",
+      "20200916",
+      "20200917",
+      "20200918",
+      "20200919",
+      "20200920"
+    ],
+    "num_full_domain_slots": 84,
+    "uniform_cadence_hours": 2.0,
+    "video_fps": 1.2,
+    "video_duration_seconds": 70.0,
+    "domain_shape_hw": [
+      763,
+      1762
+    ],
+    "pure_vs_full_agreement_full_domain": {
+      "overall_acc": 0.9741,
+      "cloud_iou": 0.7393,
+      "cloud_dice": 0.8501,
+      "conv_iou": 0.5286,
+      "conv_dice": 0.6916,
+      "conv_pod": 0.6226,
+      "conv_prec": 0.7778
+    },
+    "opera_verification_full_domain": {
+      "nwcsaf_rdt_full_era5_cal": {
+        "dbz_35": {
+          "instantaneous_all_cells": {
+            "tp": 14,
+            "fp": 524,
+            "fn": 67,
+            "pod": 0.1728,
+            "precision": 0.026,
+            "f1": 0.0452,
+            "csi": 0.0231
+          },
+          "lag15min_all_cells": {
+            "tp": 41,
+            "fp": 509,
+            "fn": 381,
+            "pod": 0.0972,
+            "precision": 0.0745,
+            "f1": 0.0844,
+            "csi": 0.044
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 13,
+            "fp": 320,
+            "fn": 57,
+            "pod": 0.1857,
+            "precision": 0.039,
+            "f1": 0.0645,
+            "csi": 0.0333
+          },
+          "small_lt500km2_cells": {
+            "tp": 1,
+            "fp": 204,
+            "fn": 10,
+            "pod": 0.0909,
+            "precision": 0.0049,
+            "f1": 0.0093,
+            "csi": 0.0047
+          },
+          "pixel_level": {
+            "tp": 4069,
+            "fp": 53123,
+            "fn": 8198,
+            "pod": 0.3317,
+            "precision": 0.0711,
+            "f1": 0.1172,
+            "csi": 0.0622
+          }
+        },
+        "dbz_40": {
+          "instantaneous_all_cells": {
+            "tp": 10,
+            "fp": 524,
+            "fn": 26,
+            "pod": 0.2778,
+            "precision": 0.0187,
+            "f1": 0.0351,
+            "csi": 0.0179
+          },
+          "lag15min_all_cells": {
+            "tp": 26,
+            "fp": 509,
+            "fn": 218,
+            "pod": 0.1066,
+            "precision": 0.0486,
+            "f1": 0.0668,
+            "csi": 0.0345
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 10,
+            "fp": 320,
+            "fn": 22,
+            "pod": 0.3125,
+            "precision": 0.0303,
+            "f1": 0.0552,
+            "csi": 0.0284
+          },
+          "small_lt500km2_cells": {
+            "tp": 0,
+            "fp": 204,
+            "fn": 4,
+            "pod": 0.0,
+            "precision": 0.0,
+            "f1": 0.0,
+            "csi": 0.0
+          },
+          "pixel_level": {
+            "tp": 3125,
+            "fp": 53123,
+            "fn": 3362,
+            "pod": 0.4817,
+            "precision": 0.0556,
+            "f1": 0.0996,
+            "csi": 0.0524
+          }
+        },
+        "dbz_45": {
+          "instantaneous_all_cells": {
+            "tp": 6,
+            "fp": 524,
+            "fn": 20,
+            "pod": 0.2308,
+            "precision": 0.0113,
+            "f1": 0.0216,
+            "csi": 0.0109
+          },
+          "lag15min_all_cells": {
+            "tp": 20,
+            "fp": 509,
+            "fn": 108,
+            "pod": 0.1562,
+            "precision": 0.0378,
+            "f1": 0.0609,
+            "csi": 0.0314
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 6,
+            "fp": 320,
+            "fn": 17,
+            "pod": 0.2609,
+            "precision": 0.0184,
+            "f1": 0.0344,
+            "csi": 0.0175
+          },
+          "small_lt500km2_cells": {
+            "tp": 0,
+            "fp": 204,
+            "fn": 3,
+            "pod": 0.0,
+            "precision": 0.0,
+            "f1": 0.0,
+            "csi": 0.0
+          },
+          "pixel_level": {
+            "tp": 2554,
+            "fp": 53123,
+            "fn": 2513,
+            "pod": 0.504,
+            "precision": 0.0459,
+            "f1": 0.0841,
+            "csi": 0.0439
+          }
+        },
+        "dbz_50": {
+          "instantaneous_all_cells": {
+            "tp": 1,
+            "fp": 524,
+            "fn": 1,
+            "pod": 0.5,
+            "precision": 0.0019,
+            "f1": 0.0038,
+            "csi": 0.0019
+          },
+          "lag15min_all_cells": {
+            "tp": 9,
+            "fp": 509,
+            "fn": 30,
+            "pod": 0.2308,
+            "precision": 0.0174,
+            "f1": 0.0323,
+            "csi": 0.0164
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 1,
+            "fp": 320,
+            "fn": 1,
+            "pod": 0.5,
+            "precision": 0.0031,
+            "f1": 0.0062,
+            "csi": 0.0031
+          },
+          "small_lt500km2_cells": {
+            "tp": 0,
+            "fp": 204,
+            "fn": 0,
+            "pod": 0.0,
+            "precision": 0.0,
+            "f1": 0.0,
+            "csi": 0.0
+          },
+          "pixel_level": {
+            "tp": 2073,
+            "fp": 53123,
+            "fn": 302,
+            "pod": 0.8728,
+            "precision": 0.0376,
+            "f1": 0.072,
+            "csi": 0.0374
+          }
+        }
+      },
+      "nwcsaf_rdt_seviri_pure_gen": {
+        "dbz_35": {
+          "instantaneous_all_cells": {
+            "tp": 13,
+            "fp": 642,
+            "fn": 76,
+            "pod": 0.1461,
+            "precision": 0.0198,
+            "f1": 0.0349,
+            "csi": 0.0178
+          },
+          "lag15min_all_cells": {
+            "tp": 38,
+            "fp": 628,
+            "fn": 385,
+            "pod": 0.0898,
+            "precision": 0.0571,
+            "f1": 0.0698,
+            "csi": 0.0362
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 12,
+            "fp": 382,
+            "fn": 64,
+            "pod": 0.1579,
+            "precision": 0.0305,
+            "f1": 0.0511,
+            "csi": 0.0262
+          },
+          "small_lt500km2_cells": {
+            "tp": 1,
+            "fp": 260,
+            "fn": 12,
+            "pod": 0.0769,
+            "precision": 0.0038,
+            "f1": 0.0073,
+            "csi": 0.0037
+          },
+          "pixel_level": {
+            "tp": 1877,
+            "fp": 54072,
+            "fn": 10727,
+            "pod": 0.1489,
+            "precision": 0.0335,
+            "f1": 0.0548,
+            "csi": 0.0282
+          }
+        },
+        "dbz_40": {
+          "instantaneous_all_cells": {
+            "tp": 8,
+            "fp": 642,
+            "fn": 38,
+            "pod": 0.1739,
+            "precision": 0.0123,
+            "f1": 0.023,
+            "csi": 0.0116
+          },
+          "lag15min_all_cells": {
+            "tp": 26,
+            "fp": 628,
+            "fn": 225,
+            "pod": 0.1036,
+            "precision": 0.0398,
+            "f1": 0.0575,
+            "csi": 0.0296
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 7,
+            "fp": 382,
+            "fn": 31,
+            "pod": 0.1842,
+            "precision": 0.018,
+            "f1": 0.0328,
+            "csi": 0.0167
+          },
+          "small_lt500km2_cells": {
+            "tp": 1,
+            "fp": 260,
+            "fn": 7,
+            "pod": 0.125,
+            "precision": 0.0038,
+            "f1": 0.0074,
+            "csi": 0.0037
+          },
+          "pixel_level": {
+            "tp": 750,
+            "fp": 54072,
+            "fn": 6158,
+            "pod": 0.1086,
+            "precision": 0.0137,
+            "f1": 0.0243,
+            "csi": 0.0123
+          }
+        },
+        "dbz_45": {
+          "instantaneous_all_cells": {
+            "tp": 8,
+            "fp": 642,
+            "fn": 25,
+            "pod": 0.2424,
+            "precision": 0.0123,
+            "f1": 0.0234,
+            "csi": 0.0119
+          },
+          "lag15min_all_cells": {
+            "tp": 17,
+            "fp": 628,
+            "fn": 119,
+            "pod": 0.125,
+            "precision": 0.0264,
+            "f1": 0.0435,
+            "csi": 0.0223
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 7,
+            "fp": 382,
+            "fn": 18,
+            "pod": 0.28,
+            "precision": 0.018,
+            "f1": 0.0338,
+            "csi": 0.0172
+          },
+          "small_lt500km2_cells": {
+            "tp": 1,
+            "fp": 260,
+            "fn": 7,
+            "pod": 0.125,
+            "precision": 0.0038,
+            "f1": 0.0074,
+            "csi": 0.0037
+          },
+          "pixel_level": {
+            "tp": 800,
+            "fp": 54072,
+            "fn": 4343,
+            "pod": 0.1556,
+            "precision": 0.0146,
+            "f1": 0.0267,
+            "csi": 0.0135
+          }
+        },
+        "dbz_50": {
+          "instantaneous_all_cells": {
+            "tp": 2,
+            "fp": 642,
+            "fn": 5,
+            "pod": 0.2857,
+            "precision": 0.0031,
+            "f1": 0.0061,
+            "csi": 0.0031
+          },
+          "lag15min_all_cells": {
+            "tp": 8,
+            "fp": 628,
+            "fn": 39,
+            "pod": 0.1702,
+            "precision": 0.0126,
+            "f1": 0.0234,
+            "csi": 0.0119
+          },
+          "mesoscale_ge500km2_cells": {
+            "tp": 1,
+            "fp": 382,
+            "fn": 2,
+            "pod": 0.3333,
+            "precision": 0.0026,
+            "f1": 0.0052,
+            "csi": 0.0026
+          },
+          "small_lt500km2_cells": {
+            "tp": 1,
+            "fp": 260,
+            "fn": 3,
+            "pod": 0.25,
+            "precision": 0.0038,
+            "f1": 0.0075,
+            "csi": 0.0038
+          },
+          "pixel_level": {
+            "tp": 45,
+            "fp": 54072,
+            "fn": 2555,
+            "pod": 0.0173,
+            "precision": 0.0008,
+            "f1": 0.0016,
+            "csi": 0.0008
+          }
+        }
+      }
+    },
+    "videos": {
+      "video_1_opera": "C:\\Users\\Daniele.LOKI\\Documents\\Progetti\\deep_convection\\RDT_original\\results\\comparison_seviri_2020\\sept2020_full_domain_1_OPERA_radar.mp4",
+      "video_2_rdt_completo": "C:\\Users\\Daniele.LOKI\\Documents\\Progetti\\deep_convection\\RDT_original\\results\\comparison_seviri_2020\\sept2020_full_domain_2_RDT_completo.mp4",
+      "video_3_rdt_puro": "C:\\Users\\Daniele.LOKI\\Documents\\Progetti\\deep_convection\\RDT_original\\results\\comparison_seviri_2020\\sept2020_full_domain_3_RDT_puro.mp4"
+    }
+  }
+}

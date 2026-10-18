@@ -187,48 +187,54 @@ def compute_hrw_amv_guess_field(
     amv_weight = np.zeros((nr, nc), dtype=np.float64)
 
     # Combine IR10.8 and WV6.2 if available for richer upper-level texture
+    prev_ir_clean = np.nan_to_num(prev_ir108, nan=300.0)
     if prev_wv062 is not None and curr_wv062 is not None:
-        p_field = 0.7 * np.nan_to_num(prev_ir108, nan=290.0) + 0.3 * np.nan_to_num(prev_wv062, nan=240.0)
-        c_field = 0.7 * np.nan_to_num(curr_ir108, nan=290.0) + 0.3 * np.nan_to_num(curr_wv062, nan=240.0)
+        p_field = (0.7 * np.nan_to_num(prev_ir108, nan=290.0) + 0.3 * np.nan_to_num(prev_wv062, nan=240.0)).astype(np.float64)
+        c_field = (0.7 * np.nan_to_num(curr_ir108, nan=290.0) + 0.3 * np.nan_to_num(curr_wv062, nan=240.0)).astype(np.float64)
     else:
-        p_field = np.nan_to_num(prev_ir108, nan=290.0)
-        c_field = np.nan_to_num(curr_ir108, nan=290.0)
+        p_field = np.nan_to_num(prev_ir108, nan=290.0).astype(np.float64)
+        c_field = np.nan_to_num(curr_ir108, nan=290.0).astype(np.float64)
 
     from numpy.lib.stride_tricks import sliding_window_view
+
+    bs = int(block_size)
+    n_pix = float(bs * bs)
+    sat1 = np.pad(c_field, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
+    sat2 = np.pad(c_field * c_field, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
+    win_mean = (sat1[bs:, bs:] - sat1[:-bs, bs:] - sat1[bs:, :-bs] + sat1[:-bs, :-bs]) / n_pix
+    win_mean2 = (sat2[bs:, bs:] - sat2[:-bs, bs:] - sat2[bs:, :-bs] + sat2[:-bs, :-bs]) / n_pix
+    global_stds = np.sqrt(np.maximum(win_mean2 - win_mean * win_mean, 0.0))
 
     n_shifts = 2 * max_shift_px + 1
     for ir, r0 in enumerate(rows):
         for ic, c0 in enumerate(cols):
-            # Only compute AMV where clouds colder than 268 K exist
-            sub_ir = prev_ir108[r0 : r0 + block_size, c0 : c0 + block_size]
-            if np.nanmin(sub_ir) > 268.15:
+            # Only compute AMV where clouds colder than 268.15 K exist
+            if float(prev_ir_clean[r0 : r0 + bs, c0 : c0 + bs].min()) > 268.15:
                 continue
-            tpl = p_field[r0 : r0 + block_size, c0 : c0 + block_size]
+            tpl = p_field[r0 : r0 + bs, c0 : c0 + bs]
             tpl_std = float(np.std(tpl))
             if tpl_std < 1.2:
                 continue
-            tpl_norm_flat = (tpl - float(np.mean(tpl))).ravel()
+            tpl_zm = tpl - float(np.mean(tpl))
 
-            search_win = c_field[
-                r0 - max_shift_px : r0 + max_shift_px + block_size,
-                c0 - max_shift_px : c0 + max_shift_px + block_size,
+            p_stds = global_stds[
+                r0 - max_shift_px : r0 + max_shift_px + 1,
+                c0 - max_shift_px : c0 + max_shift_px + 1,
             ]
-            patches = sliding_window_view(search_win, (block_size, block_size)).reshape(
-                n_shifts * n_shifts, block_size * block_size
-            )
-            p_means = patches.mean(axis=1, keepdims=True)
-            p_centered = patches - p_means
-            p_stds = np.sqrt(np.mean(p_centered * p_centered, axis=1))
             valid_p = p_stds >= 1.2
             if not np.any(valid_p):
                 continue
 
-            corrs = np.full(n_shifts * n_shifts, -1.0, dtype=np.float64)
-            corrs[valid_p] = (p_centered[valid_p] @ tpl_norm_flat) / (
-                block_size * block_size * tpl_std * p_stds[valid_p]
-            )
+            search_win = c_field[
+                r0 - max_shift_px : r0 + max_shift_px + bs,
+                c0 - max_shift_px : c0 + max_shift_px + bs,
+            ]
+            windows = sliding_window_view(search_win, (bs, bs))
+            dots = np.einsum("ijkl,kl->ij", windows, tpl_zm)
+            corrs = np.full((n_shifts, n_shifts), -1.0, dtype=np.float64)
+            corrs[valid_p] = dots[valid_p] / (n_pix * tpl_std * p_stds[valid_p])
             best_idx = int(np.argmax(corrs))
-            best_corr = float(corrs[best_idx])
+            best_corr = float(corrs.ravel()[best_idx])
 
             if best_corr >= 0.65:
                 dy_idx, dx_idx = divmod(best_idx, n_shifts)

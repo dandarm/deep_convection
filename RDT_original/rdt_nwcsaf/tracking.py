@@ -39,17 +39,33 @@ def common_threshold_area(
     return float(cell["area_km2"])
 
 
+def _precompute_ir_anomaly_sat(
+    prev_ir: np.ndarray, twarm_k: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Precompute cold cloud anomaly and 2D summed-area tables once per frame."""
+    anom = np.maximum(
+        twarm_k - np.nan_to_num(prev_ir, nan=twarm_k), 0.0
+    ).astype(np.float64, copy=False)
+    sat1 = np.pad(anom, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
+    sat2 = np.pad(anom * anom, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
+    return anom, sat1, sat2
+
+
 def estimate_local_correlation_motion(
     prev_ir: np.ndarray,
     curr_ir: np.ndarray,
     center_yx: np.ndarray,
     cfg: NwcSafRdtConfig,
+    *,
+    _precomp: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, float]:
     """Estimate displacement (dy, dx) in pixels from t to t+dt via local IR10.8 cross-correlation.
 
     Returns (displacement_yx_pixels, max_pearson_rho).
     ATBD Fig. 14 (p. 31): accept cross-correlation velocity when rho_max >= 0.5.
     """
+    from numpy.lib.stride_tricks import sliding_window_view
+
     h, w = curr_ir.shape
     cy, cx = int(round(float(center_yx[0]))), int(round(float(center_yx[1])))
     r_win = int(cfg.corr_window_pixels)
@@ -59,7 +75,8 @@ def estimate_local_correlation_motion(
     y1 = min(h, cy + r_win + 1)
     x0 = max(0, cx - r_win)
     x1 = min(w, cx + r_win + 1)
-    if (y1 - y0) < 5 or (x1 - x0) < 5:
+    ph, pw = y1 - y0, x1 - x0
+    if ph < 5 or pw < 5:
         return np.zeros(2, dtype=float), 0.0
 
     # Extract cold cloud anomaly below T_warm
@@ -69,37 +86,64 @@ def estimate_local_correlation_motion(
     if norm_curr < 1e-6:
         return np.zeros(2, dtype=float), 0.0
 
-    best_rho = -1.0
-    best_shift = (0, 0)
+    # Valid shift ranges so that py0 = y0 - dy >= 0 and py1 = y1 - dy <= h
+    # => y1 - h <= dy <= y0, intersected with [-r_shift, +r_shift]
+    dy_min = max(-r_shift, y1 - h)
+    dy_max = min(r_shift, y0)
+    dx_min = max(-r_shift, x1 - w)
+    dx_max = min(r_shift, x0)
+    if dy_min > dy_max or dx_min > dx_max:
+        return np.zeros(2, dtype=float), 0.0
 
-    # Search integer shifts (dy, dx) within [-r_shift, +r_shift]
-    for dy in range(-r_shift, r_shift + 1):
-        py0, py1 = y0 - dy, y1 - dy
-        if py0 < 0 or py1 > h:
-            continue
-        for dx in range(-r_shift, r_shift + 1):
-            px0, px1 = x0 - dx, x1 - dx
-            if px0 < 0 or px1 > w:
-                continue
-            patch_prev = np.maximum(
-                cfg.twarm_k - np.nan_to_num(prev_ir[py0:py1, px0:px1], nan=cfg.twarm_k),
-                0.0,
-            )
-            patch_prev_zm = patch_prev - patch_prev.mean()
-            norm_prev = float(np.linalg.norm(patch_prev_zm))
-            if norm_prev < 1e-6:
-                continue
-            rho = float(np.sum(patch_curr_zm * patch_prev_zm) / (norm_curr * norm_prev))
-            if rho > best_rho + 1e-9 or (
-                abs(rho - best_rho) <= 1e-9
-                and (dy * dy + dx * dx) < (best_shift[0] ** 2 + best_shift[1] ** 2)
-            ):
-                best_rho = rho
-                best_shift = (dy, dx)
+    # Extract bounding region in prev_ir covering all valid shifts:
+    # py0 ranges from (y0 - dy_max) to (y0 - dy_min)
+    sy0 = y0 - dy_max
+    sy1 = y1 - dy_min
+    sx0 = x0 - dx_max
+    sx1 = x1 - dx_min
+    patch_zm64 = patch_curr_zm.astype(np.float64, copy=False)
+    n_pix = float(ph * pw)
 
+    if _precomp is not None:
+        anom_full, sat1_full, sat2_full = _precomp
+        search_prev = anom_full[sy0:sy1, sx0:sx1]
+        s1 = sat1_full[sy0 : sy1 + 1, sx0 : sx1 + 1]
+        s2 = sat2_full[sy0 : sy1 + 1, sx0 : sx1 + 1]
+    else:
+        search_prev = np.maximum(
+            cfg.twarm_k - np.nan_to_num(prev_ir[sy0:sy1, sx0:sx1], nan=cfg.twarm_k),
+            0.0,
+        ).astype(np.float64, copy=False)
+        s1 = np.pad(search_prev, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
+        s2 = np.pad(search_prev * search_prev, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
+
+    win_sum = s1[ph:, pw:] - s1[:-ph, pw:] - s1[ph:, :-pw] + s1[:-ph, :-pw]
+    win_sum2 = s2[ph:, pw:] - s2[:-ph, pw:] - s2[ph:, :-pw] + s2[:-ph, :-pw]
+    var_prev = np.maximum(win_sum2 - (win_sum * win_sum) / n_pix, 0.0)
+    norms_prev = np.sqrt(var_prev)
+    valid_mask = norms_prev >= 1e-6
+    if not np.any(valid_mask):
+        return np.zeros(2, dtype=float), 0.0
+
+    # Since patch_zm64 has zero mean, sum((w - mean(w)) * patch_zm64) == sum(w * patch_zm64)
+    windows = sliding_window_view(search_prev, (ph, pw))
+    dots = np.einsum("ijkl,kl->ij", windows, patch_zm64)
+    rhos = np.full(norms_prev.shape, -2.0, dtype=float)
+    rhos[valid_mask] = dots[valid_mask] / (norm_curr * norms_prev[valid_mask])
+
+    best_rho = float(rhos.max())
     if best_rho < 0.0:
         return np.zeros(2, dtype=float), 0.0
-    return np.array([float(best_shift[0]), float(best_shift[1])], dtype=float), best_rho
+
+    # Note: window index (iy, ix) corresponds to py0 = sy0 + iy = y0 - dy_max + iy => dy = dy_max - iy
+    iy_cand, ix_cand = np.nonzero(np.abs(rhos - best_rho) <= 1e-9)
+    dys = dy_max - iy_cand
+    dxs = dx_max - ix_cand
+    dist2 = dys * dys + dxs * dxs
+    best_idx = int(np.argmin(dist2))
+    best_dy = float(dys[best_idx])
+    best_dx = float(dxs[best_idx])
+    return np.array([best_dy, best_dx], dtype=float), best_rho
 
 
 def _fallback_velocity_for_orphan(
@@ -161,10 +205,13 @@ def _overlap_forward(
     if not valid.any():
         return []
 
+    valid_labels = sub_labels[valid]
+    max_label = int(valid_labels.max())
+    if max_label == 0:
+        return []
     adv_area = float(sub_area[valid].sum())
-    max_label = int(curr_labels.max())
     inter_sums = np.bincount(
-        sub_labels[valid], weights=sub_area[valid], minlength=max_label + 1
+        valid_labels, weights=sub_area[valid], minlength=max_label + 1
     )
     matches: list[tuple[int, float, float]] = []
     for cid in np.flatnonzero(inter_sums[1:]) + 1:
@@ -216,10 +263,13 @@ def _overlap_backward(
     if not valid.any():
         return []
 
+    valid_labels = sub_labels[valid]
+    max_label = int(valid_labels.max())
+    if max_label == 0:
+        return []
     back_area = float(sub_area[valid].sum())
-    max_label = int(prev_labels.max())
     inter_sums = np.bincount(
-        sub_labels[valid], weights=sub_area[valid], minlength=max_label + 1
+        valid_labels, weights=sub_area[valid], minlength=max_label + 1
     )
     matches: list[tuple[int, float, float]] = []
     for pid in np.flatnonzero(inter_sums[1:]) + 1:
@@ -267,12 +317,22 @@ def track_rdt_cells(
     children: dict[int, list[int]] = {pid: [] for pid in prev_cells}
     edges: dict[tuple[int, int], dict[str, Any]] = {}
 
+    _precomp_sat = (
+        _precompute_ir_anomaly_sat(prev_ir108, cfg.twarm_k)
+        if prev_ir108 is not None
+        else None
+    )
+
     if not prev_cells or prev_labels is None or not curr_cells:
         events = {cid: "new" for cid in curr_cells}
         for cid, cell in curr_cells.items():
             if prev_ir108 is not None:
                 corr_v, rho = estimate_local_correlation_motion(
-                    prev_ir108, curr_ir108, cell["weight_centroid_yx"], cfg
+                    prev_ir108,
+                    curr_ir108,
+                    cell["weight_centroid_yx"],
+                    cfg,
+                    _precomp=_precomp_sat,
                 )
                 cell["provisional_motion_yx"] = (
                     corr_v
@@ -314,7 +374,11 @@ def track_rdt_cells(
         # Step 2: Estimate velocity via cross-correlation (if rho >= 0.5) else neighbour/guess
         if prev_ir108 is not None:
             corr_vel, rho_max = estimate_local_correlation_motion(
-                prev_ir108, curr_ir108, ccell["weight_centroid_yx"], cfg
+                prev_ir108,
+                curr_ir108,
+                ccell["weight_centroid_yx"],
+                cfg,
+                _precomp=_precomp_sat,
             )
         else:
             corr_vel, rho_max = np.zeros(2, dtype=float), 0.0
