@@ -57,11 +57,13 @@ class NwcSafRdtTracker:
         calibrated_model: Any | None = None,
         use_ancillary_ct: bool = False,
         use_hrw_amv: bool = False,
+        use_parallax_correction: bool = False,
     ) -> None:
         self.cfg = cfg or NwcSafRdtConfig()
         self.calibrated_model = calibrated_model
         self.use_ancillary_ct = use_ancillary_ct
         self.use_hrw_amv = use_hrw_amv
+        self.use_parallax_correction = use_parallax_correction
         self.reset()
 
     def reset(self) -> None:
@@ -354,6 +356,33 @@ class NwcSafRdtTracker:
         # Stage 6: Lagrangian forecast (+15, +30, +45, +60 min)
         forecasts = forecast_convective_cells(curr_cells, dt_minutes, self.cfg)
 
+        # Optional 3D Geostationary Parallax Correction to ground truth coordinates
+        if self.use_parallax_correction and isinstance(lat_deg, np.ndarray) and isinstance(lon_deg, np.ndarray):
+            from .ancillary import apply_parallax_correction_2d
+
+            tsurf_val = t_surf_k if t_surf_k is not None else 292.0
+            ttropo_val = tropopause_temp_k if tropopause_temp_k is not None else 215.0
+            semantic_label = apply_parallax_correction_2d(
+                semantic_label, frame[4], lat_deg, lon_deg,
+                t_surf_k=tsurf_val, t_tropo_k=ttropo_val, fill_value=0,
+            )
+            track_id_map = apply_parallax_correction_2d(
+                track_id_map, frame[4], lat_deg, lon_deg,
+                t_surf_k=tsurf_val, t_tropo_k=ttropo_val, fill_value=0,
+            )
+            phase_map = apply_parallax_correction_2d(
+                phase_map, frame[4], lat_deg, lon_deg,
+                t_surf_k=tsurf_val, t_tropo_k=ttropo_val, fill_value=-1,
+            )
+            severity_map = apply_parallax_correction_2d(
+                severity_map, frame[4], lat_deg, lon_deg,
+                t_surf_k=tsurf_val, t_tropo_k=ttropo_val, fill_value=0,
+            )
+            ot_confirmed_mask = apply_parallax_correction_2d(
+                ot_confirmed_mask.astype(np.uint8), frame[4], lat_deg, lon_deg,
+                t_surf_k=tsurf_val, t_tropo_k=ttropo_val, fill_value=0,
+            ).astype(bool)
+
         # Advance state to next slot
         self.prev_labels = curr_labels
         self.prev_cells = curr_cells
@@ -397,6 +426,7 @@ def run_nwcsaf_rdt_sequence(
     calibrated_model: Any | None = None,
     use_ancillary_ct: bool = False,
     use_hrw_amv: bool = False,
+    use_parallax_correction: bool = False,
     u700_ms: np.ndarray | float | None = None,
     v700_ms: np.ndarray | float | None = None,
     t_surf_k: np.ndarray | float | None = None,
@@ -416,6 +446,7 @@ def run_nwcsaf_rdt_sequence(
         calibrated_model=calibrated_model,
         use_ancillary_ct=use_ancillary_ct,
         use_hrw_amv=use_hrw_amv,
+        use_parallax_correction=use_parallax_correction,
     )
 
     semantic_labels = np.zeros((num_t, h, w), dtype=np.uint8)

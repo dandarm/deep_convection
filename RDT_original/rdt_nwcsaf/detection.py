@@ -39,7 +39,7 @@ class ThresholdSliceHierarchy:
         self.area = area_km2
         self.valid = valid_mask
         self.cfg = cfg
-        self._cache: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self._cache: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, list[tuple[slice, slice] | None]]] = {}
 
     def _key(self, threshold_k: float) -> int:
         return int( round((threshold_k - self.cfg.tcold_k) / self.cfg.deltat_k) )
@@ -49,6 +49,13 @@ class ThresholdSliceHierarchy:
 
     def slice_at(self, threshold_k: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return (labels, areas_km2, minima_k) for valid pixels with IR10.8 <= threshold_k."""
+        labels, areas, minima, _ = self.slice_at_with_bboxes(threshold_k)
+        return labels, areas, minima
+
+    def slice_at_with_bboxes(
+        self, threshold_k: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[tuple[slice, slice] | None]]:
+        """Return (labels, areas_km2, minima_k, bboxes_1indexed) for IR10.8 <= threshold_k."""
         key = self._key(threshold_k)
         if key not in self._cache:
             thresh = self.threshold_from_key(key)
@@ -59,19 +66,22 @@ class ThresholdSliceHierarchy:
                     labels,
                     np.zeros(1, dtype=float),
                     np.array([np.inf], dtype=float),
+                    [None],
                 )
             else:
                 areas = np.bincount(
                     labels.ravel(), weights=self.area.ravel(), minlength=num + 1
                 ).astype(float)
                 areas[0] = 0.0
-                minima = ndimage.minimum(
-                    self.ir, labels=labels, index=np.arange(1, num + 1)
-                )
+                minima = np.full(num + 1, np.inf, dtype=float)
+                nz = binary
+                np.minimum.at(minima, labels[nz], self.ir[nz])
+                bboxes: list[tuple[slice, slice] | None] = [None] + list(ndimage.find_objects(labels))
                 self._cache[key] = (
                     labels,
                     areas,
-                    np.r_[np.inf, np.asarray(minima, dtype=float)],
+                    minima,
+                    bboxes,
                 )
         return self._cache[key]
 
@@ -92,6 +102,45 @@ class ThresholdSliceHierarchy:
         if comp <= 0:
             return np.zeros_like(self.valid, dtype=bool)
         return labels == comp
+
+    def component_containing_seed(
+        self, threshold_k: float, seed_yx: tuple[int, int]
+    ) -> tuple[int, tuple[slice, slice] | None, np.ndarray | None]:
+        """Return (comp_id, bbox, local_mask) for the component at threshold_k containing seed_yx."""
+        threshold_clamped = min(max(float(threshold_k), self.cfg.tcold_k), self.cfg.twarm_k)
+        labels, _, _, bboxes = self.slice_at_with_bboxes(threshold_clamped)
+        comp = int(labels[seed_yx])
+        if comp <= 0 or bboxes[comp] is None:
+            return 0, None, None
+        bbox = bboxes[comp]
+        assert bbox is not None
+        return comp, bbox, (labels[bbox] == comp)
+
+
+class _LazyVerticalProfile(dict):  # type: ignore[type-arg]
+    """Lazy dictionary of horizontal surface S(T) at 1 K steps (ATBD Annex Line H)."""
+
+    def __init__(self, hierarchy: ThresholdSliceHierarchy, seed_yx: tuple[int, int], t_min_k: float) -> None:
+        super().__init__()
+        self._hierarchy = hierarchy
+        self._seed_yx = seed_yx
+        self._min_key = hierarchy._key(max(hierarchy.cfg.tcold_k, float(np.floor(t_min_k))))
+        self._max_key = hierarchy._key(hierarchy.cfg.twarm_k)
+
+    def __contains__(self, key: object) -> bool:
+        if super().__contains__(key):
+            return True
+        return isinstance(key, int) and (self._min_key <= key <= self._max_key)
+
+    def __getitem__(self, key: int) -> float:
+        if not super().__contains__(key):
+            if self._min_key <= key <= self._max_key:
+                lv = self._hierarchy.threshold_from_key(key)
+                val = self._hierarchy.area_containing_seed(lv, self._seed_yx)
+                super().__setitem__(key, val)
+                return val
+            raise KeyError(key)
+        return float(super().__getitem__(key))
 
 
 def _spatial_coherence_sig(diff_values_2d: np.ndarray, cell_mask: np.ndarray, threshold: float) -> float:
@@ -185,7 +234,7 @@ def detect_rdt_cells(
         not_stretched = np.ones_like(finite_obs, dtype=bool)
 
     valid_mask = finite_obs & not_stretched
-    if ct_cloudy_mask is not None and (cfg.cma_enabled or cfg.ct_enabled):
+    if ct_cloudy_mask is not None:
         valid_mask = valid_mask & np.asarray(ct_cloudy_mask, dtype=bool)
 
     hierarchy = ThresholdSliceHierarchy(ir108, area, valid_mask, cfg)
@@ -206,37 +255,41 @@ def detect_rdt_cells(
     else:
         tropo_field = np.full(area.shape, -np.inf, dtype=float)
 
-    root_labels, root_areas, root_minima = hierarchy.slice_at(cfg.twarm_k)
-    selected_towers: list[tuple[np.ndarray, float, float, tuple[int, int], bool]] = []
+    root_labels, root_areas, root_minima, root_bboxes = hierarchy.slice_at_with_bboxes(cfg.twarm_k)
+    selected_towers: list[tuple[tuple[slice, slice], np.ndarray, float, float, tuple[int, int], bool]] = []
 
-    def _local_bt_floor(mask: np.ndarray, t_min: float) -> float:
+    def _local_bt_floor(bbox: tuple[slice, slice], loc_mask: np.ndarray, t_min: float) -> float:
         floor_k = cfg.btlimit_k
         if cfg.limittropo:
-            if np.isfinite(tropo_field[mask]).any():
-                floor_k = max(floor_k, float(np.nanmedian(tropo_field[mask])))
+            loc_tropo = tropo_field[bbox][loc_mask]
+            if np.isfinite(loc_tropo).any():
+                floor_k = max(floor_k, float(np.nanmedian(loc_tropo)))
             elif t_min <= cfg.cat_mature_tmin_k:
                 # Estimate anvil equilibrium / tropopause temperature from cold opaque anvil pixels
                 # so internal overshooting turrets colder than the anvil do not shatter the mature cell.
-                anvil_Loading = mask & (ir108 <= cfg.cat_mature_tmin_k) & (np.abs(wv062 - ir108) <= 4.5)
+                loc_ir = ir108[bbox]
+                loc_wv = wv062[bbox]
+                anvil_Loading = loc_mask & (loc_ir <= cfg.cat_mature_tmin_k) & (np.abs(loc_wv - loc_ir) <= 4.5)
                 if int(anvil_Loading.sum()) >= 25:
-                    est_tropo = float(np.clip(np.median(ir108[anvil_Loading]), cfg.btlimit_k, 226.15))
+                    est_tropo = float(np.clip(np.median(loc_ir[anvil_Loading]), cfg.btlimit_k, 226.15))
                     floor_k = max(floor_k, est_tropo)
         return max(cfg.tcold_k, floor_k, t_min + cfg.tower_prominence_k)
 
     def _descend(
-        mask: np.ndarray,
+        bbox: tuple[slice, slice],
+        loc_mask: np.ndarray,
         threshold_k: float,
         minimum_k: float,
         is_isolated_single_tower: bool,
     ) -> None:
-        bt_floor_k = _local_bt_floor(mask, minimum_k)
+        bt_floor_k = _local_bt_floor(bbox, loc_mask, minimum_k)
         # Step down from threshold_k - deltat_k to bt_floor_k
         lower_levels = np.arange(
             threshold_k - cfg.deltat_k, bt_floor_k - 1e-6, -cfg.deltat_k
         )
         for lower_k in lower_levels:
-            child_labels, child_areas, child_minima = hierarchy.slice_at(float(lower_k))
-            overlapping_ids = np.unique(child_labels[mask])
+            child_labels, child_areas, child_minima, child_bboxes = hierarchy.slice_at_with_bboxes(float(lower_k))
+            overlapping_ids = np.unique(child_labels[bbox][loc_mask])
             overlapping_ids = overlapping_ids[overlapping_ids > 0]
             # Keep all child branches that qualify as thermal towers (S >= S_min and prominence >= 6 K).
             # Note: branches > S_max must also be kept during top-down descent so synoptic cloud
@@ -252,34 +305,43 @@ def detect_rdt_cells(
             if len(valid_children) >= 2:
                 # Sibling towers separate here! Each tower gets lower_k as its initial isolating T_BT
                 for cid in valid_children:
-                    c_mask = child_labels == cid
+                    c_bbox = child_bboxes[cid]
+                    assert c_bbox is not None
+                    c_loc_mask = child_labels[c_bbox] == cid
                     _descend(
-                        c_mask,
+                        c_bbox,
+                        c_loc_mask,
                         float(lower_k),
                         float(child_minima[cid]),
                         is_isolated_single_tower=False,
                     )
                 return
-            if len(valid_children) == 1 and float(area[mask].sum()) > cfg.smax_km2:
+            if len(valid_children) == 1 and float(area[bbox][loc_mask].sum()) > cfg.smax_km2:
                 # Current contour still exceeds S_max (400,000 km2); tighten mask to lower_k
                 only_cid = valid_children[0]
-                mask = child_labels == only_cid
+                c_bbox = child_bboxes[only_cid]
+                assert c_bbox is not None
+                bbox = c_bbox
+                loc_mask = child_labels[c_bbox] == only_cid
                 threshold_k = float(lower_k)
                 minimum_k = float(child_minima[only_cid])
 
         # Single tower (or mature cell reaching BT floor without further valid split)
-        masked_ir = np.where(mask, ir108, np.inf)
-        seed_yx = tuple(int(v) for v in np.unravel_index(int(np.argmin(masked_ir)), ir108.shape))
+        loc_ir_arr = ir108[bbox]
+        masked_ir = np.where(loc_mask, loc_ir_arr, np.inf)
+        loc_seed = np.unravel_index(int(np.argmin(masked_ir)), loc_ir_arr.shape)
+        seed_yx = (int(bbox[0].start + loc_seed[0]), int(bbox[1].start + loc_seed[1]))
         t_min = float(ir108[seed_yx])
 
         # Define Top of Tower (ST) level: ~ T_min + 6 K (aligned to discrete grid)
         st_key = int(np.ceil((t_min + cfg.tower_prominence_k - cfg.tcold_k) / cfg.deltat_k))
         t_st = min(float(threshold_k), hierarchy.threshold_from_key(max(0, st_key)))
         s_st = hierarchy.area_containing_seed(t_st, seed_yx)
-        s_bt = float(area[mask].sum())
+        s_bt = float(area[bbox][loc_mask].sum())
 
         refined_threshold_k = float(threshold_k)
-        refined_mask = mask
+        refined_bbox = bbox
+        refined_loc_mask = loc_mask
 
         # Apply ATBD Section 3.2.1.2.1.2.2 Single-Tower Excessive Base Refinement
         # For mature systems (T_min <= -40 C = 233.15 K), single-tower refinement trims warm
@@ -319,8 +381,11 @@ def detect_rdt_cells(
                         and level_areas[min_idx + 1] >= cfg.smin_km2
                     ):
                         refined_threshold_k = float(candidate_levels[min_idx + 1])
-                        refined_mask = hierarchy.mask_containing_seed(refined_threshold_k, seed_yx)
-                        s_bt = float(level_areas[min_idx + 1])
+                        _, r_bbox, r_loc_mask = hierarchy.component_containing_seed(refined_threshold_k, seed_yx)
+                        if r_bbox is not None and r_loc_mask is not None:
+                            refined_bbox = r_bbox
+                            refined_loc_mask = r_loc_mask
+                            s_bt = float(level_areas[min_idx + 1])
 
                 # Case B: Flat pyramidal cloud system (ATBD v1.1 Fig. 12: S_BT <= 4 * S_ST)
                 if s_bt > cfg.max_base_top_ratio * s_st or s_bt > cfg.smax_km2:
@@ -329,20 +394,26 @@ def detect_rdt_cells(
                     for lv, lv_area in zip(candidate_levels, level_areas):
                         if cfg.smin_km2 <= lv_area <= max_allowed_area:
                             refined_threshold_k = float(lv)
-                            refined_mask = hierarchy.mask_containing_seed(refined_threshold_k, seed_yx)
-                            s_bt = float(lv_area)
-                            refined_by_case_b = True
+                            _, r_bbox, r_loc_mask = hierarchy.component_containing_seed(refined_threshold_k, seed_yx)
+                            if r_bbox is not None and r_loc_mask is not None:
+                                refined_bbox = r_bbox
+                                refined_loc_mask = r_loc_mask
+                                s_bt = float(lv_area)
+                                refined_by_case_b = True
                             break
                     # If a mature single tower started at Twarm (+5 C) and is still > 4*S_ST at -40 C,
                     # cap its warm skirt at the cold anvil boundary (single_tower_floor_k = -40 C).
                     if not refined_by_case_b and cfg.smin_km2 <= level_areas[-1] <= cfg.smax_km2:
                         refined_threshold_k = float(candidate_levels[-1])
-                        refined_mask = hierarchy.mask_containing_seed(refined_threshold_k, seed_yx)
-                        s_bt = float(level_areas[-1])
+                        _, r_bbox, r_loc_mask = hierarchy.component_containing_seed(refined_threshold_k, seed_yx)
+                        if r_bbox is not None and r_loc_mask is not None:
+                            refined_bbox = r_bbox
+                            refined_loc_mask = r_loc_mask
+                            s_bt = float(level_areas[-1])
 
         if cfg.smin_km2 <= s_bt <= cfg.smax_km2 and (refined_threshold_k - t_min) >= cfg.tower_prominence_k - 1e-6:
             selected_towers.append(
-                (refined_mask, refined_threshold_k, t_st, seed_yx, is_isolated_single_tower)
+                (refined_bbox, refined_loc_mask, refined_threshold_k, t_st, seed_yx, is_isolated_single_tower)
             )
 
     for comp_id in range(1, len(root_areas)):
@@ -352,44 +423,53 @@ def detect_rdt_cells(
             comp_area >= cfg.smin_km2
             and (cfg.twarm_k - comp_min) >= cfg.tower_prominence_k - 1e-6
         ):
+            r_bbox = root_bboxes[comp_id]
+            assert r_bbox is not None
             _descend(
-                root_labels == comp_id,
+                r_bbox,
+                root_labels[r_bbox] == comp_id,
                 cfg.twarm_k,
                 comp_min,
                 is_isolated_single_tower=True,
             )
 
     # Sort deterministically by coldest minimum temperature, then seed position
-    selected_towers.sort(key=lambda item: (float(ir108[item[3]]), item[3][0], item[3][1]))
+    selected_towers.sort(key=lambda item: (float(ir108[item[4]]), item[4][0], item[4][1]))
 
     labels = np.zeros(area.shape, dtype=np.int32)
     cells: dict[int, dict[str, Any]] = {}
 
-    for mask, t_bt, t_st, seed_yx, is_single in selected_towers:
+    for cand_bbox, cand_loc_mask, t_bt, t_st, seed_yx, is_single in selected_towers:
+        loc_seed_yx = (seed_yx[0] - cand_bbox[0].start, seed_yx[1] - cand_bbox[1].start)
         # Ensure disjoint contours if any nested boundary touch occurred
-        clean_mask = mask & (labels == 0)
-        if not clean_mask[seed_yx]:
+        clean_loc = cand_loc_mask & (labels[cand_bbox] == 0)
+        if not clean_loc[loc_seed_yx]:
             continue
-        comp_labels, _ = ndimage.label(clean_mask, structure=CONNECTIVITY_8)
-        part_id = int(comp_labels[seed_yx])
-        if part_id <= 0:
-            continue
-        clean_mask = comp_labels == part_id
-        s_bt = float(area[clean_mask].sum())
+        if not np.array_equal(clean_loc, cand_loc_mask):
+            comp_labels, _ = ndimage.label(clean_loc, structure=CONNECTIVITY_8)
+            part_id = int(comp_labels[loc_seed_yx])
+            if part_id <= 0:
+                continue
+            clean_loc = comp_labels == part_id
+
+        s_bt = float(area[cand_bbox][clean_loc].sum())
         if s_bt < cfg.smin_km2:
             continue
 
         cell_id = len(cells) + 1
-        labels[clean_mask] = cell_id
+        labels[cand_bbox][clean_loc] = cell_id
 
-        yy, xx = np.where(clean_mask)
+        yy_loc, xx_loc = np.where(clean_loc)
+        yy = yy_loc + cand_bbox[0].start
+        xx = xx_loc + cand_bbox[1].start
         bbox = (
             slice(int(yy.min()), int(yy.max()) + 1),
             slice(int(xx.min()), int(xx.max()) + 1),
         )
-        local_mask = clean_mask[bbox]
+        local_mask = labels[bbox] == cell_id
         local_area = area[bbox]
         local_ir = ir108[bbox]
+        local_seed_yx = (seed_yx[0] - bbox[0].start, seed_yx[1] - bbox[1].start)
 
         cell_areas = local_area[local_mask]
         cell_ir = local_ir[local_mask]
@@ -411,12 +491,12 @@ def detect_rdt_cells(
         # Thermal volume V = sum a_p * (T_BT - T_p)
         thermal_volume = float(np.sum(cell_areas * np.maximum(t_bt - cell_ir, 0.0)))
 
-        # Top of Tower (ST) contour & area
-        st_mask_full = clean_mask & (ir108 <= t_st)
-        st_comp, _ = ndimage.label(st_mask_full, structure=CONNECTIVITY_8)
-        st_part = int(st_comp[seed_yx])
-        st_mask_full = (st_comp == st_part) if st_part > 0 else (clean_mask & (ir108 <= t_min + cfg.deltat_k))
-        s_st = float(area[st_mask_full].sum())
+        # Top of Tower (ST) contour & area (computed on local bbox)
+        st_local_cand = local_mask & (local_ir <= t_st)
+        st_comp, _ = ndimage.label(st_local_cand, structure=CONNECTIVITY_8)
+        st_part = int(st_comp[local_seed_yx])
+        st_local_mask = (st_comp == st_part) if st_part > 0 else (local_mask & (local_ir <= t_min + cfg.deltat_k))
+        s_st = float(local_area[st_local_mask].sum())
 
         # Inner and peripheral temperature gradients (K/km, ATBD Line S ch20-ch23)
         local_grad = grad_ir_km[bbox]
@@ -446,15 +526,7 @@ def detect_rdt_cells(
         spatial_cutoff = (1 if touches_domain_edge else 0) + (2 if touches_invalid else 0)
 
         # Vertical profile of surfaces S(T) at 1 K steps (ATBD Annex Line H, p. 62)
-        profile_levels = np.arange(
-            cfg.twarm_k,
-            max(cfg.tcold_k, np.floor(t_min)) - 1e-6,
-            -cfg.deltat_k,
-        )
-        vertical_profile: dict[int, float] = {}
-        for lv in profile_levels:
-            k_idx = hierarchy._key(float(lv))
-            vertical_profile[k_idx] = hierarchy.area_containing_seed(float(lv), seed_yx)
+        vertical_profile: dict[int, float] = _LazyVerticalProfile(hierarchy, seed_yx, t_min)
 
         # Multi-spectral predictors (ATBD Sec 3.2.1.2.3.2.1 & Annex Line X, pp. 59-61)
         loc_wv062 = wv062[bbox]
@@ -474,11 +546,12 @@ def detect_rdt_cells(
 
         def _btd_stats(field_2d: np.ndarray, sig_thresh: float) -> dict[str, float]:
             vals = field_2d[local_mask]
+            q90, q75, q50 = np.quantile(vals, (0.90, 0.75, 0.50))
             return {
                 "max": float(np.max(vals)),
-                "p90": float(np.quantile(vals, 0.90)),
-                "p75": float(np.quantile(vals, 0.75)),
-                "median": float(np.median(vals)),
+                "p90": float(q90),
+                "p75": float(q75),
+                "median": float(q50),
                 "mean": float(np.mean(vals)),
                 "sig": _spatial_coherence_sig(field_2d, local_mask, sig_thresh),
             }
@@ -498,7 +571,7 @@ def detect_rdt_cells(
             "cell_id": cell_id,
             "bbox": bbox,
             "mask": local_mask,
-            "st_mask": st_mask_full[bbox],
+            "st_mask": st_local_mask,
             "seed_yx": seed_yx,
             "pixel_count": int(local_mask.sum()),
             "is_single_tower": bool(is_single),

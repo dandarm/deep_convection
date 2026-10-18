@@ -30,6 +30,7 @@ from .discrimination import (
 )
 from .ancillary import (
     NwcSafCloudTypeResult,
+    apply_parallax_correction_2d,
     compute_hrw_amv_guess_field,
     compute_nwcsaf_cloud_type,
 )

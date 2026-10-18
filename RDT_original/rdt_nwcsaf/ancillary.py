@@ -194,6 +194,9 @@ def compute_hrw_amv_guess_field(
         p_field = np.nan_to_num(prev_ir108, nan=290.0)
         c_field = np.nan_to_num(curr_ir108, nan=290.0)
 
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    n_shifts = 2 * max_shift_px + 1
     for ir, r0 in enumerate(rows):
         for ic, c0 in enumerate(cols):
             # Only compute AMV where clouds colder than 268 K exist
@@ -204,32 +207,33 @@ def compute_hrw_amv_guess_field(
             tpl_std = float(np.std(tpl))
             if tpl_std < 1.2:
                 continue
-            tpl_norm = tpl - float(np.mean(tpl))
+            tpl_norm_flat = (tpl - float(np.mean(tpl))).ravel()
 
-            best_corr = -1.0
-            best_dy = 0.0
-            best_dx = 0.0
-            for dy in range(-max_shift_px, max_shift_px + 1):
-                for dx in range(-max_shift_px, max_shift_px + 1):
-                    cand = c_field[
-                        r0 + dy : r0 + dy + block_size,
-                        c0 + dx : c0 + dx + block_size,
-                    ]
-                    cand_std = float(np.std(cand))
-                    if cand_std < 1.2:
-                        continue
-                    corr = float(
-                        np.mean(tpl_norm * (cand - float(np.mean(cand))))
-                        / (tpl_std * cand_std)
-                    )
-                    if corr > best_corr:
-                        best_corr = corr
-                        best_dy = float(dy)
-                        best_dx = float(dx)
+            search_win = c_field[
+                r0 - max_shift_px : r0 + max_shift_px + block_size,
+                c0 - max_shift_px : c0 + max_shift_px + block_size,
+            ]
+            patches = sliding_window_view(search_win, (block_size, block_size)).reshape(
+                n_shifts * n_shifts, block_size * block_size
+            )
+            p_means = patches.mean(axis=1, keepdims=True)
+            p_centered = patches - p_means
+            p_stds = np.sqrt(np.mean(p_centered * p_centered, axis=1))
+            valid_p = p_stds >= 1.2
+            if not np.any(valid_p):
+                continue
+
+            corrs = np.full(n_shifts * n_shifts, -1.0, dtype=np.float64)
+            corrs[valid_p] = (p_centered[valid_p] @ tpl_norm_flat) / (
+                block_size * block_size * tpl_std * p_stds[valid_p]
+            )
+            best_idx = int(np.argmax(corrs))
+            best_corr = float(corrs[best_idx])
 
             if best_corr >= 0.65:
-                amv_dy[ir, ic] = best_dy
-                amv_dx[ir, ic] = best_dx
+                dy_idx, dx_idx = divmod(best_idx, n_shifts)
+                amv_dy[ir, ic] = float(dy_idx - max_shift_px)
+                amv_dx[ir, ic] = float(dx_idx - max_shift_px)
                 amv_weight[ir, ic] = np.clip((best_corr - 0.60) / 0.35, 0.0, 1.0)
 
     # Smooth and upsample AMV field to full resolution
@@ -257,3 +261,87 @@ def compute_hrw_amv_guess_field(
     guess_dx_px = alpha * amv_dx_full + (1.0 - alpha) * nwp_dx_px
 
     return guess_dy_px.astype(np.float32), guess_dx_px.astype(np.float32)
+
+
+def apply_parallax_correction_2d(
+    raster_2d: np.ndarray,
+    ir108_k: np.ndarray,
+    coord1: np.ndarray,
+    coord2: np.ndarray,
+    *,
+    t_surf_k: np.ndarray | float | None = None,
+    t_tropo_k: np.ndarray | float | None = None,
+    fill_value: int | float = 0,
+    sat_lon_deg: float = 9.5,
+) -> np.ndarray:
+    """Shift a 2D RDT label/mask map from apparent satellite position to true ground position.
+
+    Implements NWC SAF ATBD Section 3.2.1.1 geostationary parallax correction using ONLY
+    SEVIRI IR10.8 cloud-top brightness temperature and MSG viewing geometry (sub-satellite
+    point at 9.5E, 0N; r_sat = 42,164 km; R_eq = 6,378.169 km).
+    Accepts either 2D (lat_deg, lon_deg) grids or 1D (x_m, y_m) projection vectors.
+    """
+    H, W = raster_2d.shape
+    if H < 2 or W < 2:
+        return raster_2d.copy()
+
+    cloud_mask = raster_2d != fill_value
+    if not np.any(cloud_mask):
+        return raster_2d.copy()
+
+    if t_surf_k is None:
+        t_amb = float(np.clip(np.nanpercentile(ir108_k, 85), 280.0, 305.0))
+        t_surf = np.full((H, W), t_amb, dtype=np.float64)
+    elif np.ndim(t_surf_k) == 0:
+        t_surf = np.full((H, W), float(t_surf_k), dtype=np.float64)
+    else:
+        t_surf = np.asarray(t_surf_k, dtype=np.float64)
+
+    # Cloud-top height in meters from standard tropospheric lapse rate (6.5 K/km)
+    h_cloud_m = np.clip((t_surf - np.nan_to_num(ir108_k, nan=290.0)) / 0.0065, 0.0, 14500.0)
+
+    r_eq = 6378169.0
+    r_sat = 42164000.0
+    c1 = np.asarray(coord1, dtype=np.float64)
+    c2 = np.asarray(coord2, dtype=np.float64)
+
+    if c1.ndim == 2 and c2.ndim == 2:
+        # 2D (lat_deg, lon_deg) grids
+        lat_rad = np.radians(c1)
+        dlon_rad = np.radians(c2 - sat_lon_deg)
+        xx = r_eq * np.cos(lat_rad) * np.sin(dlon_rad)
+        yy = r_eq * np.sin(lat_rad)
+        dy_step = float(np.nanmedian(np.diff(yy, axis=0)))
+        dx_step = float(np.nanmedian(np.diff(xx, axis=1)))
+    else:
+        # 1D (x_m, y_m) projection vectors
+        xx, yy = np.meshgrid(c1, c2)
+        dx_step = float(np.median(np.diff(c1)))
+        dy_step = float(np.median(np.diff(c2)))
+
+    if abs(dx_step) < 1.0 or abs(dy_step) < 1.0:
+        return raster_2d.copy()
+
+    z_earth = np.sqrt(np.maximum(r_eq * r_eq - xx * xx - yy * yy, (0.28 * r_eq) ** 2))
+    geom_factor = (r_sat / np.maximum(r_sat - z_earth, 1e6)) / z_earth
+
+    # Apparent outward shift (m) away from sub-satellite point (0, 0)
+    dx_app_m = h_cloud_m * xx * geom_factor
+    dy_app_m = h_cloud_m * yy * geom_factor
+
+    # True ground position is shifted by (-dy_app_m, -dx_app_m)
+    dr = np.rint(np.nan_to_num(-dy_app_m / dy_step, nan=0.0, posinf=0.0, neginf=0.0)).astype(np.int32)
+    dc = np.rint(np.nan_to_num(-dx_app_m / dx_step, nan=0.0, posinf=0.0, neginf=0.0)).astype(np.int32)
+
+    rr, cc = np.nonzero(cloud_mask)
+    r_true = np.clip(rr + dr[rr, cc], 0, H - 1)
+    c_true = np.clip(cc + dc[rr, cc], 0, W - 1)
+
+    out = np.full_like(raster_2d, fill_value)
+    # Paint in ascending order of value so higher convective classes (2, 3, 4) take precedence over class 1
+    vals = raster_2d[rr, cc]
+    order = np.argsort(vals, kind="stable")
+    out[r_true[order], c_true[order]] = vals[order]
+    return out
+
+

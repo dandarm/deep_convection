@@ -414,8 +414,10 @@ def interpolate_era5_to_seviri_grid(
     lon_0 = float(era5.lon[0])
     dlon = float(era5.lon[1] - era5.lon[0])  # positive (+0.25)
 
-    row_f = np.clip((lat_2d - lat_0) / dlat, 0.0, len(era5.lat) - 1.0)
-    col_f = np.clip((lon_2d - lon_0) / dlon, 0.0, len(era5.lon) - 1.0)
+    lat_safe = np.nan_to_num(lat_2d, nan=50.0, posinf=70.0, neginf=30.0)
+    lon_safe = np.nan_to_num(lon_2d, nan=10.0, posinf=40.0, neginf=-20.0)
+    row_f = np.clip((lat_safe - lat_0) / dlat, 0.0, len(era5.lat) - 1.0)
+    col_f = np.clip((lon_safe - lon_0) / dlon, 0.0, len(era5.lon) - 1.0)
     coords = np.array([row_f, col_f], dtype=np.float64)
 
     def _interp2d(field: np.ndarray, order: int = 1) -> np.ndarray:
