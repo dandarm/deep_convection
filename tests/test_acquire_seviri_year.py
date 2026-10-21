@@ -11,6 +11,7 @@ from scripts.acquire_seviri_year import acquire_day,product_slot
 class SatelliteProduct:
     def __init__(self,satellite,slot,suffix=''):
         self.sensing_start=slot+timedelta(seconds=12)
+        self.sensing_end=slot+timedelta(minutes=4)
         self.name=f'{satellite}-SEVI-MSG15-0100-NA-{slot+timedelta(minutes=4):%Y%m%d%H%M%S}.000{suffix}Z-NA'
 
     def __str__(self):
@@ -50,17 +51,78 @@ def test_satellite_policy_is_persisted_and_cannot_change_on_resume(tmp_path):
         pin_selection_policy(tmp_path,'MSG2')
 
 
+@pytest.mark.parametrize('satellites,expected',[
+    (['MSG2','MSG3','MSG4'],'MSG4'),(['MSG2','MSG4'],'MSG4'),
+    (['MSG2','MSG3'],'MSG3'),(['MSG2'],'MSG2'),(['MSG1'],'MSG1')])
+def test_ordered_satellite_priority_fallback(satellites,expected):
+    from scripts.acquire_seviri_year import select_slot_products
+    from itertools import permutations
+    products=[SatelliteProduct(s,datetime(2021,7,21,13,10)) for s in satellites]
+    for order in permutations(products):
+        chosen,decisions=select_slot_products(order,satellite_priority=['MSG4','MSG3','MSG2'])
+        assert [str(p).split('-')[0] for p in chosen]==[expected]
+        if len(products)>1:
+            assert decisions[0]['selected_satellite']==expected
+            assert len(decisions[0]['unselected_products'])==len(products)-1
+
+
+@pytest.mark.parametrize('satellites',[
+    ['MSG4','MSG4','MSG3'],['UNKNOWN','MSG4'],['MSG1','MSG2']])
+def test_priority_keeps_ambiguous_or_unlisted_overlaps_blocking(satellites):
+    from scripts.acquire_seviri_year import select_slot_products
+    products=[SatelliteProduct(s,datetime(2021,7,21),str(i)) for i,s in enumerate(satellites)]
+    priority=['MSG4','MSG3'] if 'MSG1' in satellites else ['MSG4','MSG3','MSG2']
+    with pytest.raises(ValueError,match='Multiple provider products'):
+        select_slot_products(products,satellite_priority=priority)
+
+
+def test_policy_update_archives_history_without_changing_completed_reports(tmp_path):
+    from scripts.acquire_seviri_year import pin_selection_policy,native_digest
+    marker=tmp_path/'completed_days/20210720.json'
+    marker.parent.mkdir();marker.write_text('{"stored_frames":288}\n')
+    original=marker.read_bytes()
+    pin_selection_policy(tmp_path,'MSG3')
+    with pytest.raises(ValueError,match='policy changed'):
+        pin_selection_policy(tmp_path,satellite_priority=['MSG4','MSG3','MSG2'])
+    pin_selection_policy(tmp_path,satellite_priority=['MSG4','MSG3','MSG2'],allow_update=True)
+    history=list((tmp_path/'selection_policy_history').glob('*.json'))
+    assert len(history)==1
+    record=json.loads(history[0].read_text())
+    assert record['previous_policy']['preferred_satellite']=='MSG3'
+    assert record['new_policy']['satellite_priority']==['MSG4','MSG3','MSG2']
+    assert record['completed_day_reports']=={marker.name:native_digest(marker)}
+    pin_selection_policy(tmp_path,satellite_priority=['MSG4','MSG3','MSG2'])
+    assert marker.read_bytes()==original
+    assert list((tmp_path/'selection_policy_history').glob('*.json'))==history
+
+
+@pytest.mark.parametrize('priority',[[],['MSG4','MSG4'],['UNKNOWN']])
+def test_priority_rejects_invalid_configuration(priority):
+    from scripts.acquire_seviri_year import selection_policy
+    with pytest.raises(ValueError):selection_policy(satellite_priority=priority)
+
+
 @pytest.mark.parametrize('conversion_workers',[0,2])
-def test_overlap_never_converts_cached_unselected_satellite_and_writes_in_time_order(tmp_path,monkeypatch,conversion_workers):
+@pytest.mark.parametrize('with_non_rss',[False,True])
+def test_overlap_never_converts_cached_unselected_satellite_and_writes_in_time_order(tmp_path,monkeypatch,conversion_workers,with_non_rss):
     from scripts import acquire_seviri_year as job
     from emma_gpm.seviri import THERMAL_CHANNELS
     day=datetime(2021,1,7);slot=day+timedelta(hours=9)
     a,b=SatelliteProduct('MSG2',slot),SatelliteProduct('MSG3',slot)
-    following=SatelliteProduct('MSG2',slot+timedelta(minutes=5))
+    following_slot=slot+timedelta(minutes=10 if with_non_rss else 5)
+    following=SatelliteProduct('MSG2',following_slot)
     args=SimpleNamespace(zarr_root=tmp_path,workers=1,crop_batch_size=1,preferred_satellite='MSG3',conversion_workers=conversion_workers)
     work=tmp_path/'_acquisition/2021';buffer=work/'native_buffer/20210107';buffer.mkdir(parents=True)
     # Simulate a cached alternative from an interrupted earlier attempt.
     (buffer/(str(a)+'.nat')).write_bytes(b'unselected MSG2 payload')
+    provider=[a,b,following]
+    if with_non_rss:
+        args.preferred_satellite=None;args.satellite_priority=['MSG4','MSG3','MSG2']
+        full=SatelliteProduct('MSG4',slot)
+        full.sensing_end=slot+timedelta(minutes=12)
+        full.name=f'MSG4-SEVI-MSG15-0100-NA-{full.sensing_end:%Y%m%d%H%M%S}.000Z-NA'
+        provider.append(full)
+        (buffer/(str(full)+'.nat')).write_bytes(b'full scan retained without conversion')
     loaded,written=[],[]
     def download(collection,*args,**kwargs):
         selected=list(collection.search());assert selected==[b,following]
@@ -81,17 +143,32 @@ def test_overlap_never_converts_cached_unselected_satellite_and_writes_in_time_o
         monkeypatch.setattr(seviri_conversion,'ProcessPoolExecutor',lambda **kw:ThreadPoolExecutor(max_workers=kw['max_workers']))
         monkeypatch.setattr(seviri_conversion,'_convert',lambda path,bounds:load(path,bounds))
     class Collection:
-        def search(self,**kwargs):return [a,b,following]
+        def search(self,**kwargs):return provider
     report=acquire_day(day,Collection(),args,work,'fake','fake')
     assert sorted(loaded)==sorted([str(b),str(following)])
-    assert written==[slot,slot+timedelta(minutes=5)]
-    assert report['provider_products']==3 and report['selected_provider_products']==2
+    assert written==[slot,following_slot]
+    assert report['provider_products']==len(provider) and report['selected_provider_products']==2
     assert report['selected_satellites']=={'MSG2':1,'MSG3':1}
     retained=work/'unselected_native/20210107'/(str(a)+'.nat')
     assert retained.read_bytes()==b'unselected MSG2 payload'
     manifest=json.loads(Path(report['product_selection_report']).read_text())
-    assert manifest['retained_unselected_native'][0]['sha256']==job.native_digest(retained)
+    assert any(row['sha256']==job.native_digest(retained) for row in manifest['retained_unselected_native'])
+    if with_non_rss:
+        assert manifest['excluded_non_rss_products'][0]['id']==str(full)
+        assert (work/'unselected_native/20210107'/(str(full)+'.nat')).read_bytes()==b'full scan retained without conversion'
     assert acquire_day(day,Collection(),args,work,'fake','fake')==report
+
+
+@pytest.mark.parametrize('seconds,eligible',[(246.398,True),(300,True),(665.115,False),(900,False)])
+def test_rss_duration_filter_precedes_satellite_priority(seconds,eligible):
+    from scripts.acquire_seviri_year import rss_eligible_products,select_slot_products
+    slot=datetime(2021,9,20,6,15)
+    msg4=SatelliteProduct('MSG4',slot);msg4.sensing_end=msg4.sensing_start+timedelta(seconds=seconds)
+    msg3=SatelliteProduct('MSG3',slot)
+    products,excluded=rss_eligible_products([msg4,msg3])
+    chosen,_=select_slot_products(products,satellite_priority=['MSG4','MSG3','MSG2'])
+    assert chosen==[msg4 if eligible else msg3]
+    assert len(excluded)==(0 if eligible else 1)
 
 
 def test_product_slot_is_utc_and_on_native_five_minute_grid():
