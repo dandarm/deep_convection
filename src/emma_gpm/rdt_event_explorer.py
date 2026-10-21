@@ -72,7 +72,24 @@ def study_window(committed, peak, *, frames=16):
     raise ValueError('Non ci sono ancora 16 frame consecutivi attorno al picco; nessun frame viene sostituito.')
 
 
-def study_origin(tracks, track_id, native_x, native_y, *, crop_size=224):
+def study_validity(output, times, shape, config_hash):
+    """Intersect saved full-domain quality masks over the actual study window."""
+    valid=np.ones(shape,bool)
+    for stamp in times:
+        directory=Path(output)/'frames'/frame_key(stamp)
+        if not (directory/'record.json').exists():
+            raise FileNotFoundError(f'Full-domain labels not available for {stamp}')
+        with open_fields(directory) as group:
+            if group.attrs.get('config_hash')!=config_hash or pd.Timestamp(group.attrs['time'])!=pd.Timestamp(stamp):
+                raise ValueError('Frame version/timestamp differs from its label archive')
+            current=np.asarray(group['valid_observation'][:],bool)
+        if current.shape!=tuple(shape):
+            raise ValueError('Study quality mask has a different domain shape')
+        valid &= current
+    return valid
+
+
+def study_origin(tracks, track_id, native_x, native_y, *, crop_size=224, valid_mask=None):
     """Center on the object mask, convert north-up coordinates to native ROI."""
     yy,xx = np.where(tracks == int(track_id))
     if not len(yy):
@@ -82,6 +99,20 @@ def study_origin(tracks, track_id, native_x, native_y, *, crop_size=224):
         raise ValueError('Dominio troppo piccolo per il crop richiesto')
     top = int(np.clip(round(yy.mean()-crop_size/2), 0, height-crop_size))
     left = int(np.clip(round(xx.mean()-crop_size/2), 0, width-crop_size))
+    if valid_mask is not None:
+        valid=np.asarray(valid_mask,bool)
+        if valid.shape!=tracks.shape:
+            raise ValueError('Study quality mask has a different domain shape')
+        def window_sums(values):
+            integral=np.pad(np.asarray(values,np.int64),((1,0),(1,0))).cumsum(0).cumsum(1)
+            return (integral[crop_size:,crop_size:]-integral[:-crop_size,crop_size:]
+                    -integral[crop_size:,:-crop_size]+integral[:-crop_size,:-crop_size])
+        candidates=(window_sums(valid)==crop_size**2)&(window_sums(tracks==int(track_id))>0)
+        rows,columns=np.where(candidates)
+        if not len(rows):
+            raise ValueError('Nessun crop 224×224 interamente valido nei 16 frame contiene la traccia; usare il dominio completo.')
+        nearest=np.argmin((rows-top)**2+(columns-left)**2)
+        top,left=int(rows[nearest]),int(columns[nearest])
     origin_y = height-top-crop_size if native_y[0] < native_y[-1] else top
     origin_x = width-left-crop_size if native_x[0] > native_x[-1] else left
     return origin_y,origin_x
