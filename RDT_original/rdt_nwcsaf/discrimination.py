@@ -379,20 +379,24 @@ def compute_phase_of_development(
     ot_confirmed_count: int,
     lightning_strokes: int,
     cfg: NwcSafRdtConfig,
+    mother_phase: int | None = None,
 ) -> int:
-    """Compute NWC SAF Phase of Development (0..4) using ATBD Table 8 (p. 51).
+    """Compute NWC SAF Phase of Development (0..3) using ATBD Table 8 (p. 51).
 
     Encoded Phase:
     0 = Triggering (birth / new trajectory)
     1 = Growing
     2 = Mature
     3 = Decaying
-    4 = Triggering from a Split (secondary child of split)
+    Note: For 'split_new' child cells, we inherit the mother cell's phase instead of
+    introducing an artificial non-physical 5th phase.
     """
     if event in ("new", "complex"):
         return 0  # Triggering
     if event == "split_new":
-        return 4  # Triggering from a Split
+        if mother_phase is not None and mother_phase in (0, 1, 2, 3):
+            return int(mother_phase)
+        return 1  # Default to Growing for split progeny
 
     # Continued trajectory ('continuation', 'merge_main', 'split_main')
     cool_15 = trends.get("cooling_rate_15m_k_per_h", np.nan)
@@ -720,7 +724,8 @@ def discriminate_and_classify_cell(
             error_likelihood_pct = float(100.0 * (1.0 - prob_conv))
             discri_reason = "forced_by_tropical_tmin"
 
-    # Step 5: Phase of Development (0..4, ATBD Table 8, p. 51) & Severity (0..4, ATBD pp. 51-52)
+    # Step 5: Phase of Development (0..3, ATBD Table 8, p. 51) & Severity (0..4, ATBD pp. 51-52)
+    m_phase = int(prev_cell.get('phase_code', 1)) if prev_cell is not None and 'phase_code' in prev_cell else None
     phase_code = compute_phase_of_development(
         event,
         vertical_cat,
@@ -730,6 +735,7 @@ def discriminate_and_classify_cell(
         ot_confirmed_count,
         lightning_strokes,
         cfg,
+        mother_phase=m_phase,
     )
     severity_code, hazard_code = compute_severity_and_hazard(
         is_convective,
@@ -738,18 +744,24 @@ def discriminate_and_classify_cell(
         lightning_strokes_15m=lightning_strokes,
     )
 
-    # Map to the repository's 5-class semantic segmentation schema for direct comparison:
+    # Map to the full 4-phase official RDT convective lifecycle schema:
     # 0: Background
     # 1: Non-convective cold cloud cell
-    # 2: Convective cell in triggering / growing phase (Phase 0: Triggering, 1: Growing, 4: Split)
-    # 3: Convective cell in mature / decaying phase (Phase 2: Mature, 3: Decaying)
-    # 4: Confirmed Overshooting Top (pixel-level override inside convective cell)
+    # 2: Convective cell — Triggering (Phase 0)
+    # 3: Convective cell — Growing (Phase 1)
+    # 4: Convective cell — Mature (Phase 2)
+    # 5: Convective cell — Decaying (Phase 3)
+    # 6: Confirmed Overshooting Top (pixel-level override inside convective cell)
     if not is_convective:
         semantic_class_id = 1
-    elif phase_code in (0, 1, 4):
-        semantic_class_id = 2
+    elif phase_code == 0:
+        semantic_class_id = 2  # Triggering
+    elif phase_code == 1:
+        semantic_class_id = 3  # Growing
+    elif phase_code == 2:
+        semantic_class_id = 4  # Mature
     else:
-        semantic_class_id = 3
+        semantic_class_id = 5  # Decaying
 
     temporal_valid = bool(
         prev_cell is not None

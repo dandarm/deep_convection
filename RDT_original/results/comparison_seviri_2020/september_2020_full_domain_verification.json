@@ -643,401 +643,392 @@
       "20200919",
       "20200920"
     ],
-    "num_full_domain_slots": 84,
-    "uniform_cadence_hours": 2.0,
-    "video_fps": 1.2,
-    "video_duration_seconds": 70.0,
+    "num_full_domain_slots": 2016,
+    "cadence_minutes": 5.0,
+    "video_fps": 33.6,
+    "video_duration_seconds": 60.0,
     "domain_shape_hw": [
       763,
       1762
     ],
-    "pure_vs_full_agreement_full_domain": {
-      "overall_acc": 0.9741,
-      "cloud_iou": 0.7393,
-      "cloud_dice": 0.8501,
-      "conv_iou": 0.5286,
-      "conv_dice": 0.6916,
-      "conv_pod": 0.6226,
-      "conv_prec": 0.7778
-    },
     "opera_verification_full_domain": {
       "nwcsaf_rdt_full_era5_cal": {
         "dbz_35": {
           "instantaneous_all_cells": {
-            "tp": 14,
-            "fp": 524,
-            "fn": 67,
-            "pod": 0.1728,
-            "precision": 0.026,
-            "f1": 0.0452,
-            "csi": 0.0231
+            "tp": 158,
+            "fp": 7658,
+            "fn": 744,
+            "pod": 0.1752,
+            "precision": 0.0202,
+            "f1": 0.0362,
+            "csi": 0.0185
           },
           "lag15min_all_cells": {
-            "tp": 41,
-            "fp": 509,
-            "fn": 381,
-            "pod": 0.0972,
-            "precision": 0.0745,
-            "f1": 0.0844,
-            "csi": 0.044
+            "tp": 380,
+            "fp": 7545,
+            "fn": 3123,
+            "pod": 0.1085,
+            "precision": 0.0479,
+            "f1": 0.0665,
+            "csi": 0.0344
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 13,
-            "fp": 320,
-            "fn": 57,
-            "pod": 0.1857,
-            "precision": 0.039,
-            "f1": 0.0645,
-            "csi": 0.0333
+            "tp": 105,
+            "fp": 4023,
+            "fn": 602,
+            "pod": 0.1485,
+            "precision": 0.0254,
+            "f1": 0.0434,
+            "csi": 0.0222
           },
           "small_lt500km2_cells": {
-            "tp": 1,
-            "fp": 204,
-            "fn": 10,
-            "pod": 0.0909,
-            "precision": 0.0049,
-            "f1": 0.0093,
-            "csi": 0.0047
+            "tp": 53,
+            "fp": 3635,
+            "fn": 142,
+            "pod": 0.2718,
+            "precision": 0.0144,
+            "f1": 0.0273,
+            "csi": 0.0138
           },
           "pixel_level": {
-            "tp": 4069,
-            "fp": 53123,
-            "fn": 8198,
-            "pod": 0.3317,
-            "precision": 0.0711,
-            "f1": 0.1172,
-            "csi": 0.0622
+            "tp": 25920,
+            "fp": 466497,
+            "fn": 100548,
+            "pod": 0.205,
+            "precision": 0.0526,
+            "f1": 0.0838,
+            "csi": 0.0437
           }
         },
         "dbz_40": {
           "instantaneous_all_cells": {
-            "tp": 10,
-            "fp": 524,
-            "fn": 26,
-            "pod": 0.2778,
-            "precision": 0.0187,
-            "f1": 0.0351,
-            "csi": 0.0179
+            "tp": 96,
+            "fp": 7658,
+            "fn": 304,
+            "pod": 0.24,
+            "precision": 0.0124,
+            "f1": 0.0235,
+            "csi": 0.0119
           },
           "lag15min_all_cells": {
-            "tp": 26,
-            "fp": 509,
-            "fn": 218,
-            "pod": 0.1066,
-            "precision": 0.0486,
-            "f1": 0.0668,
-            "csi": 0.0345
+            "tp": 253,
+            "fp": 7545,
+            "fn": 1919,
+            "pod": 0.1165,
+            "precision": 0.0324,
+            "f1": 0.0508,
+            "csi": 0.026
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 10,
-            "fp": 320,
-            "fn": 22,
-            "pod": 0.3125,
-            "precision": 0.0303,
-            "f1": 0.0552,
-            "csi": 0.0284
+            "tp": 60,
+            "fp": 4023,
+            "fn": 250,
+            "pod": 0.1935,
+            "precision": 0.0147,
+            "f1": 0.0273,
+            "csi": 0.0138
           },
           "small_lt500km2_cells": {
-            "tp": 0,
-            "fp": 204,
-            "fn": 4,
-            "pod": 0.0,
-            "precision": 0.0,
-            "f1": 0.0,
-            "csi": 0.0
+            "tp": 36,
+            "fp": 3635,
+            "fn": 54,
+            "pod": 0.4,
+            "precision": 0.0098,
+            "f1": 0.0191,
+            "csi": 0.0097
           },
           "pixel_level": {
-            "tp": 3125,
-            "fp": 53123,
-            "fn": 3362,
-            "pod": 0.4817,
-            "precision": 0.0556,
-            "f1": 0.0996,
-            "csi": 0.0524
+            "tp": 13665,
+            "fp": 466497,
+            "fn": 35148,
+            "pod": 0.2799,
+            "precision": 0.0285,
+            "f1": 0.0517,
+            "csi": 0.0265
           }
         },
         "dbz_45": {
           "instantaneous_all_cells": {
-            "tp": 6,
-            "fp": 524,
-            "fn": 20,
-            "pod": 0.2308,
-            "precision": 0.0113,
-            "f1": 0.0216,
-            "csi": 0.0109
+            "tp": 83,
+            "fp": 7658,
+            "fn": 238,
+            "pod": 0.2586,
+            "precision": 0.0107,
+            "f1": 0.0206,
+            "csi": 0.0104
           },
           "lag15min_all_cells": {
-            "tp": 20,
-            "fp": 509,
-            "fn": 108,
-            "pod": 0.1562,
-            "precision": 0.0378,
-            "f1": 0.0609,
-            "csi": 0.0314
+            "tp": 164,
+            "fp": 7545,
+            "fn": 914,
+            "pod": 0.1521,
+            "precision": 0.0213,
+            "f1": 0.0373,
+            "csi": 0.019
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 6,
-            "fp": 320,
-            "fn": 17,
-            "pod": 0.2609,
-            "precision": 0.0184,
-            "f1": 0.0344,
-            "csi": 0.0175
+            "tp": 48,
+            "fp": 4023,
+            "fn": 187,
+            "pod": 0.2043,
+            "precision": 0.0118,
+            "f1": 0.0223,
+            "csi": 0.0113
           },
           "small_lt500km2_cells": {
-            "tp": 0,
-            "fp": 204,
-            "fn": 3,
-            "pod": 0.0,
-            "precision": 0.0,
-            "f1": 0.0,
-            "csi": 0.0
+            "tp": 35,
+            "fp": 3635,
+            "fn": 51,
+            "pod": 0.407,
+            "precision": 0.0095,
+            "f1": 0.0186,
+            "csi": 0.0094
           },
           "pixel_level": {
-            "tp": 2554,
-            "fp": 53123,
-            "fn": 2513,
-            "pod": 0.504,
-            "precision": 0.0459,
-            "f1": 0.0841,
-            "csi": 0.0439
+            "tp": 8239,
+            "fp": 466497,
+            "fn": 25504,
+            "pod": 0.2442,
+            "precision": 0.0174,
+            "f1": 0.0324,
+            "csi": 0.0165
           }
         },
         "dbz_50": {
           "instantaneous_all_cells": {
-            "tp": 1,
-            "fp": 524,
-            "fn": 1,
-            "pod": 0.5,
-            "precision": 0.0019,
-            "f1": 0.0038,
-            "csi": 0.0019
+            "tp": 28,
+            "fp": 7658,
+            "fn": 51,
+            "pod": 0.3544,
+            "precision": 0.0036,
+            "f1": 0.0072,
+            "csi": 0.0036
           },
           "lag15min_all_cells": {
-            "tp": 9,
-            "fp": 509,
-            "fn": 30,
-            "pod": 0.2308,
-            "precision": 0.0174,
-            "f1": 0.0323,
-            "csi": 0.0164
+            "tp": 83,
+            "fp": 7545,
+            "fn": 318,
+            "pod": 0.207,
+            "precision": 0.0109,
+            "f1": 0.0207,
+            "csi": 0.0104
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 1,
-            "fp": 320,
-            "fn": 1,
-            "pod": 0.5,
-            "precision": 0.0031,
-            "f1": 0.0062,
-            "csi": 0.0031
+            "tp": 16,
+            "fp": 4023,
+            "fn": 39,
+            "pod": 0.2909,
+            "precision": 0.004,
+            "f1": 0.0078,
+            "csi": 0.0039
           },
           "small_lt500km2_cells": {
-            "tp": 0,
-            "fp": 204,
-            "fn": 0,
-            "pod": 0.0,
-            "precision": 0.0,
-            "f1": 0.0,
-            "csi": 0.0
+            "tp": 12,
+            "fp": 3635,
+            "fn": 12,
+            "pod": 0.5,
+            "precision": 0.0033,
+            "f1": 0.0065,
+            "csi": 0.0033
           },
           "pixel_level": {
-            "tp": 2073,
-            "fp": 53123,
-            "fn": 302,
-            "pod": 0.8728,
-            "precision": 0.0376,
-            "f1": 0.072,
-            "csi": 0.0374
+            "tp": 2938,
+            "fp": 466497,
+            "fn": 5178,
+            "pod": 0.362,
+            "precision": 0.0063,
+            "f1": 0.0123,
+            "csi": 0.0062
           }
         }
       },
       "nwcsaf_rdt_seviri_pure_gen": {
         "dbz_35": {
           "instantaneous_all_cells": {
-            "tp": 13,
-            "fp": 642,
-            "fn": 76,
-            "pod": 0.1461,
-            "precision": 0.0198,
-            "f1": 0.0349,
-            "csi": 0.0178
+            "tp": 283,
+            "fp": 20114,
+            "fn": 613,
+            "pod": 0.3158,
+            "precision": 0.0139,
+            "f1": 0.0266,
+            "csi": 0.0135
           },
           "lag15min_all_cells": {
-            "tp": 38,
-            "fp": 628,
-            "fn": 385,
-            "pod": 0.0898,
-            "precision": 0.0571,
-            "f1": 0.0698,
-            "csi": 0.0362
+            "tp": 775,
+            "fp": 19849,
+            "fn": 2719,
+            "pod": 0.2218,
+            "precision": 0.0376,
+            "f1": 0.0643,
+            "csi": 0.0332
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 12,
-            "fp": 382,
-            "fn": 64,
-            "pod": 0.1579,
-            "precision": 0.0305,
-            "f1": 0.0511,
-            "csi": 0.0262
+            "tp": 214,
+            "fp": 11168,
+            "fn": 478,
+            "pod": 0.3092,
+            "precision": 0.0188,
+            "f1": 0.0354,
+            "csi": 0.018
           },
           "small_lt500km2_cells": {
-            "tp": 1,
-            "fp": 260,
-            "fn": 12,
-            "pod": 0.0769,
-            "precision": 0.0038,
-            "f1": 0.0073,
-            "csi": 0.0037
+            "tp": 69,
+            "fp": 8946,
+            "fn": 135,
+            "pod": 0.3382,
+            "precision": 0.0077,
+            "f1": 0.015,
+            "csi": 0.0075
           },
           "pixel_level": {
-            "tp": 1877,
-            "fp": 54072,
-            "fn": 10727,
-            "pod": 0.1489,
-            "precision": 0.0335,
-            "f1": 0.0548,
-            "csi": 0.0282
+            "tp": 63059,
+            "fp": 1145969,
+            "fn": 72223,
+            "pod": 0.4661,
+            "precision": 0.0522,
+            "f1": 0.0938,
+            "csi": 0.0492
           }
         },
         "dbz_40": {
           "instantaneous_all_cells": {
-            "tp": 8,
-            "fp": 642,
-            "fn": 38,
-            "pod": 0.1739,
-            "precision": 0.0123,
-            "f1": 0.023,
-            "csi": 0.0116
+            "tp": 138,
+            "fp": 20114,
+            "fn": 251,
+            "pod": 0.3548,
+            "precision": 0.0068,
+            "f1": 0.0134,
+            "csi": 0.0067
           },
           "lag15min_all_cells": {
-            "tp": 26,
-            "fp": 628,
-            "fn": 225,
-            "pod": 0.1036,
-            "precision": 0.0398,
-            "f1": 0.0575,
-            "csi": 0.0296
+            "tp": 497,
+            "fp": 19849,
+            "fn": 1678,
+            "pod": 0.2285,
+            "precision": 0.0244,
+            "f1": 0.0441,
+            "csi": 0.0226
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 7,
-            "fp": 382,
-            "fn": 31,
-            "pod": 0.1842,
-            "precision": 0.018,
-            "f1": 0.0328,
-            "csi": 0.0167
+            "tp": 97,
+            "fp": 11168,
+            "fn": 192,
+            "pod": 0.3356,
+            "precision": 0.0086,
+            "f1": 0.0168,
+            "csi": 0.0085
           },
           "small_lt500km2_cells": {
-            "tp": 1,
-            "fp": 260,
-            "fn": 7,
-            "pod": 0.125,
-            "precision": 0.0038,
-            "f1": 0.0074,
-            "csi": 0.0037
+            "tp": 41,
+            "fp": 8946,
+            "fn": 59,
+            "pod": 0.41,
+            "precision": 0.0046,
+            "f1": 0.009,
+            "csi": 0.0045
           },
           "pixel_level": {
-            "tp": 750,
-            "fp": 54072,
-            "fn": 6158,
-            "pod": 0.1086,
-            "precision": 0.0137,
-            "f1": 0.0243,
-            "csi": 0.0123
+            "tp": 29866,
+            "fp": 1145969,
+            "fn": 25015,
+            "pod": 0.5442,
+            "precision": 0.0254,
+            "f1": 0.0485,
+            "csi": 0.0249
           }
         },
         "dbz_45": {
           "instantaneous_all_cells": {
-            "tp": 8,
-            "fp": 642,
-            "fn": 25,
-            "pod": 0.2424,
-            "precision": 0.0123,
-            "f1": 0.0234,
-            "csi": 0.0119
+            "tp": 116,
+            "fp": 20114,
+            "fn": 194,
+            "pod": 0.3742,
+            "precision": 0.0057,
+            "f1": 0.0113,
+            "csi": 0.0057
           },
           "lag15min_all_cells": {
-            "tp": 17,
-            "fp": 628,
-            "fn": 119,
-            "pod": 0.125,
-            "precision": 0.0264,
-            "f1": 0.0435,
-            "csi": 0.0223
+            "tp": 291,
+            "fp": 19849,
+            "fn": 797,
+            "pod": 0.2675,
+            "precision": 0.0144,
+            "f1": 0.0274,
+            "csi": 0.0139
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 7,
-            "fp": 382,
-            "fn": 18,
-            "pod": 0.28,
-            "precision": 0.018,
-            "f1": 0.0338,
-            "csi": 0.0172
+            "tp": 76,
+            "fp": 11168,
+            "fn": 141,
+            "pod": 0.3502,
+            "precision": 0.0068,
+            "f1": 0.0133,
+            "csi": 0.0067
           },
           "small_lt500km2_cells": {
-            "tp": 1,
-            "fp": 260,
-            "fn": 7,
-            "pod": 0.125,
-            "precision": 0.0038,
-            "f1": 0.0074,
-            "csi": 0.0037
+            "tp": 40,
+            "fp": 8946,
+            "fn": 53,
+            "pod": 0.4301,
+            "precision": 0.0045,
+            "f1": 0.0088,
+            "csi": 0.0044
           },
           "pixel_level": {
-            "tp": 800,
-            "fp": 54072,
-            "fn": 4343,
-            "pod": 0.1556,
-            "precision": 0.0146,
-            "f1": 0.0267,
-            "csi": 0.0135
+            "tp": 13764,
+            "fp": 1145969,
+            "fn": 19375,
+            "pod": 0.4153,
+            "precision": 0.0119,
+            "f1": 0.0231,
+            "csi": 0.0117
           }
         },
         "dbz_50": {
           "instantaneous_all_cells": {
-            "tp": 2,
-            "fp": 642,
-            "fn": 5,
-            "pod": 0.2857,
-            "precision": 0.0031,
-            "f1": 0.0061,
-            "csi": 0.0031
+            "tp": 33,
+            "fp": 20114,
+            "fn": 42,
+            "pod": 0.44,
+            "precision": 0.0016,
+            "f1": 0.0033,
+            "csi": 0.0016
           },
           "lag15min_all_cells": {
-            "tp": 8,
-            "fp": 628,
-            "fn": 39,
-            "pod": 0.1702,
-            "precision": 0.0126,
-            "f1": 0.0234,
-            "csi": 0.0119
+            "tp": 108,
+            "fp": 19849,
+            "fn": 301,
+            "pod": 0.2641,
+            "precision": 0.0054,
+            "f1": 0.0106,
+            "csi": 0.0053
           },
           "mesoscale_ge500km2_cells": {
-            "tp": 1,
-            "fp": 382,
-            "fn": 2,
-            "pod": 0.3333,
-            "precision": 0.0026,
-            "f1": 0.0052,
-            "csi": 0.0026
+            "tp": 20,
+            "fp": 11168,
+            "fn": 30,
+            "pod": 0.4,
+            "precision": 0.0018,
+            "f1": 0.0036,
+            "csi": 0.0018
           },
           "small_lt500km2_cells": {
-            "tp": 1,
-            "fp": 260,
-            "fn": 3,
-            "pod": 0.25,
-            "precision": 0.0038,
-            "f1": 0.0075,
-            "csi": 0.0038
+            "tp": 13,
+            "fp": 8946,
+            "fn": 12,
+            "pod": 0.52,
+            "precision": 0.0015,
+            "f1": 0.0029,
+            "csi": 0.0014
           },
           "pixel_level": {
-            "tp": 45,
-            "fp": 54072,
-            "fn": 2555,
-            "pod": 0.0173,
-            "precision": 0.0008,
-            "f1": 0.0016,
-            "csi": 0.0008
+            "tp": 2404,
+            "fp": 1145969,
+            "fn": 4932,
+            "pod": 0.3277,
+            "precision": 0.0021,
+            "f1": 0.0042,
+            "csi": 0.0021
           }
         }
       }

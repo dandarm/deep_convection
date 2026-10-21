@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -68,17 +69,81 @@ OPERA_ROOT = Path(r"E:\Datasets\Deep_convection\raw\opera")
 ERA5_CACHE_DIR = RDT_ORIG_ROOT / "results" / "era5_cache"
 OUT_DIR = RDT_ORIG_ROOT / "results" / "comparison_seviri_2020"
 
-# Pure 4 semantic class RGBA colors (no artificial borders, no overlapping yellow):
+# Full 4-phase official RDT convective lifecycle schema:
 # 1: Non-convective cold cloud -> Steel Blue
-# 2: Developing / Growing convective cell -> Vibrant Orange
-# 3: Mature / Decaying convective cell -> Crimson Red
-# 4: Overshooting Top (OT) -> Bright Magenta / Violet
-CLASS_COLORS: dict[int, tuple[int, int, int, float]] = {
-    1: (59, 130, 246, 0.58),
-    2: (249, 115, 22, 0.80),
-    3: (220, 38, 38, 0.80),
-    4: (232, 121, 249, 0.95),
+# 2: Triggering convective cell -> Bright Yellow
+# 3: Growing convective cell -> Vibrant Orange
+# 4: Mature convective cell -> Vivid Crimson Red
+# 5: Decaying convective cell -> Dark Brick / Bordeaux Red
+# 6: Overshooting Top (OT) -> Bright Magenta / Violet
+CLASS_COLORS: dict[int, tuple[int, int, int]] = {
+    1: (59, 130, 246),
+    2: (250, 204, 21),
+    3: (249, 115, 22),
+    4: (220, 38, 38),
+    5: (153, 27, 27),
+    6: (245, 105, 255),
 }
+
+
+class SmoothSemanticRenderer:
+    """Renders semantic masks with temporal color smoothing (EMA) to prevent 1-frame flickering."""
+
+    def __init__(self, shape: tuple[int, int], gamma: float = 0.38):
+        h, w = shape
+        self.gamma = gamma
+        self.conv_color_buffer = np.zeros((h, w, 3), dtype=np.float32)
+        self.conv_active = np.zeros((h, w), dtype=bool)
+
+    def render(self, base_rgb: np.ndarray, sem_label: np.ndarray) -> np.ndarray:
+        out = base_rgb.astype(np.float32).copy()
+
+        # 1. Non-convective cold cloud (Class 1 -> Steel Blue)
+        cirrus = (sem_label == 1)
+        if np.any(cirrus):
+            alpha_c = 0.55
+            out[cirrus, 0] = (1.0 - alpha_c) * out[cirrus, 0] + alpha_c * 59.0
+            out[cirrus, 1] = (1.0 - alpha_c) * out[cirrus, 1] + alpha_c * 130.0
+            out[cirrus, 2] = (1.0 - alpha_c) * out[cirrus, 2] + alpha_c * 246.0
+
+        # 2. Convective lifecycle classes (2: Triggering, 3: Growing, 4: Mature, 5: Decaying)
+        conv_mask = (sem_label >= 2) & (sem_label <= 5)
+        if np.any(conv_mask):
+            target_rgb = np.zeros_like(self.conv_color_buffer)
+            for cls_id, (r, g, b) in [
+                (2, (250.0, 204.0, 21.0)),  # Triggering -> Bright Yellow
+                (3, (249.0, 115.0, 22.0)),  # Growing -> Vibrant Orange
+                (4, (220.0, 38.0, 38.0)),   # Mature -> Vivid Crimson Red
+                (5, (153.0, 27.0, 27.0)),   # Decaying -> Dark Brick Red
+            ]:
+                m = (sem_label == cls_id)
+                if np.any(m):
+                    target_rgb[m] = [r, g, b]
+
+            # Smoothly blend for persistent convective pixels
+            smooth_pixels = conv_mask & self.conv_active
+            self.conv_color_buffer[smooth_pixels] = (
+                (1.0 - self.gamma) * self.conv_color_buffer[smooth_pixels] + self.gamma * target_rgb[smooth_pixels]
+            )
+            # Newly convective pixels take target color immediately
+            new_pixels = conv_mask & (~self.conv_active)
+            self.conv_color_buffer[new_pixels] = target_rgb[new_pixels]
+
+            alpha = 0.82
+            out[conv_mask] = (1.0 - alpha) * out[conv_mask] + alpha * self.conv_color_buffer[conv_mask]
+
+        self.conv_active = conv_mask
+
+        # 3. Overshooting Tops (Class 6 -> Bright Vivid Magenta with 1-px dilation for high visibility)
+        ot_mask = (sem_label == 6)
+        if np.any(ot_mask):
+            ot_dil = ndimage.binary_dilation(ot_mask, iterations=1)
+            alpha_ot = 0.96
+            out[ot_dil, 0] = (1.0 - alpha_ot) * out[ot_dil, 0] + alpha_ot * 245.0
+            out[ot_dil, 1] = (1.0 - alpha_ot) * out[ot_dil, 1] + alpha_ot * 105.0
+            out[ot_dil, 2] = (1.0 - alpha_ot) * out[ot_dil, 2] + alpha_ot * 255.0
+
+        return np.clip(out, 0, 255).astype(np.uint8)
 
 TURBO_CMAP = matplotlib.colormaps["turbo"]
 
@@ -147,6 +212,23 @@ def _load_full_domain_geometry(zarr_path: Path) -> dict[str, Any]:
     }
 
 
+def fill_internal_mask_holes(mask_2d: np.ndarray, max_hole_size: int = 16) -> np.ndarray:
+    """Fill small discrete coordinate-splatting holes (<= 16 px) to eliminate white necklaces."""
+    if not np.any(mask_2d > 0):
+        return mask_2d
+    is_cloud = mask_2d > 0
+    filled = ndimage.binary_fill_holes(is_cloud)
+    holes = filled & (~is_cloud)
+    if not np.any(holes):
+        return mask_2d
+    lbl, num_holes = ndimage.label(holes, structure=np.ones((3, 3), dtype=bool))
+    counts = np.bincount(lbl.ravel())
+    small_holes = np.isin(lbl, np.where((counts > 0) & (counts <= max_hole_size))[0]) & (lbl > 0)
+    out = mask_2d.copy()
+    out[small_holes] = ndimage.maximum_filter(mask_2d, size=3)[small_holes]
+    return out
+
+
 def _ir108_to_rgb_base(ir108_k: np.ndarray) -> np.ndarray:
     """Convert IR 10.8 brightness temperature (K) to an enhanced grayscale RGB image."""
     norm = np.clip((300.0 - np.nan_to_num(ir108_k, nan=295.0)) / (300.0 - 202.0), 0.0, 1.0)
@@ -200,13 +282,12 @@ def _overlay_opera_gradient_panel(
 def _compose_single_full_domain_frame(
     rgb_map: np.ndarray,
     title: str,
-    subtitle: str,
     is_opera_video: bool = False,
 ) -> np.ndarray:
-    """Compose a single-panel full-domain (763 x 1762) video frame with header and legend bar."""
+    """Compose a single-panel full-domain (763 x 1762) video frame with single title and clean legend."""
     h, w, _ = rgb_map.shape
-    header_h = 64
-    footer_h = 52
+    header_h = 48
+    footer_h = 44
     pad = 12
     total_w = w + 2 * pad
     total_h = header_h + h + footer_h + 2 * pad
@@ -218,75 +299,94 @@ def _compose_single_full_domain_frame(
     canvas = Image.new("RGB", (total_w, total_h), (15, 23, 42))
     draw = ImageDraw.Draw(canvas)
     try:
-        font_h1 = ImageFont.truetype("arialbd.ttf", 21)
-        font_sub = ImageFont.truetype("arial.ttf", 15)
-        font_leg = ImageFont.truetype("arialbd.ttf", 14)
+        font_h1 = ImageFont.truetype("arialbd.ttf", 20)
+        font_leg = ImageFont.truetype("arialbd.ttf", 13)
     except Exception:
         font_h1 = ImageFont.load_default()
-        font_sub = ImageFont.load_default()
         font_leg = ImageFont.load_default()
 
-    draw.text((pad + 4, 10), title, fill=(248, 250, 252), font=font_h1)
-    draw.text((pad + 4, 38), subtitle, fill=(148, 163, 184), font=font_sub)
+    # Single-line title without subtitle
+    draw.text((pad + 4, 14), title, fill=(248, 250, 252), font=font_h1)
 
     panel_img = Image.fromarray(rgb_map)
     canvas.paste(panel_img, (pad, header_h))
     draw.rectangle([pad - 1, header_h - 1, pad + w, header_h + h], outline=(71, 85, 105), width=1)
 
-    fy = header_h + h + 16
+    fy = header_h + h + 13
     lx = pad + 6
     if is_opera_video:
-        cb_w = 280
+        cb_w = 260
         for dx in range(cb_w):
             val = dx / max(cb_w - 1, 1)
             r, g, b, _ = TURBO_CMAP(val)
             col = (int(r * 255), int(g * 255), int(b * 255))
-            draw.line([(lx + dx, fy), (lx + dx, fy + 18)], fill=col)
-        draw.rectangle([lx, fy, lx + cb_w, fy + 18], outline=(210, 215, 225))
+            draw.line([(lx + dx, fy), (lx + dx, fy + 16)], fill=col)
+        draw.rectangle([lx, fy, lx + cb_w, fy + 16], outline=(210, 215, 225))
         draw.text(
             (lx + cb_w + 12, fy + 1),
-            "OPERA Radar DBZH [-5 .. 20 .. 35 .. 50 .. 65 dBZ] (QIND >= 0.20) su SEVIRI IR 10.8 [K]",
+            "Riflettivita Radar OPERA [-5 .. 20 .. 35 .. 50 .. 65 dBZ] (QIND >= 0.20) su SEVIRI IR 10.8 [K]",
             fill=(226, 232, 240),
             font=font_leg,
         )
     else:
         legend_items = [
-            ((59, 130, 246), "Classe 1: Nube fredda non convettiva"),
-            ((249, 115, 22), "Classe 2: Convezione in sviluppo (Growing/Triggering)"),
-            ((220, 38, 38), "Classe 3: Convezione matura / in decadimento"),
-            ((232, 121, 249), "Classe 4: Overshooting Top (OT)"),
+            ((59, 130, 246), "Nube fredda"),
+            ((250, 204, 21), "Triggering"),
+            ((249, 115, 22), "Growing"),
+            ((220, 38, 38), "Mature"),
+            ((153, 27, 27), "Decaying"),
+            ((245, 105, 255), "Overshooting Top (OT)"),
         ]
         for color, label in legend_items:
-            draw.rectangle([lx, fy, lx + 20, fy + 18], fill=color, outline=(255, 255, 255))
-            draw.text((lx + 26, fy + 1), label, fill=(226, 232, 240), font=font_leg)
-            lx += 26 + int(len(label) * 7.8) + 28
+            draw.rectangle([lx, fy, lx + 18, fy + 16], fill=color, outline=(255, 255, 255))
+            draw.text((lx + 24, fy + 1), label, fill=(226, 232, 240), font=font_leg)
+            lx += 24 + int(len(label) * 7.5) + 24
 
     return np.asarray(canvas, dtype=np.uint8)
 
 
+class FfmpegStreamWriter:
+    """Streams raw RGB frames directly to ffmpeg stdin to encode MP4 with zero disk churn."""
+
+    def __init__(self, out_path: Path, width: int, height: int, fps: float = 33.6):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        self.out_path = out_path
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo",
+            "-vcodec", "rawvideo",
+            "-s", f"{width}x{height}",
+            "-pix_fmt", "rgb24",
+            "-r", f"{fps:.4f}",
+            "-i", "-",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "fast",
+            "-crf", "19",
+            str(out_path),
+        ]
+        self.proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+    def write_frame(self, frame_rgb: np.ndarray) -> None:
+        self.proc.stdin.write(frame_rgb.tobytes())
+
+    def close(self) -> None:
+        if self.proc.stdin:
+            self.proc.stdin.close()
+        self.proc.wait()
+
+
 def _encode_mp4(frames: list[np.ndarray], out_mp4: Path, fps: float = 1.2) -> None:
-    """Encode list of RGB frames into a smooth 12-fps H.264 MP4 via ffmpeg at input rate ``fps``."""
-    out_mp4.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dir = out_mp4.parent / f"_tmp_{out_mp4.stem}"
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    for idx, frame in enumerate(frames):
-        Image.fromarray(frame).save(tmp_dir / f"frame_{idx:04d}.png")
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-framerate", f"{fps:.4f}",
-        "-i", str(tmp_dir / "frame_%04d.png"),
-        "-vf", "fps=12",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-crf", "19",
-        str(out_mp4),
-    ]
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    """Encode list of RGB frames into a smooth H.264 MP4 via ffmpeg."""
+    if not frames:
+        return
+    h, w, _ = frames[0].shape
+    writer = FfmpegStreamWriter(out_mp4, w, h, fps=fps)
+    for frame in frames:
+        writer.write_frame(frame)
+    writer.close()
 
 
 def evaluate_heldout_ancillary_and_parallax_ablations(
@@ -437,6 +537,17 @@ def evaluate_heldout_ancillary_and_parallax_ablations(
 
 
 def _make_snapshot(cell: dict[str, Any], cid: int, event: str, frame_idx: int) -> dict[str, Any]:
+    # Extract only the key for cell["t_bt_k"] into a plain lightweight dict to break the reference cycle to hierarchy
+    t_bt = cell.get("t_bt_k", 240.0)
+    vp: dict[int, float] = {}
+    raw_vp = cell.get("vertical_profile")
+    if raw_vp is not None:
+        try:
+            k = int(round((t_bt - 198.15) / 1.0))
+            if k in raw_vp:
+                vp[k] = float(raw_vp[k])
+        except Exception:
+            pass
     return {
         "frame_index": frame_idx,
         "timestamp": None,
@@ -451,7 +562,7 @@ def _make_snapshot(cell: dict[str, Any], cid: int, event: str, frame_idx: int) -
         "t_mean_k": cell["t_mean_k"],
         "contrast_k": cell["contrast_k"],
         "area_km2": cell["area_km2"],
-        "vertical_profile": cell["vertical_profile"],
+        "vertical_profile": vp,
         "btd_wv62_ir108_max_k": cell["btd_wv62_ir108_max_k"],
         "btd_wv62_ir108_p90_k": cell["btd_wv62_ir108_p90_k"],
         "cooling_rate_k_per_h": cell["cooling_rate_k_per_h"],
@@ -462,19 +573,9 @@ def _make_snapshot(cell: dict[str, Any], cid: int, event: str, frame_idx: int) -
     }
 
 
-def _evaluate_pair_both_models(
-    f_prev: np.ndarray,
-    f_curr: np.ndarray,
-    area_km2: np.ndarray,
-    lat_deg: np.ndarray,
-    lon_deg: np.ndarray,
-    era5_grid: Any,
-    pure_tropo_p: np.ndarray,
-    pure_tropo_c: np.ndarray,
-    cal_model: CalibratedRdtModel,
-) -> dict[str, Any]:
-    """Run authentic 15-min pair (f_prev -> f_curr) sharing Stage 0-4 detection/tracking/OTD
-    and executing Stage 5-6 (discrimination + parallax correction) separately for Full and Pure.
+def _process_single_day_worker(args: tuple[str, dict[str, Any], str, float]) -> dict[str, Any]:
+    """Worker process that continuously processes all 288 5-minute frames for a single day Zarr,
+    streaming the 3 video outputs directly to ffmpeg without accumulating frames in RAM.
     """
     from rdt_nwcsaf.ancillary import (
         apply_parallax_correction_2d,
@@ -486,191 +587,9 @@ def _evaluate_pair_both_models(
     from rdt_nwcsaf.otd import detect_cell_overshooting_tops
     from rdt_nwcsaf.tracking import track_rdt_cells
 
-    full_cfg = NwcSafRdtConfig(enforce_stretched_mask=False, nwp_conv_filter=True, discri_scheme="CAL")
-    pure_cfg = NwcSafRdtConfig(enforce_stretched_mask=False, nwp_conv_filter=False, discri_scheme="GEN")
-    h, w = area_km2.shape
-    pure_tropo_p_scalar = float(pure_tropo_p[0, 0])
-    pure_tropo_c_scalar = float(pure_tropo_c[0, 0])
-
-    # --- Frame t - 15 min (f_prev) ---
-    ct_prev = compute_nwcsaf_cloud_type(
-        f_prev[4], ir120=f_prev[5], ir087=f_prev[2], wv062=f_prev[0], wv073=f_prev[1],
-        t_tropo_k=pure_tropo_p, t_surf_k=292.0,
-    )
-    prev_labels, prev_cells_base, prev_hierarchy, _ = detect_rdt_cells(
-        f_prev, area_km2, pure_cfg, ct_cloudy_mask=ct_prev.opaque_cloud_mask, tropopause_temp_k=pure_tropo_p
-    )
-
-    prev_cells_full: dict[int, dict[str, Any]] = {}
-    prev_cells_pure: dict[int, dict[str, Any]] = {}
-    hist_full: dict[int, list[dict[str, Any]]] = {}
-    hist_pure: dict[int, list[dict[str, Any]]] = {}
-
-    for cid, base_c in prev_cells_base.items():
-        base_c["motion_yx"] = np.zeros(2, dtype=float)
-        base_c["event"] = "new"
-        base_c["track_id"] = cid
-        cy_i = int(np.clip(round(float(base_c["weight_centroid_yx"][0])), 0, h - 1))
-        cx_i = int(np.clip(round(float(base_c["weight_centroid_yx"][1])), 0, w - 1))
-        c_lat = float(lat_deg[cy_i, cx_i])
-        c_lon = float(lon_deg[cy_i, cx_i])
-        base_c["lat_deg"] = c_lat
-        base_c["lon_deg"] = c_lon
-        ot_p = detect_cell_overshooting_tops(base_c, f_prev, area_km2, pure_cfg, cell_lat_deg=c_lat)
-        base_c["ot_confirmed_count"] = int(ot_p["confirmed_count"])
-        base_c["ot_confirmed_pixels"] = int(ot_p["confirmed_pixels"])
-
-        bbox = base_c["bbox"]
-        mask = base_c["mask"]
-        loc_nwp = era5_grid.nwpconv_mask[bbox][mask]
-        nwp_val = int(np.max(loc_nwp)) if len(loc_nwp) > 0 else 2
-        loc_tr_f = era5_grid.t_tropo_k[bbox][mask]
-        tropo_f = float(np.nanmedian(loc_tr_f)) if len(loc_tr_f) > 0 else 215.0
-
-        cf = dict(base_c)
-        df = discriminate_and_classify_cell(
-            cf, None, None, [], None, prev_hierarchy, ot_p, 15.0, full_cfg,
-            nwp_mask_value=nwp_val, lightning_strokes=0, cell_lat_deg=c_lat,
-            calibrated_model=cal_model, cell_tropo_temp_k=tropo_f,
-        )
-        cf.update(df)
-        prev_cells_full[cid] = cf
-        hist_full[cid] = [_make_snapshot(cf, cid, "new", 0)]
-
-        cp = dict(base_c)
-        dp = discriminate_and_classify_cell(
-            cp, None, None, [], None, prev_hierarchy, ot_p, 15.0, pure_cfg,
-            nwp_mask_value=2, lightning_strokes=0, cell_lat_deg=c_lat,
-            calibrated_model=None, cell_tropo_temp_k=pure_tropo_p_scalar,
-        )
-        cp.update(dp)
-        prev_cells_pure[cid] = cp
-        hist_pure[cid] = [_make_snapshot(cp, cid, "new", 0)]
-
-    # --- Frame t (f_curr) ---
-    ct_curr = compute_nwcsaf_cloud_type(
-        f_curr[4], ir120=f_curr[5], ir087=f_curr[2], wv062=f_curr[0], wv073=f_curr[1],
-        t_tropo_k=pure_tropo_c, t_surf_k=292.0,
-    )
-    dy_px, dx_px = compute_hrw_amv_guess_field(
-        f_prev[4], f_curr[4], prev_wv062=f_prev[0], curr_wv062=f_curr[0], dt_seconds=900.0
-    )
-    guess_motion_yx = np.stack([dy_px, dx_px], axis=0)
-
-    curr_labels, curr_cells_base, curr_hierarchy, _ = detect_rdt_cells(
-        f_curr, area_km2, pure_cfg, ct_cloudy_mask=ct_curr.opaque_cloud_mask, tropopause_temp_k=pure_tropo_c
-    )
-
-    parents, children, edges, primary_parent, events, _ = track_rdt_cells(
-        prev_cells_pure, prev_labels, prev_hierarchy, f_prev[4],
-        curr_cells_base, curr_labels, curr_hierarchy, f_curr[4],
-        area_km2, pure_cfg, guess_motion_yx=guess_motion_yx,
-    )
-
-    sem_full = np.zeros((h, w), dtype=np.uint8)
-    sem_pure = np.zeros((h, w), dtype=np.uint8)
-    ot_mask_full = np.zeros((h, w), dtype=bool)
-    ot_mask_pure = np.zeros((h, w), dtype=bool)
-    n_conv_full = 0
-    n_conv_pure = 0
-
-    for cid, base_c in curr_cells_base.items():
-        ev = events.get(cid, "new")
-        p_main = primary_parent.get(cid)
-        p_list = parents.get(cid, [])
-
-        cy_i = int(np.clip(round(float(base_c["weight_centroid_yx"][0])), 0, h - 1))
-        cx_i = int(np.clip(round(float(base_c["weight_centroid_yx"][1])), 0, w - 1))
-        c_lat = float(lat_deg[cy_i, cx_i])
-        c_lon = float(lon_deg[cy_i, cx_i])
-        base_c["lat_deg"] = c_lat
-        base_c["lon_deg"] = c_lon
-        base_c["event"] = ev
-
-        ot_c = detect_cell_overshooting_tops(base_c, f_curr, area_km2, pure_cfg, cell_lat_deg=c_lat)
-        base_c["ot_confirmed_count"] = int(ot_c["confirmed_count"])
-        base_c["ot_confirmed_pixels"] = int(ot_c["confirmed_pixels"])
-        bbox = base_c["bbox"]
-        mask = base_c["mask"]
-        ot_conf_loc = ot_c["confirmed_mask"] & mask
-
-        loc_nwp = era5_grid.nwpconv_mask[bbox][mask]
-        nwp_val = int(np.max(loc_nwp)) if len(loc_nwp) > 0 else 2
-        loc_tr_f = era5_grid.t_tropo_k[bbox][mask]
-        tropo_f = float(np.nanmedian(loc_tr_f)) if len(loc_tr_f) > 0 else 215.0
-
-        # Full model discrimination
-        cf = dict(base_c)
-        prev_f = prev_cells_full.get(p_main) if p_main is not None else None
-        conv_p_f = prev_f if (prev_f is not None and prev_f.get("is_convective")) else None
-        if conv_p_f is None:
-            for pid in sorted(p_list):
-                if prev_cells_full[pid].get("is_convective"):
-                    conv_p_f = prev_cells_full[pid]
-                    break
-        hf = hist_full.get(p_main, []) if (p_main is not None and ev in ("continuation", "merge_main", "split_main")) else []
-        df = discriminate_and_classify_cell(
-            cf, prev_f, conv_p_f, hf, prev_hierarchy, curr_hierarchy, ot_c, 15.0, full_cfg,
-            nwp_mask_value=nwp_val, lightning_strokes=0, cell_lat_deg=c_lat,
-            calibrated_model=cal_model, cell_tropo_temp_k=tropo_f,
-        )
-        sem_full[bbox][mask] = int(df["class_id"])
-        if df["is_convective"]:
-            n_conv_full += 1
-            if np.any(ot_conf_loc):
-                ot_mask_full[bbox][ot_conf_loc] = True
-                sem_full[bbox][ot_conf_loc] = 4
-
-        # Pure model discrimination
-        cp = dict(base_c)
-        prev_p = prev_cells_pure.get(p_main) if p_main is not None else None
-        conv_p_p = prev_p if (prev_p is not None and prev_p.get("is_convective")) else None
-        if conv_p_p is None:
-            for pid in sorted(p_list):
-                if prev_cells_pure[pid].get("is_convective"):
-                    conv_p_p = prev_cells_pure[pid]
-                    break
-        hp = hist_pure.get(p_main, []) if (p_main is not None and ev in ("continuation", "merge_main", "split_main")) else []
-        dp = discriminate_and_classify_cell(
-            cp, prev_p, conv_p_p, hp, prev_hierarchy, curr_hierarchy, ot_c, 15.0, pure_cfg,
-            nwp_mask_value=2, lightning_strokes=0, cell_lat_deg=c_lat,
-            calibrated_model=None, cell_tropo_temp_k=pure_tropo_c_scalar,
-        )
-        sem_pure[bbox][mask] = int(dp["class_id"])
-        if dp["is_convective"]:
-            n_conv_pure += 1
-            if np.any(ot_conf_loc):
-                ot_mask_pure[bbox][ot_conf_loc] = True
-                sem_pure[bbox][ot_conf_loc] = 4
-
-    # Stage 6: 3D Geostationary Parallax Correction
-    sem_full = apply_parallax_correction_2d(
-        sem_full, f_curr[4], lat_deg, lon_deg, t_surf_k=era5_grid.t_surf_k, t_tropo_k=era5_grid.t_tropo_k, fill_value=0
-    )
-    ot_mask_full = apply_parallax_correction_2d(
-        ot_mask_full.astype(np.uint8), f_curr[4], lat_deg, lon_deg, t_surf_k=era5_grid.t_surf_k, t_tropo_k=era5_grid.t_tropo_k, fill_value=0
-    ).astype(bool)
-    sem_pure = apply_parallax_correction_2d(
-        sem_pure, f_curr[4], lat_deg, lon_deg, t_surf_k=292.0, t_tropo_k=pure_tropo_c, fill_value=0
-    )
-    ot_mask_pure = apply_parallax_correction_2d(
-        ot_mask_pure.astype(np.uint8), f_curr[4], lat_deg, lon_deg, t_surf_k=292.0, t_tropo_k=pure_tropo_c, fill_value=0
-    ).astype(bool)
-
-    return {
-        "sem_full": sem_full,
-        "sem_pure": sem_pure,
-        "n_conv_full": n_conv_full,
-        "n_conv_pure": n_conv_pure,
-        "n_ot_full": int(ot_mask_full.sum()),
-        "n_ot_pure": int(ot_mask_pure.sum()),
-    }
-
-
-def _process_single_day_worker(args: tuple[str, list[int], dict[str, Any]]) -> dict[str, Any]:
-    """Worker process that evaluates all uniform slots for a single day Zarr."""
-    zarr_path_str, slot_indices, geom = args
+    zarr_path_str, geom, out_dir_str, fps = args
     zp = Path(zarr_path_str)
+    out_dir = Path(out_dir_str)
     cal_model = CalibratedRdtModel.from_json(RDT_ORIG_ROOT / "rdt_nwcsaf" / "default_calibrated_model.json")
 
     area_km2 = geom["area_km2"]
@@ -680,10 +599,61 @@ def _process_single_day_worker(args: tuple[str, list[int], dict[str, Any]]) -> d
     opera_row, opera_col, opera_inside = geom["opera_row"], geom["opera_col"], geom["opera_inside"]
     h, w = area_km2.shape
 
-    g = zarr.open(str(zp), mode="r")
-    times_all = pd.date_range(zp.stem, periods=288, freq="5min", tz="UTC")
+    # Exact canvas dimensions matching _compose_single_full_domain_frame
+    pad = 12
+    total_w = w + 2 * pad
+    total_h = 48 + h + 44 + 2 * pad
+    if total_w % 2 == 1:
+        total_w += 1
+    if total_h % 2 == 1:
+        total_h += 1
 
-    # Preload the 3 synoptic ERA5 grids for this day (06:00, 13:00, 19:00 UTC)
+    day_opera_mp4 = out_dir / f"_day_{zp.stem}_opera.mp4"
+    day_full_mp4 = out_dir / f"_day_{zp.stem}_full.mp4"
+    day_pure_mp4 = out_dir / f"_day_{zp.stem}_pure.mp4"
+    stats_cache = out_dir / f"_stats_{zp.stem}.json"
+    prog_file = out_dir / f"_progress_{zp.stem}.txt"
+    cache_file = out_dir / f"_cache_{zp.stem}.npz"
+
+    # If already computed with cache and 100% complete (288/288 frames), resume without re-computing!
+    if (
+        cache_file.exists()
+        and prog_file.exists()
+        and "DONE (288/288 frames)" in prog_file.read_text(encoding="utf-8")
+        and day_opera_mp4.exists() and day_full_mp4.exists() and day_pure_mp4.exists()
+    ):
+        print(f"[Day {zp.stem}] Found completed 288-frame video segments. Resuming without re-computing!", flush=True)
+        stats = json.loads(stats_cache.read_text(encoding="utf-8")) if stats_cache.exists() else {}
+        return {
+            "day": zp.stem,
+            "day_opera_mp4": str(day_opera_mp4),
+            "day_full_mp4": str(day_full_mp4),
+            "day_pure_mp4": str(day_pure_mp4),
+            "opera_stats": stats,
+        }
+
+    writer_opera = FfmpegStreamWriter(day_opera_mp4, total_w, total_h, fps=fps)
+    writer_full = FfmpegStreamWriter(day_full_mp4, total_w, total_h, fps=fps)
+    writer_pure = FfmpegStreamWriter(day_pure_mp4, total_w, total_h, fps=fps)
+
+    g = zarr.open(str(zp), mode="r")
+    # Read actual unix timestamps from the Zarr archive and sort strictly chronologically
+    if "time" in g:
+        raw_unix = np.asarray(g["time"][:], dtype=np.int64)
+        chronological_indices = np.argsort(raw_unix)
+        if zp.stem == "20200917":
+            # Specific fix for 20200917 where chunks 19..30 (13:30-14:25 UTC) and 0..18 (14:30-16:00 UTC) were swapped in raw Zarr timestamps
+            chronological_indices = np.concatenate([
+                chronological_indices[:162],
+                chronological_indices[181:193],
+                chronological_indices[162:181],
+                chronological_indices[193:],
+            ])
+        times_all = pd.date_range(f"{zp.stem[:4]}-{zp.stem[4:6]}-{zp.stem[6:8]} 00:00:00", periods=288, freq="5min", tz="UTC")
+    else:
+        chronological_indices = np.arange(288)
+        times_all = pd.date_range(zp.stem, periods=288, freq="5min", tz="UTC")
+
     synoptic_hours = [6, 13, 19]
     era5_day_grids: dict[int, Any] = {}
     for sh in synoptic_hours:
@@ -703,14 +673,6 @@ def _process_single_day_worker(args: tuple[str, list[int], dict[str, Any]]) -> d
             opera_cache[k] = read_opera_h5(p) if p.exists() else None
         return opera_cache[k]
 
-    import gc
-
-    day_frames_opera: list[np.ndarray] = []
-    day_frames_full: list[np.ndarray] = []
-    day_frames_pure: list[np.ndarray] = []
-    day_ref_full: list[np.ndarray] = []
-    day_pred_pure: list[np.ndarray] = []
-
     day_opera_stats: dict[str, dict[str, dict[str, int]]] = {
         m_name: {
             f"dbz_{th}": {
@@ -725,40 +687,172 @@ def _process_single_day_worker(args: tuple[str, list[int], dict[str, Any]]) -> d
         for m_name in ("nwcsaf_rdt_full_era5_cal", "nwcsaf_rdt_seviri_pure_gen")
     }
 
-    for s_idx, idx_curr in enumerate(slot_indices, start=1):
+    pure_cfg = NwcSafRdtConfig(enforce_stretched_mask=False, nwp_conv_filter=False, discri_scheme="GEN")
+    full_cfg = NwcSafRdtConfig(enforce_stretched_mask=False, nwp_conv_filter=True, discri_scheme="CAL", limittropo=True)
+
+    prev_f: np.ndarray | None = None
+    prev_labels: np.ndarray | None = None
+    prev_hierarchy: ThresholdSliceHierarchy | None = None
+    prev_cells_full: dict[int, dict[str, Any]] = {}
+    prev_cells_pure: dict[int, dict[str, Any]] = {}
+    hist_full: dict[int, list[dict[str, Any]]] = {}
+    hist_pure: dict[int, list[dict[str, Any]]] = {}
+
+    # Sequential continuous 5-minute stepping in true chronological order
+    num_frames = min(int(os.environ.get("RDT_MAX_FRAMES_PER_DAY", "288")), len(chronological_indices))
+    renderer_full = SmoothSemanticRenderer((h, w), gamma=0.38)
+    renderer_pure = SmoothSemanticRenderer((h, w), gamma=0.38)
+    daily_sem_full = np.zeros((num_frames, h, w), dtype=np.uint8)
+    daily_sem_pure = np.zeros((num_frames, h, w), dtype=np.uint8)
+    for step_idx in range(num_frames):
         t0 = time.perf_counter()
-        idx_prev = idx_curr - 3
-        ts_curr = times_all[idx_curr]
+        raw_idx = int(chronological_indices[step_idx])
+        ts_curr = times_all[step_idx]
         nearest_sh = min(synoptic_hours, key=lambda sh: abs(ts_curr.hour - sh))
         era5_grid = era5_day_grids[nearest_sh]
 
-        raw_prev = np.asarray(g["seviri"][idx_prev], dtype=np.float32)
-        f_prev, _, _ = _orient_north_up_west_left(raw_prev, geom["y_raw"], geom["x_raw"])
-        cold_p = np.isfinite(f_prev[4]) & (f_prev[4] < 235.0)
-        t_tr_p = float(0.6 * np.nanpercentile(f_prev[0][cold_p], 10) + 0.4 * np.nanpercentile(f_prev[4][cold_p], 5)) if int(np.count_nonzero(cold_p)) >= 50 else 215.0
-        pure_tropo_p = np.full(f_prev[4].shape, float(np.clip(t_tr_p, 205.0, 226.0)), dtype=np.float32)
-
-        raw_curr = np.asarray(g["seviri"][idx_curr], dtype=np.float32)
+        raw_curr = np.asarray(g["seviri"][raw_idx], dtype=np.float32)
         f_curr, _, _ = _orient_north_up_west_left(raw_curr, geom["y_raw"], geom["x_raw"])
         cold_c = np.isfinite(f_curr[4]) & (f_curr[4] < 235.0)
         t_tr_c = float(0.6 * np.nanpercentile(f_curr[0][cold_c], 10) + 0.4 * np.nanpercentile(f_curr[4][cold_c], 5)) if int(np.count_nonzero(cold_c)) >= 50 else 215.0
         pure_tropo_c = np.full(f_curr[4].shape, float(np.clip(t_tr_c, 205.0, 226.0)), dtype=np.float32)
+        pure_tropo_c_scalar = float(np.clip(t_tr_c, 205.0, 226.0))
 
-        res = _evaluate_pair_both_models(
-            f_prev, f_curr, area_km2, lat_deg, lon_deg, era5_grid, pure_tropo_p, pure_tropo_c, cal_model
+        ct_curr = compute_nwcsaf_cloud_type(
+            f_curr[4], ir120=f_curr[5], ir087=f_curr[2], wv062=f_curr[0], wv073=f_curr[1],
+            t_tropo_k=pure_tropo_c, t_surf_k=292.0,
         )
-        gc.collect()
-        sem_full = res["sem_full"]
-        sem_pure = res["sem_pure"]
-        n_conv_full = res["n_conv_full"]
-        n_conv_pure = res["n_conv_pure"]
-        n_ot_full = res["n_ot_full"]
-        n_ot_pure = res["n_ot_pure"]
 
-        day_ref_full.append(sem_full[None, ...])
-        day_pred_pure.append(sem_pure[None, ...])
+        if prev_f is not None:
+            dy_px, dx_px = compute_hrw_amv_guess_field(
+                prev_f[4], f_curr[4], prev_wv062=prev_f[0], curr_wv062=f_curr[0], dt_seconds=300.0
+            )
+            guess_motion_yx = np.stack([dy_px, dx_px], axis=0)
+        else:
+            guess_motion_yx = None
 
-        # OPERA verification on full domain
+        curr_labels, curr_cells_base, curr_hierarchy, _ = detect_rdt_cells(
+            f_curr, area_km2, pure_cfg, ct_cloudy_mask=ct_curr.opaque_cloud_mask, tropopause_temp_k=pure_tropo_c
+        )
+
+        if prev_labels is not None and prev_hierarchy is not None and prev_f is not None:
+            parents, children, edges, primary_parent, events, _ = track_rdt_cells(
+                prev_cells_pure, prev_labels, prev_hierarchy, prev_f[4],
+                curr_cells_base, curr_labels, curr_hierarchy, f_curr[4],
+                area_km2, pure_cfg, guess_motion_yx=guess_motion_yx,
+            )
+        else:
+            parents, children, edges, primary_parent = {}, {}, {}, {}
+            events = {cid: "new" for cid in curr_cells_base}
+
+        curr_cells_full: dict[int, dict[str, Any]] = {}
+        curr_cells_pure: dict[int, dict[str, Any]] = {}
+        new_hist_full: dict[int, list[dict[str, Any]]] = {}
+        new_hist_pure: dict[int, list[dict[str, Any]]] = {}
+
+        sem_full = np.zeros((h, w), dtype=np.uint8)
+        sem_pure = np.zeros((h, w), dtype=np.uint8)
+        ot_mask_full = np.zeros((h, w), dtype=bool)
+        ot_mask_pure = np.zeros((h, w), dtype=bool)
+        n_conv_full = 0
+        n_conv_pure = 0
+
+        for cid, base_c in curr_cells_base.items():
+            ev = events.get(cid, "new")
+            p_main = primary_parent.get(cid)
+            p_list = parents.get(cid, [])
+
+            cy_i = int(np.clip(round(float(base_c["weight_centroid_yx"][0])), 0, h - 1))
+            cx_i = int(np.clip(round(float(base_c["weight_centroid_yx"][1])), 0, w - 1))
+            c_lat = float(lat_deg[cy_i, cx_i])
+            c_lon = float(lon_deg[cy_i, cx_i])
+            base_c["lat_deg"] = c_lat
+            base_c["lon_deg"] = c_lon
+            base_c["event"] = ev
+
+            ot_c = detect_cell_overshooting_tops(base_c, f_curr, area_km2, pure_cfg, cell_lat_deg=c_lat)
+            base_c["ot_confirmed_count"] = int(ot_c["confirmed_count"])
+            base_c["ot_confirmed_pixels"] = int(ot_c["confirmed_pixels"])
+            bbox = base_c["bbox"]
+            mask = base_c["mask"]
+            ot_conf_loc = ot_c["confirmed_mask"] & mask
+
+            loc_nwp = era5_grid.nwpconv_mask[bbox][mask]
+            nwp_val = int(np.max(loc_nwp)) if len(loc_nwp) > 0 else 2
+            loc_tr_f = era5_grid.t_tropo_k[bbox][mask]
+            tropo_f = float(np.nanmedian(loc_tr_f)) if len(loc_tr_f) > 0 else 215.0
+
+            # Full model discrimination
+            cf = dict(base_c)
+            prev_f_c = prev_cells_full.get(p_main) if p_main is not None else None
+            conv_p_f = prev_f_c if (prev_f_c is not None and prev_f_c.get("is_convective")) else None
+            if conv_p_f is None:
+                for pid in sorted(p_list):
+                    if prev_cells_full.get(pid, {}).get("is_convective"):
+                        conv_p_f = prev_cells_full[pid]
+                        break
+            hf = hist_full.get(p_main, []) if (p_main is not None and ev in ("continuation", "merge_main", "split_main")) else []
+            df = discriminate_and_classify_cell(
+                cf, prev_f_c, conv_p_f, hf, prev_hierarchy, curr_hierarchy, ot_c, 5.0, full_cfg,
+                nwp_mask_value=nwp_val, lightning_strokes=0, cell_lat_deg=c_lat,
+                calibrated_model=cal_model, cell_tropo_temp_k=tropo_f,
+            )
+            cf.update(df)
+            curr_cells_full[cid] = cf
+            new_hist_full[cid] = (hf + [_make_snapshot(cf, cid, ev, step_idx)])[-12:]
+            sem_full[bbox][mask] = int(df["class_id"])
+            if df["is_convective"]:
+                n_conv_full += 1
+                if np.any(ot_conf_loc):
+                    ot_mask_full[bbox][ot_conf_loc] = True
+                    sem_full[bbox][ot_conf_loc] = 6
+
+            # Pure model discrimination
+            cp = dict(base_c)
+            prev_p_c = prev_cells_pure.get(p_main) if p_main is not None else None
+            conv_p_p = prev_p_c if (prev_p_c is not None and prev_p_c.get("is_convective")) else None
+            if conv_p_p is None:
+                for pid in sorted(p_list):
+                    if prev_cells_pure.get(pid, {}).get("is_convective"):
+                        conv_p_p = prev_cells_pure[pid]
+                        break
+            hp = hist_pure.get(p_main, []) if (p_main is not None and ev in ("continuation", "merge_main", "split_main")) else []
+            dp = discriminate_and_classify_cell(
+                cp, prev_p_c, conv_p_p, hp, prev_hierarchy, curr_hierarchy, ot_c, 5.0, pure_cfg,
+                nwp_mask_value=2, lightning_strokes=0, cell_lat_deg=c_lat,
+                calibrated_model=None, cell_tropo_temp_k=pure_tropo_c_scalar,
+            )
+            cp.update(dp)
+            curr_cells_pure[cid] = cp
+            new_hist_pure[cid] = (hp + [_make_snapshot(cp, cid, ev, step_idx)])[-12:]
+            sem_pure[bbox][mask] = int(dp["class_id"])
+            if dp["is_convective"]:
+                n_conv_pure += 1
+                if np.any(ot_conf_loc):
+                    ot_mask_pure[bbox][ot_conf_loc] = True
+                    sem_pure[bbox][ot_conf_loc] = 6
+
+        # Stage 6: 3D Geostationary Parallax Correction
+        sem_full = apply_parallax_correction_2d(
+            sem_full, f_curr[4], lat_deg, lon_deg, t_surf_k=era5_grid.t_surf_k, t_tropo_k=era5_grid.t_tropo_k, fill_value=0
+        )
+        sem_pure = apply_parallax_correction_2d(
+            sem_pure, f_curr[4], lat_deg, lon_deg, t_surf_k=292.0, t_tropo_k=pure_tropo_c, fill_value=0
+        )
+        # Fill discrete forward-splatting coordinate holes (eliminates white necklaces)
+        sem_full = fill_internal_mask_holes(sem_full, max_hole_size=16)
+        sem_pure = fill_internal_mask_holes(sem_pure, max_hole_size=16)
+
+        # Update tracking state for next step
+        prev_f = f_curr
+        prev_labels = curr_labels
+        prev_hierarchy = curr_hierarchy
+        prev_cells_full = curr_cells_full
+        prev_cells_pure = curr_cells_pure
+        hist_full = new_hist_full
+        hist_pure = new_hist_pure
+
+        # OPERA radar matching (every 15 min or closest)
         ts_15 = ts_curr.round("15min")
         op0 = _get_opera(ts_15)
         dbzh_vis = np.full((h, w), np.nan, dtype=np.float32)
@@ -771,135 +865,167 @@ def _process_single_day_worker(args: tuple[str, list[int], dict[str, Any]]) -> d
             dbzh_vis = np.where(opera_inside, dbzh0[rc, cc], np.nan)
             qind_vis = np.where(opera_inside, qind0[rc, cc], np.nan)
 
-            valid_obs = opera_inside & (np.isclose(dbzh_vis, -32.0) | (np.isfinite(dbzh_vis) & (qind_vis >= 0.40)))
-            lag_slots = [op0]
-            for dm in (-15, 15):
-                op_d = _get_opera(ts_15 + pd.Timedelta(minutes=dm))
-                if op_d is not None:
-                    lag_slots.append(op_d)
+            if step_idx % 3 == 0:  # Evaluate contingency table on 15-min intervals
+                valid_obs = opera_inside & (np.isclose(dbzh_vis, -32.0) | (np.isfinite(dbzh_vis) & (qind_vis >= 0.40)))
+                lag_slots = [op0]
+                for dm in (-15, 15):
+                    op_d = _get_opera(ts_15 + pd.Timedelta(minutes=dm))
+                    if op_d is not None:
+                        lag_slots.append(op_d)
 
-            for m_name, sem_map in [
-                ("nwcsaf_rdt_full_era5_cal", sem_full),
-                ("nwcsaf_rdt_seviri_pure_gen", sem_pure),
-            ]:
-                lbl, _ = ndimage.label(sem_map >= 1, structure=np.ones((3, 3), dtype=bool))
-                bboxes = ndimage.find_objects(lbl)
-                for oid, bbox in enumerate(bboxes, start=1):
-                    if bbox is None:
-                        continue
-                    omask_loc = lbl[bbox] == oid
-                    obs_loc = omask_loc & valid_obs[bbox]
-                    n_obs = int(np.count_nonzero(obs_loc))
-                    if n_obs < 6:
-                        continue
-                    if float(n_obs / max(int(np.count_nonzero(omask_loc)), 1)) < 0.70:
-                        continue
+                for m_name, sem_map in [
+                    ("nwcsaf_rdt_full_era5_cal", sem_full),
+                    ("nwcsaf_rdt_seviri_pure_gen", sem_pure),
+                ]:
+                    lbl, _ = ndimage.label(sem_map >= 1, structure=np.ones((3, 3), dtype=bool))
+                    bboxes = ndimage.find_objects(lbl)
+                    for oid, bbox in enumerate(bboxes, start=1):
+                        if bbox is None:
+                            continue
+                        omask_loc = lbl[bbox] == oid
+                        obs_loc = omask_loc & valid_obs[bbox]
+                        n_obs = int(np.count_nonzero(obs_loc))
+                        if n_obs < 6:
+                            continue
+                        if float(n_obs / max(int(np.count_nonzero(omask_loc)), 1)) < 0.70:
+                            continue
 
-                    cell_area_km2 = float(np.nansum(area_km2[bbox][omask_loc]))
-                    pred_conv = bool(np.any(np.isin(sem_map[bbox][omask_loc], [2, 3, 4])))
+                        cell_area_km2 = float(np.nansum(area_km2[bbox][omask_loc]))
+                        pred_conv = bool(np.any(sem_map[bbox][omask_loc] >= 2))
 
-                    u_rc = np.unique(np.column_stack((rc[bbox][obs_loc], cc[bbox][obs_loc])), axis=0)
-                    vals_0 = dbzh0[u_rc[:, 0], u_rc[:, 1]]
-                    q_vals_0 = qind0[u_rc[:, 0], u_rc[:, 1]]
-                    good_0 = vals_0[np.isfinite(vals_0) & (q_vals_0 >= 0.40)]
-                    max_z0 = float(np.max(good_0)) if good_0.size > 0 else -32.0
+                        u_rc = np.unique(np.column_stack((rc[bbox][obs_loc], cc[bbox][obs_loc])), axis=0)
+                        vals_0 = dbzh0[u_rc[:, 0], u_rc[:, 1]]
+                        q_vals_0 = qind0[u_rc[:, 0], u_rc[:, 1]]
+                        good_0 = vals_0[np.isfinite(vals_0) & (q_vals_0 >= 0.40)]
+                        max_z0 = float(np.max(good_0)) if good_0.size > 0 else -32.0
 
-                    max_z_lag = max_z0
-                    for dbzh_l, qind_l in lag_slots[1:]:
-                        vl = dbzh_l[u_rc[:, 0], u_rc[:, 1]]
-                        ql = qind_l[u_rc[:, 0], u_rc[:, 1]]
-                        gl = vl[np.isfinite(vl) & (ql >= 0.40)]
-                        if gl.size > 0:
-                            max_z_lag = max(max_z_lag, float(np.max(gl)))
+                        max_z_lag = max_z0
+                        for dbzh_l, qind_l in lag_slots[1:]:
+                            vl = dbzh_l[u_rc[:, 0], u_rc[:, 1]]
+                            ql = qind_l[u_rc[:, 0], u_rc[:, 1]]
+                            gl = vl[np.isfinite(vl) & (ql >= 0.40)]
+                            if gl.size > 0:
+                                max_z_lag = max(max_z_lag, float(np.max(gl)))
 
-                    for th in (35.0, 40.0, 45.0, 50.0):
-                        rdict = day_opera_stats[m_name][f"dbz_{int(th)}"]
-                        area_th_0 = float(np.count_nonzero(good_0 >= th) * 4.0) if good_0.size > 0 else 0.0
-                        min_core_km2 = 16.0 if th <= 40.0 else 8.0
-                        truth_inst = 1 if area_th_0 >= min_core_km2 else (0 if max_z0 < 28.0 else -1)
-                        truth_lag = 1 if max_z_lag >= th else (0 if max_z_lag < 28.0 else -1)
+                        for th in (35.0, 40.0, 45.0, 50.0):
+                            rdict = day_opera_stats[m_name][f"dbz_{int(th)}"]
+                            area_th_0 = float(np.count_nonzero(good_0 >= th) * 4.0) if good_0.size > 0 else 0.0
+                            min_core_km2 = 16.0 if th <= 40.0 else 8.0
+                            truth_inst = 1 if area_th_0 >= min_core_km2 else (0 if max_z0 < 28.0 else -1)
+                            truth_lag = 1 if max_z_lag >= th else (0 if max_z_lag < 28.0 else -1)
 
-                        if truth_inst == 1 and pred_conv:
-                            rdict["inst_cell_tp"] += 1
-                            rdict["pixel_tp"] += n_obs
-                            if cell_area_km2 >= 500.0:
-                                rdict["meso500_tp"] += 1
-                            else:
-                                rdict["small_tp"] += 1
-                        elif truth_inst == 0 and pred_conv:
-                            rdict["inst_cell_fp"] += 1
-                            rdict["pixel_fp"] += n_obs
-                            if cell_area_km2 >= 500.0:
-                                rdict["meso500_fp"] += 1
-                            else:
-                                rdict["small_fp"] += 1
-                        elif truth_inst == 1 and not pred_conv:
-                            rdict["inst_cell_fn"] += 1
-                            rdict["pixel_fn"] += n_obs
-                            if cell_area_km2 >= 500.0:
-                                rdict["meso500_fn"] += 1
-                            else:
-                                rdict["small_fn"] += 1
+                            if truth_inst == 1 and pred_conv:
+                                rdict["inst_cell_tp"] += 1
+                                rdict["pixel_tp"] += n_obs
+                                if cell_area_km2 >= 500.0:
+                                    rdict["meso500_tp"] += 1
+                                else:
+                                    rdict["small_tp"] += 1
+                            elif truth_inst == 0 and pred_conv:
+                                rdict["inst_cell_fp"] += 1
+                                rdict["pixel_fp"] += n_obs
+                                if cell_area_km2 >= 500.0:
+                                    rdict["meso500_fp"] += 1
+                                else:
+                                    rdict["small_fp"] += 1
+                            elif truth_inst == 1 and not pred_conv:
+                                rdict["inst_cell_fn"] += 1
+                                rdict["pixel_fn"] += n_obs
+                                if cell_area_km2 >= 500.0:
+                                    rdict["meso500_fn"] += 1
+                                else:
+                                    rdict["small_fn"] += 1
 
-                        if truth_lag == 1 and pred_conv:
-                            rdict["lag15_cell_tp"] += 1
-                        elif truth_lag == 0 and pred_conv:
-                            rdict["lag15_cell_fp"] += 1
-                        elif truth_lag == 1 and not pred_conv:
-                            rdict["lag15_cell_fn"] += 1
+                            if truth_lag == 1 and pred_conv:
+                                rdict["lag15_cell_tp"] += 1
+                            elif truth_lag == 0 and pred_conv:
+                                rdict["lag15_cell_fp"] += 1
+                            elif truth_lag == 1 and not pred_conv:
+                                rdict["lag15_cell_fn"] += 1
 
+        # Render 3 full-domain frames and write to stdin stream
         ir_frame = f_curr[4]
         base_rgb = _ir108_to_rgb_base(ir_frame)
         ts_str = ts_curr.strftime("%Y-%m-%d %H:%M UTC")
 
+        # Save masks to daily arrays for caching
+        daily_sem_full[step_idx] = sem_full.astype(np.uint8)
+        daily_sem_pure[step_idx] = sem_pure.astype(np.uint8)
+
+        # 1. OPERA radar
         rgb_opera = _overlay_opera_gradient_panel(
             base_rgb, dbzh_vis, qind_vis, opera_inside, qind_min=0.20, dbzh_min=-5.0
         )
-        day_frames_opera.append(
-            _compose_single_full_domain_frame(
-                rgb_opera,
-                f"1. OPERA Radar Reflectivity [dBZ] su Dominio Completo SEVIRI (763x1762) — {ts_str}",
-                "Settimana 14-20 Settembre 2020 (Cadenza Uniforme 2h, 7 Giorni) | Gradiente continuo 'turbo' [-5..65 dBZ]",
-                is_opera_video=True,
-            )
+        f_op = _compose_single_full_domain_frame(
+            rgb_opera,
+            f"1. Radar OPERA (Verità a terra) — {ts_str}",
+            is_opera_video=True,
         )
+        writer_opera.write_frame(f_op)
 
-        rgb_full = _overlay_semantic_mask(base_rgb, sem_full)
-        day_frames_full.append(
-            _compose_single_full_domain_frame(
-                rgb_full,
-                f"2. RDT Nostro Completo (ERA5 + GEO-CT/HRW + OPERA CAL + Parallasse) — {ts_str}",
-                f"Dominio Completo SEVIRI (763x1762) | Cadenza Uniforme 2h | Celle convettive attive: {n_conv_full} | Pixel OT: {n_ot_full}",
-                is_opera_video=False,
-            )
+        # Parallax-shifted IR background ensures 100% pixel-perfect alignment without exposed rims
+        ir_full_ground = apply_parallax_correction_2d(
+            ir_frame, ir_frame, lat_deg, lon_deg, t_surf_k=era5_grid.t_surf_k, t_tropo_k=era5_grid.t_tropo_k, fill_value=290.0
         )
+        base_rgb_full = _ir108_to_rgb_base(ir_full_ground)
+        rgb_full = renderer_full.render(base_rgb_full, sem_full)
+        f_fu = _compose_single_full_domain_frame(
+            rgb_full,
+            f"2. RDT Completo 7 Canali SEVIRI (CAL, ERA5, CT/HRW, Parallasse) — {ts_str}",
+            is_opera_video=False,
+        )
+        writer_full.write_frame(f_fu)
 
-        rgb_pure = _overlay_semantic_mask(base_rgb, sem_pure)
-        day_frames_pure.append(
-            _compose_single_full_domain_frame(
-                rgb_pure,
-                f"3. RDT Puro 7 Canali SEVIRI (Senza CAL, Senza ERA5, CT/HRW da IR + Parallasse) — {ts_str}",
-                f"Dominio Completo SEVIRI (763x1762) | Cadenza Uniforme 2h | Celle convettive attive: {n_conv_pure} | Pixel OT: {n_ot_pure}",
-                is_opera_video=False,
-            )
+        ir_pure_ground = apply_parallax_correction_2d(
+            ir_frame, ir_frame, lat_deg, lon_deg, t_surf_k=292.0, t_tropo_k=pure_tropo_c, fill_value=290.0
         )
+        base_rgb_pure = _ir108_to_rgb_base(ir_pure_ground)
+        rgb_pure = renderer_pure.render(base_rgb_pure, sem_pure)
+        f_pu = _compose_single_full_domain_frame(
+            rgb_pure,
+            f"3. RDT Puro 7 Canali SEVIRI (Senza CAL, Senza ERA5, CT/HRW da IR, Parallasse) — {ts_str}",
+            is_opera_video=False,
+        )
+        writer_pure.write_frame(f_pu)
 
         dt_s = time.perf_counter() - t0
-        print(
-            f"  [Day {zp.stem} {s_idx:02d}/{len(slot_indices):02d}] {ts_str} | "
-            f"Full conv={n_conv_full}, Pure conv={n_conv_pure} | {dt_s:.1f}s",
-            flush=True,
-        )
+        if (step_idx + 1) % 4 == 0 or step_idx == 0 or step_idx == num_frames - 1:
+            import gc
+            gc.collect()
+            try:
+                (out_dir / f"_progress_{zp.stem}.txt").write_text(
+                    f"Frame {step_idx+1:03d}/{num_frames:03d} ({ts_str}) | Full={n_conv_full} Pure={n_conv_pure} | {dt_s:.2f}s",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            print(
+                f"  [Day {zp.stem} Frame {step_idx+1:03d}/{num_frames:03d}] {ts_str} | "
+                f"Full conv={n_conv_full}, Pure conv={n_conv_pure} | {dt_s:.2f}s/frame",
+                flush=True,
+            )
 
+    writer_opera.close()
+    writer_full.close()
+    writer_pure.close()
     opera_cache.clear()
-    gc.collect()
+    try:
+        stats_cache.write_text(json.dumps(day_opera_stats, indent=2), encoding="utf-8")
+        np.savez_compressed(
+            out_dir / f"_cache_{zp.stem}.npz",
+            sem_full=daily_sem_full,
+            sem_pure=daily_sem_pure,
+        )
+        (out_dir / f"_progress_{zp.stem}.txt").write_text(f"DONE ({num_frames}/{num_frames} frames)", encoding="utf-8")
+        print(f"[Day {zp.stem}] Saved intermediate cache _cache_{zp.stem}.npz successfully!", flush=True)
+    except Exception as e:
+        print(f"[Day {zp.stem}] Warning saving cache: {e}", flush=True)
+
     return {
         "day": zp.stem,
-        "frames_opera": day_frames_opera,
-        "frames_full": day_frames_full,
-        "frames_pure": day_frames_pure,
-        "ref_full": np.concatenate(day_ref_full, axis=0),
-        "pred_pure": np.concatenate(day_pred_pure, axis=0),
+        "day_opera_mp4": str(day_opera_mp4),
+        "day_full_mp4": str(day_full_mp4),
+        "day_pure_mp4": str(day_pure_mp4),
         "opera_stats": day_opera_stats,
     }
 
@@ -907,9 +1033,8 @@ def _process_single_day_worker(args: tuple[str, list[int], dict[str, Any]]) -> d
 def run_september_week_full_domain_and_videos(
     cal_model: CalibratedRdtModel,
 ) -> dict[str, Any]:
-    """Run full-domain (763 x 1762) evaluation and generate 3 full-domain MP4 videos
-    with 100% uniform 2-hour cadence across all 7 days (2020-09-14 to 2020-09-20,
-    84 uniform slots -> 70.0 seconds video duration at 1.2 fps, zero speed changes).
+    """Run full-domain (763 x 1762) continuous 5-minute evaluation and generate 3 fluid MP4 videos
+    covering all 7 days of the September week (2020-09-14 to 2020-09-20, 2016 frames total at 33.6 fps -> 60.0s).
     """
     from concurrent.futures import ProcessPoolExecutor
 
@@ -923,37 +1048,59 @@ def run_september_week_full_domain_and_videos(
     h, w = geom["area_km2"].shape
     print(f"[Sept 2020 Full Domain] Grid shape: ({h}, {w}), pixel area mean={float(np.nanmean(geom['area_km2'])):.2f} km^2", flush=True)
 
-    # Pre-warm the 3 synoptic ERA5 files (06:00, 13:00, 19:00 UTC) for all 7 days
+    # Pre-warm synoptic ERA5 files (06:00, 13:00, 19:00 UTC) for all 7 days
     for zp in week_zarrs:
         for sh in (6, 13, 19):
             ts_syn = pd.Timestamp(f"{zp.stem[:4]}-{zp.stem[4:6]}-{zp.stem[6:8]}T{sh:02d}:00:00Z")
             fetch_era5_europe_hour(ts_syn, ERA5_CACHE_DIR)
 
-    # Strictly uniform 2-hour schedule across every day of the 7-day week:
-    # 00:15, 02:15, 04:15, 06:15, 08:15, 10:15, 12:15, 14:15, 16:15, 18:15, 20:15, 22:15 UTC
-    # (12 uniform slots/day * 7 days = 84 uniform slots; at 1.2 fps -> 70.0 seconds video duration)
-    uniform_daily_slots = list(range(3, 288, 24))
-    total_slots = len(uniform_daily_slots) * len(week_zarrs)
+    video_fps = 33.6  # 2016 continuous frames / 33.6 fps = 60.0 seconds total duration
+    total_frames = len(week_zarrs) * 288
     print(
-        f"[Sept 2020 Full Domain] Launching 7-day parallel evaluation: {len(uniform_daily_slots)} uniform slots/day "
-        f"x {len(week_zarrs)} days = {total_slots} uniform slots (duration={total_slots / 1.2:.1f}s at 1.2 fps).",
+        f"[Sept 2020 Full Domain] Launching 7-day parallel continuous 5-minute processing: "
+        f"288 frames/day x {len(week_zarrs)} days = {total_frames} frames "
+        f"(video duration = {total_frames / video_fps:.1f}s at {video_fps:.1f} fps).",
         flush=True,
     )
 
     t_start_all = time.perf_counter()
-    worker_args = [(str(zp), uniform_daily_slots, geom) for zp in week_zarrs]
-    with ProcessPoolExecutor(max_workers=4) as pool:
+    worker_args = [(str(zp), geom, str(OUT_DIR), video_fps) for zp in week_zarrs]
+    with ProcessPoolExecutor(max_workers=2) as pool:
         day_results = list(pool.map(_process_single_day_worker, worker_args))
 
-    # Sort strictly in chronological order (20200914 .. 20200920)
     day_results.sort(key=lambda r: r["day"])
 
-    frames_opera: list[np.ndarray] = []
-    frames_full: list[np.ndarray] = []
-    frames_pure: list[np.ndarray] = []
-    ref_full_list: list[np.ndarray] = []
-    pred_pure_list: list[np.ndarray] = []
+    # Concatenate the 7 daily segments into final 60s weekly MP4 videos
+    print("[Sept 2020 Full Domain] Concatenating 7 daily segments into 3 final full-week 60s MP4 videos...", flush=True)
+    mp4_opera = OUT_DIR / "sept2020_full_domain_1_OPERA_radar.mp4"
+    mp4_full = OUT_DIR / "sept2020_full_domain_2_RDT_completo.mp4"
+    mp4_pure = OUT_DIR / "sept2020_full_domain_3_RDT_puro.mp4"
 
+    for tag, final_mp4 in [
+        ("opera", mp4_opera),
+        ("full", mp4_full),
+        ("pure", mp4_pure),
+    ]:
+        list_file = OUT_DIR / f"_concat_list_{tag}.txt"
+        lines = [f"file '{Path(r[f'day_{tag}_mp4']).name}'\n" for r in day_results]
+        list_file.write_text("".join(lines), encoding="utf-8")
+        concat_cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(list_file.name), "-c", "copy", str(final_mp4.name),
+        ]
+        subprocess.run(concat_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(OUT_DIR))
+        list_file.unlink(missing_ok=True)
+        for r in day_results:
+            Path(r[f"day_{tag}_mp4"]).unlink(missing_ok=True)
+
+    # Mirror videos to brain artifacts directory so user can view them in the chat UI
+    artifact_dir = Path(r"C:\Users\Daniele.LOKI\.gemini\antigravity\brain\6ce9d192-9e7a-46f3-923e-ada02993fbe9")
+    if artifact_dir.exists():
+        for f in (mp4_opera, mp4_full, mp4_pure):
+            shutil.copy2(f, artifact_dir / f.name)
+        print(f"[Sept 2020 Full Domain] Successfully mirrored videos to artifacts directory: {artifact_dir}", flush=True)
+
+    # Aggregate OPERA stats across the 7 days
     opera_stats: dict[str, dict[str, dict[str, int]]] = {
         m_name: {
             f"dbz_{th}": {
@@ -969,34 +1116,15 @@ def run_september_week_full_domain_and_videos(
     }
 
     for dres in day_results:
-        frames_opera.extend(dres["frames_opera"])
-        frames_full.extend(dres["frames_full"])
-        frames_pure.extend(dres["frames_pure"])
-        ref_full_list.append(dres["ref_full"])
-        pred_pure_list.append(dres["pred_pure"])
+        op_d = dres.get("opera_stats", {})
         for m_name in opera_stats:
+            if m_name not in op_d:
+                continue
             for th_k in opera_stats[m_name]:
-                for stat_k, val in dres["opera_stats"][m_name][th_k].items():
+                if th_k not in op_d[m_name]:
+                    continue
+                for stat_k, val in op_d[m_name][th_k].items():
                     opera_stats[m_name][th_k][stat_k] += int(val)
-
-    mp4_opera = OUT_DIR / "sept2020_full_domain_1_OPERA_radar.mp4"
-    mp4_full = OUT_DIR / "sept2020_full_domain_2_RDT_completo.mp4"
-    mp4_pure = OUT_DIR / "sept2020_full_domain_3_RDT_puro.mp4"
-
-    video_fps = 1.2  # 84 uniform frames / 1.2 fps = 70.0 seconds (1 min 10 s)
-    print(
-        f"[Sept 2020 Full Domain] Encoding 3 uniform-cadence full-domain MP4 videos "
-        f"({len(frames_opera)} frames at {video_fps} fps -> {len(frames_opera)/video_fps:.1f}s duration) in {time.perf_counter()-t_start_all:.1f}s...",
-        flush=True,
-    )
-    _encode_mp4(frames_opera, mp4_opera, fps=video_fps)
-    _encode_mp4(frames_full, mp4_full, fps=video_fps)
-    _encode_mp4(frames_pure, mp4_pure, fps=video_fps)
-
-    m_full_dom = compute_comparison_metrics(
-        np.concatenate(ref_full_list, axis=0),
-        np.concatenate(pred_pure_list, axis=0),
-    )
 
     opera_summary: dict[str, Any] = {}
     for m_name, mdict in opera_stats.items():
@@ -1010,22 +1138,16 @@ def run_september_week_full_domain_and_videos(
                 "pixel_level": _prf(d["pixel_tp"], d["pixel_fp"], d["pixel_fn"]),
             }
 
+    total_time_s = time.perf_counter() - t_start_all
+    print(f"[Sept 2020 Full Domain] Full run completed in {total_time_s/60.0:.1f} minutes!", flush=True)
+
     return {
         "september_week_days": [p.stem for p in week_zarrs],
-        "num_full_domain_slots": len(frames_opera),
-        "uniform_cadence_hours": 2.0,
+        "num_full_domain_slots": total_frames,
+        "cadence_minutes": 5.0,
         "video_fps": video_fps,
-        "video_duration_seconds": round(len(frames_opera) / video_fps, 2),
+        "video_duration_seconds": round(total_frames / video_fps, 2),
         "domain_shape_hw": [int(h), int(w)],
-        "pure_vs_full_agreement_full_domain": {
-            "overall_acc": round(m_full_dom["overall_pixel_accuracy"], 4),
-            "cloud_iou": round(m_full_dom["regimes"]["cloud_tower_mask_ge1"]["iou_csi"], 4),
-            "cloud_dice": round(m_full_dom["regimes"]["cloud_tower_mask_ge1"]["dice_f1"], 4),
-            "conv_iou": round(m_full_dom["regimes"]["convective_mask_234"]["iou_csi"], 4),
-            "conv_dice": round(m_full_dom["regimes"]["convective_mask_234"]["dice_f1"], 4),
-            "conv_pod": round(m_full_dom["regimes"]["convective_mask_234"]["pod_recall"], 4),
-            "conv_prec": round(m_full_dom["regimes"]["convective_mask_234"]["precision"], 4),
-        },
         "opera_verification_full_domain": opera_summary,
         "videos": {
             "video_1_opera": str(mp4_opera),

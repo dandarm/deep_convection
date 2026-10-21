@@ -44,7 +44,14 @@ Per ciascuno slot temporale $t$, il tracker causale [`NwcSafRdtTracker.step_fram
    - Calcola i trend Lagrangiani ($\Delta T_{\min}/\Delta t$, espansione areale relativa $\frac{1}{S}\frac{\Delta S}{\Delta t}$ a soglia comune $T_{\text{common}}$, $\Delta\text{BTD}/\Delta t$) lungo la storia della traiettoria ($15\text{--}90\text{ min}$).
    - Assegna la cella a una delle **6 categorie verticali** (`Cat 0: Mature` .. `Cat 5: Warm`) in base a $(T_{\min}, T_{\text{BT}}, \text{età})$.
    - Applica le regole di discriminazione fisica/radiativa pura (`GEN`), l'**ereditarietà convettiva** dal padre convettivo e i **criteri empirici di declassificazione** (dissipazione termica e perdita di spessore ottico).
-   - Determina la **Fase di Sviluppo** (`Triggering`, `Triggering from Split`, `Growing`, `Mature`, `Decaying`), la **Severità** (`0..4`) e mappa ogni cella nelle **5 classi semantiche** (`0`: Sfondo, `1`: Nube fredda non convettiva, `2`: Convezione in sviluppo, `3`: Convezione matura/in decadimento, `4`: Overshooting Top).
+   - Determina la **Fase di Sviluppo** fedele a RDT Tabella 8 (`Triggering`, `Growing`, `Mature`, `Decaying`), con ereditarietà dello stato madre per i frammenti di split (eliminando la 5ª fase artificiale `Triggering from Split`), la **Severità** (`0..4`) e mappa ogni cella nello schema a **4 classi convettive pure RDT** (+ nube fredda e OT):
+     - `Classe 0`: Sfondo / cielo sereno / nubi calde
+     - `Classe 1`: Nube fredda non convettiva (Blu acciaio)
+     - `Classe 2`: Convezione — **Triggering** (Giallo brillante)
+     - `Classe 3`: Convezione — **Growing** (Arancione vivace)
+     - `Classe 4`: Convezione — **Mature** (Rosso vivo)
+     - `Classe 5`: Convezione — **Decaying** (Rosso mattone / bordeaux)
+     - `Classe 6`: **Overshooting Top (OT)** (Magenta brillante)
 7. **Fase 6 — Previsione Lagrangiana (`forecast_convective_cells`) e Correzione Geometrica 3D della Parallasse (`apply_parallax_correction_2d`):**
    - Estrae i contorni previsti a $+15, +30, +45, +60\text{ min}$ per traslazione cinematica lungo $\vec{V}(C)$.
    - Corregge lo spostamento apparente di parallasse geostazionaria proiettando ciascun pixel classificato dalla posizione apparente vista dal satellite MSG ($9.5^\circ\text{E}$) alla sua vera verticale al suolo in funzione della quota geometrica $H_{\text{cloud}}(T_{\text{IR10.8}})$.
@@ -351,7 +358,7 @@ PROCEDURA Fase4_Detect_Overshooting_Tops(cell, frame_7ch, area_km2, T_tropo_k, c
 
 ---
 
-### Fase 5 — Stratificazione Verticale, Discriminazione Fisica `GEN`, Ereditarietà e Classificazione a 5 Classi
+### Fase 5 — Stratificazione Verticale, Discriminazione Fisica `GEN`, Ereditarietà e Ciclo di Vita RDT a 4 Fasi Convettive
 **Riferimento codice:** [`discriminate_and_classify_cell`](file:///c:/Users/Daniele.LOKI/Documents/Progetti/deep_convection/RDT_original/rdt_nwcsaf/discrimination.py#L275-L515)
 
 #### 5.1 Calcolo dei Predittori Temporali a Soglia Comune (`compute_temporal_predictors`)
@@ -399,29 +406,53 @@ PROCEDURA Fase5_Discriminate_And_Classify_Pure_GEN(cell, prev_cell, conv_parent_
     4. # Decisione finale di convettività (incluso override fisico se ha un Overshooting Top confermato)
        is_convective = is_conv_gen OR inherited_conv OR (ot_res.confirmed_count > 0)
 
-    5. # Determinazione della Fase di Sviluppo (Phase of Development, ATBD Sec 3.2.1.2.6):
+    5. # Determinazione della Fase di Sviluppo RDT (ATBD Tabella 8, p. 51):
        SE NON is_convective:
            phase_code = -1
-           class_id = 1   # Classe 1: Nube fredda non convettiva
+           class_id = 1   # Classe 1: Nube fredda non convettiva (Blu acciaio)
        ALTRIMENTI:
-           SE cell.event == "split_child" AND eta_traiettoria <= 15 min:
-               phase_code = 4   # Triggering from Split
-           ALTRIMENTI SE (prev_cell È NULLO OR NOT prev_cell.is_convective) AND eta_traiettoria <= 15 min:
-               phase_code = 0   # Triggering
-           ALTRIMENTI SE cooling_rate_k_per_h <= -3.0 K/h OR (exp_rate_per_h >= 0.20 h^-1 AND cooling_rate_k_per_h <= 1.0 K/h):
-               phase_code = 1   # Growing
-           ALTRIMENTI SE cooling_rate_k_per_h >= +2.5 K/h AND exp_rate_per_h <= 0.05 h^-1 AND ot_res.confirmed_count == 0:
-               phase_code = 3   # Decaying
+           # Gestione ereditarietà da split: il figlio eredita lo stato vitale della madre
+           SE cell.event == "split_new":
+               phase_code = mother_cell.phase_code SE (mother_cell È PRESENTE) ALTRIMENTI 1
+           ALTRIMENTI SE cell.event IN ("new", "complex"):
+               phase_code = 0   # Triggering: nuova attivazione
            ALTRIMENTI:
-               phase_code = 2   # Mature
+               # Valutazione termodinamica del trend di raffreddamento e di espansione:
+               cooling_rate = cell.cooling_rate_15m   # positivo = si raffredda; negativo = si riscalda
+               d_area = cell.area_change_15m          # variazione areale [km^2]
+               is_mature_cat = (vertical_cat == 0) OR (T_min <= 216.0 K)
 
-           # Mappatura nelle classi semantiche di segmentazione (2, 3, 4):
-           SE phase_code IN (0, 1, 4):
-               class_id = 2   # Classe 2: Convezione in innesco / sviluppo (Triggering / Growing)
+               SE cooling_rate > +2.0 K/h:   # Raffreddamento attivo (updraft in ascesa)
+                   SE NON is_mature_cat:
+                       phase_code = 1   # Growing
+                   ALTRIMENTI:
+                       phase_code = 1 SE (d_area > 0) ALTRIMENTI 2   # Growing se espande, altrimenti Mature
+               ALTRIMENTI SE |cooling_rate| <= 2.0 K/h:   # Temperatura stazionaria al top
+                   SE is_mature_cat:
+                       phase_code = 2   # Mature
+                   ALTRIMENTI SE (d_area > 0 OR is_convective):
+                       phase_code = 1   # Growing
+                   ALTRIMENTI:
+                       phase_code = 3   # Decaying
+               ALTRIMENTI:   # Riscaldamento (cooling_rate < -2.0 K/h, correnti discendenti/collasso)
+                   warming_rate = -cooling_rate
+                   low_warming = (warming_rate <= 5.0 K/h)
+                   SE NON is_mature_cat:
+                       phase_code = 1 SE (is_convective AND low_warming) ALTRIMENTI 3
+                   ALTRIMENTI:
+                       phase_code = 2 SE (low_warming OR has_ot) ALTRIMENTI 3   # Decaying
+
+           # Mappatura diretta nelle 4 classi convettive canoniche RDT:
+           SE phase_code == 0:
+               class_id = 2   # Classe 2: Triggering (Giallo brillante, RGB: 250, 204, 21)
+           ALTRIMENTI SE phase_code == 1:
+               class_id = 3   # Classe 3: Growing (Arancione vivace, RGB: 249, 115, 22)
+           ALTRIMENTI SE phase_code == 2:
+               class_id = 4   # Classe 4: Mature (Rosso vivo, RGB: 220, 38, 38)
            ALTRIMENTI:
-               class_id = 3   # Classe 3: Convezione matura / in decadimento (Mature / Decaying)
-           # I pixel interni alla cella confermati come Overshooting Top nello Stadio 4 ricevono:
-           #   semantic_label[ot_confirmed_mask] = 4   (Classe 4: Overshooting Top)
+               class_id = 5   # Classe 5: Decaying (Rosso mattone / bordeaux, RGB: 153, 27, 27)
+
+           # I pixel interni confermati come Overshooting Top ricevono Classe 6 (Magenta, RGB: 232, 121, 249)
     RITORNA (is_convective, phase_code, severity, class_id)
 ```
 
