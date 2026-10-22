@@ -125,10 +125,15 @@ def compute_comparison_metrics(
     regimes = {
         "cloud_tower_mask_ge1": _binary_metrics(ref_labels >= 1, pred_labels >= 1),
         "convective_mask_234": _binary_metrics(
-            np.isin(ref_labels, [2, 3, 4]), np.isin(pred_labels, [2, 3, 4])
+            ref_labels >= 2, pred_labels >= 2
         ),
         "developing_convective_eq2": _binary_metrics(ref_labels == 2, pred_labels == 2),
         "mature_decaying_convective_eq3": _binary_metrics(ref_labels == 3, pred_labels == 3),
+        "triggering_eq2": _binary_metrics(ref_labels == 2, pred_labels == 2),
+        "growing_eq3": _binary_metrics(ref_labels == 3, pred_labels == 3),
+        "mature_eq4": _binary_metrics(ref_labels == 4, pred_labels == 4),
+        "decaying_eq5": _binary_metrics(ref_labels == 5, pred_labels == 5),
+        "overshooting_top_eq6": _binary_metrics(ref_labels == 6, pred_labels == 6),
         "overshooting_top_eq4": _binary_metrics(ref_labels == 4, pred_labels == 4),
     }
 
@@ -386,7 +391,7 @@ def verify_predictions_against_opera_on_window(
         for name, sem_3d in algo_sem_maps.items():
             sem = sem_3d[t_idx]
             cloud_mask = (sem >= 1) & valid_obs
-            conv_mask = np.isin(sem, [2, 3, 4]) & valid_obs
+            conv_mask = (sem >= 2) & valid_obs
 
             # Object-level evaluation on detected cloud towers
             lbl, n_obj = nd_label(sem >= 1)
@@ -395,7 +400,7 @@ def verify_predictions_against_opera_on_window(
                 ver = verify_cell_with_opera(omask, row_roi, col_roi, in_roi, dbzh, qind)
                 if ver.label not in (0, 1):
                     continue
-                pred_conv = bool(np.any(np.isin(sem[omask], [2, 3, 4])))
+                pred_conv = bool(np.any(sem[omask] >= 2))
                 if ver.label == 1 and pred_conv:
                     counts[name]["tp"] += int(np.count_nonzero(omask & valid_obs))
                     counts[name]["eval_Cloud_objects_tp"] += 1

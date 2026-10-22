@@ -237,11 +237,12 @@ def _ir108_to_rgb_base(ir108_k: np.ndarray) -> np.ndarray:
 
 
 def _overlay_semantic_mask(base_rgb: np.ndarray, sem_label: np.ndarray) -> np.ndarray:
-    """Alpha-blend strictly the 4 semantic classes onto IR10.8 RGB."""
+    """Alpha-blend strictly the semantic classes onto IR10.8 RGB."""
     out = base_rgb.astype(np.float32).copy()
-    for cls_id, (r, g, b, alpha) in CLASS_COLORS.items():
+    for cls_id, (r, g, b) in CLASS_COLORS.items():
         mask = sem_label == cls_id
         if np.any(mask):
+            alpha = 0.55 if cls_id == 1 else (0.96 if cls_id == 6 else 0.82)
             out[mask, 0] = (1.0 - alpha) * out[mask, 0] + alpha * r
             out[mask, 1] = (1.0 - alpha) * out[mask, 1] + alpha * g
             out[mask, 2] = (1.0 - alpha) * out[mask, 2] + alpha * b

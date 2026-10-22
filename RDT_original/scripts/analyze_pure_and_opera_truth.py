@@ -277,7 +277,7 @@ def analyze_opera_thresholds_and_scales(
                     continue
 
                 cell_area_km2 = float(np.nansum(area_roi[omask]))
-                pred_conv = bool(np.any(np.isin(sem[omask], [2, 3, 4])))
+                pred_conv = bool(np.any(sem[omask] >= 2))
                 has_cls2 = bool(np.any(sem[omask] == 2))
                 n_pix = int(np.count_nonzero(obs_m))
 

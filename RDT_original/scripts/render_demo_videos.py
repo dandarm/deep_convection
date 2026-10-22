@@ -52,16 +52,20 @@ from rdt_nwcsaf import (
 from analyze_pure_and_opera_truth import run_pure_uncalibrated_seviri_rdt
 
 
-# Pure 4 semantic class RGBA colors (no artificial borders, no overlapping yellow):
+# Full 6-class canonical RDT convective lifecycle schema:
 # 1: Non-convective cold cloud -> Steel Blue
-# 2: Developing / Growing convective cell -> Vibrant Orange
-# 3: Mature / Decaying convective cell -> Crimson Red
-# 4: Overshooting Top (OT) -> Bright Magenta / Violet
+# 2: Convective Triggering -> Bright Yellow
+# 3: Convective Growing -> Vibrant Orange
+# 4: Convective Mature -> Vivid Crimson Red
+# 5: Convective Decaying -> Dark Brick Red
+# 6: Overshooting Top (OT) -> Bright Magenta
 CLASS_COLORS: dict[int, tuple[int, int, int, float]] = {
     1: (59, 130, 246, 0.58),
-    2: (249, 115, 22, 0.80),
-    3: (220, 38, 38, 0.80),
-    4: (232, 121, 249, 0.95),
+    2: (250, 204, 21, 0.82),
+    3: (249, 115, 22, 0.82),
+    4: (220, 38, 38, 0.82),
+    5: (153, 27, 27, 0.82),
+    6: (245, 105, 255, 0.96),
 }
 
 TURBO_CMAP = matplotlib.colormaps["turbo"]
@@ -189,10 +193,12 @@ def _compose_4panel_frame(
 
     fx = pad + 430
     class_legend = [
-        ((59, 130, 246), "Classe 1: Nube Fredda Non-Conv."),
-        ((249, 115, 22), "Classe 2: Convezione in Sviluppo"),
-        ((220, 38, 38), "Classe 3: Convezione Matura/Decad."),
-        ((232, 121, 249), "Classe 4: Overshooting Top"),
+        ((59, 130, 246), "Nube fredda"),
+        ((250, 204, 21), "Triggering"),
+        ((249, 115, 22), "Growing"),
+        ((220, 38, 38), "Mature"),
+        ((153, 27, 27), "Decaying"),
+        ((245, 105, 255), "Overshooting Top (OT)"),
     ]
     for color, label in class_legend:
         draw.rectangle([fx, fy, fx + 18, fy + 18], fill=color, outline=(220, 220, 220))
@@ -380,17 +386,17 @@ def render_5min_outbreak_video(
             ),
             (
                 "2. RDT COMPLETO (ERA5 NWP + GEO-CT/HRW + Pesi CAL OPERA)",
-                f"Celle convettive: {n_full_conv} | Area convettiva: {int(np.isin(full_sem, [2,3,4]).sum())} px",
+                f"Celle convettive: {n_full_conv} | Area convettiva: {int((full_sem >= 2).sum())} px",
                 p2,
             ),
             (
                 "3. RDT 7ch SEVIRI CALIBRATO (Solo 7ch SEVIRI + Pesi CAL)",
-                f"Celle convettive: {n_sev_conv} | Area convettiva: {int(np.isin(sev_sem, [2,3,4]).sum())} px",
+                f"Celle convettive: {n_sev_conv} | Area convettiva: {int((sev_sem >= 2).sum())} px",
                 p3,
             ),
             (
                 "4. RDT 7ch SEVIRI PURO (Zero Pesi CAL, Zero ERA5, Zero Ancillari)",
-                f"Celle convettive: {n_pure_conv} | Area convettiva: {int(np.isin(pure_sem, [2,3,4]).sum())} px",
+                f"Celle convettive: {n_pure_conv} | Area convettiva: {int((pure_sem >= 2).sum())} px",
                 p4,
             ),
         ]
@@ -561,17 +567,17 @@ def render_48h_multiday_video(
             ),
             (
                 "2. RDT COMPLETO (ERA5 NWP + GEO-CT/HRW + Pesi CAL OPERA)",
-                f"Celle convettive: {n_full_conv} | Area convettiva: {int(np.isin(full_sem, [2,3,4]).sum())} px",
+                f"Celle convettive: {n_full_conv} | Area convettiva: {int((full_sem >= 2).sum())} px",
                 p2,
             ),
             (
                 "3. RDT 7ch SEVIRI CALIBRATO (Solo 7ch SEVIRI + Pesi CAL)",
-                f"Celle convettive: {n_sev_conv} | Area convettiva: {int(np.isin(sev_sem, [2,3,4]).sum())} px",
+                f"Celle convettive: {n_sev_conv} | Area convettiva: {int((sev_sem >= 2).sum())} px",
                 p3,
             ),
             (
                 "4. RDT 7ch SEVIRI PURO (Zero Pesi CAL, Zero ERA5, Zero Ancillari)",
-                f"Celle convettive: {n_pure_conv} | Area convettiva: {int(np.isin(pure_sem, [2,3,4]).sum())} px",
+                f"Celle convettive: {n_pure_conv} | Area convettiva: {int((pure_sem >= 2).sum())} px",
                 p4,
             ),
         ]

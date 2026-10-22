@@ -100,10 +100,15 @@ def compute_comparison_metrics(
     regimes = {
         "cloud_tower_mask_ge1": _binary_metrics(ref_labels >= 1, pred_labels >= 1),
         "convective_mask_234": _binary_metrics(
-            np.isin(ref_labels, [2, 3, 4]), np.isin(pred_labels, [2, 3, 4])
+            ref_labels >= 2, pred_labels >= 2
         ),
         "developing_convective_eq2": _binary_metrics(ref_labels == 2, pred_labels == 2),
         "mature_decaying_convective_eq3": _binary_metrics(ref_labels == 3, pred_labels == 3),
+        "triggering_eq2": _binary_metrics(ref_labels == 2, pred_labels == 2),
+        "growing_eq3": _binary_metrics(ref_labels == 3, pred_labels == 3),
+        "mature_eq4": _binary_metrics(ref_labels == 4, pred_labels == 4),
+        "decaying_eq5": _binary_metrics(ref_labels == 5, pred_labels == 5),
+        "overshooting_top_eq6": _binary_metrics(ref_labels == 6, pred_labels == 6),
         "overshooting_top_eq4": _binary_metrics(ref_labels == 4, pred_labels == 4),
     }
 

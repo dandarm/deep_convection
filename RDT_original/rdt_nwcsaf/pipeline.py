@@ -340,9 +340,9 @@ class NwcSafRdtTracker:
             ot_candidate_mask[bbox][ot_cand_local] = True
             ot_confirmed_mask[bbox][ot_conf_local] = True
 
-            # Confirmed Overshooting Top pixels inside convective cells receive semantic class 4
+            # Confirmed Overshooting Top pixels inside convective cells receive semantic class 6
             if cell["is_convective"] and ot_conf_local.any():
-                semantic_label[bbox][ot_conf_local] = 4
+                semantic_label[bbox][ot_conf_local] = 6
 
             q_bits = QUALITY_OBSERVATION_VALID
             if cell["temporal_valid"]:

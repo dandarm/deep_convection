@@ -63,9 +63,11 @@ SEVIRI_7CH_NAMES = (
 SEMANTIC_CLASS_NAMES = {
     0: "background",
     1: "non_convective_cloud",
-    2: "convective_triggering_growing",
-    3: "convective_mature_decaying",
-    4: "overshooting_top",
+    2: "convective_triggering",
+    3: "convective_growing",
+    4: "convective_mature",
+    5: "convective_decaying",
+    6: "overshooting_top",
 }
 
 QUALITY_OBSERVATION_VALID = 1

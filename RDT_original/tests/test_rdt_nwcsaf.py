@@ -246,8 +246,8 @@ def test_full_pipeline_lifecycle_and_forecasts() -> None:
     # By slot 2-4 the rapidly cooling cell must be discriminated as convective (semantic class >= 2)
     assert int(out["semantic_label"][2].max()) >= 2
     assert int(out["semantic_label"][3].max()) >= 2
-    # On slot 4 with confirmed OT, class 4 (Overshooting Top) must appear
-    assert int(out["semantic_label"][4].max()) == 4
+    # On slot 4 with confirmed OT, class 6 (Overshooting Top) must appear
+    assert int(out["semantic_label"][4].max()) == 6
     # Lagrangian forecasts (+15, +30, +45, +60 min) must be generated for convective slots
     assert len(out["forecast_table"]) >= 4
 
