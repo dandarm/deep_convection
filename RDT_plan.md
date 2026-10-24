@@ -597,3 +597,51 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 
 Il comando attivo e il PID vengono conservati nel `launcher.json` locale.
 Non lanciare una seconda istanza mentre il supervisor è già attivo.
+
+## 20. Zoom di studio vicino al bordo osservabile (17 ottobre 2026)
+
+La traccia 68721044871 al picco del 18 settembre 2020 13:50 UTC genera un
+crop centrato che include il bordo curvo fuori disco: 9.656 pixel non osservati
+su 50.176 in ciascuno dei 16 frame 13:10–14:25, NaN in tutti i sette canali.
+Il dominio completo li maschera; il lettore rigoroso delle clip li rifiuta.
+
+Il solo viewer di studio interseca ora le mappe `valid_observation` salvate
+nei 16 timestamp effettivi e cerca il crop 224×224 interamente valido più
+vicino al crop centrato, contenente pixel della traccia al picco. La ricerca
+è deterministica: distanza quadratica fra origini north-up, parità risolte
+per riga e colonna. Le coordinate vengono poi convertite negli indici nativi.
+Lo spostamento è dichiarato nel viewer; una cella estesa può restare tagliata.
+Se non esiste un crop valido contenente la traccia, lo zoom resta rifiutato.
+
+Nel caso verificato l'origine nativa passa da (539,1302) a (470,1275): tutti
+i valori e le maschere dei 16 frame sono validi e 1.230 pixel della traccia
+sono visibili al picco. Non si riempiono NaN, non si cambiano frame, maschere
+o teacher, né il lettore delle clip o il campionamento del pretraining.
+
+## 21. Export MP4 del dominio completo
+
+`scripts/render_seviri_rdt_domain_video.py` esporta tre pannelli sincronizzati:
+WV6.2−IR10.8, classi RDT-CW-inspired sul satellite IR108 e profondità D.
+Legge le mappe già pubblicate, verifica gli hash dei frame grezzi e la geometria
+e non ricalcola il teacher. Occorrono `requirements-rdt.txt` e FFmpeg disponibile
+nel PATH o tramite `--ffmpeg`; in alternativa installare `imageio-ffmpeg`:
+
+```bash
+.venv/bin/python -m pip install 'imageio-ffmpeg>=0.5,<1'
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+  .venv/bin/python scripts/render_seviri_rdt_domain_video.py \
+  --label-root results/rdt_preview/domain_utls_2020_parallel \
+  --start-date 2020-09-12 --end-date 2020-09-20 \
+  --fps 43.2 --workers 16 \
+  --output results/rdt_preview/exports/seviri_rdt_domain_20200912_20200920_60s.mp4
+```
+
+La data finale è inclusa e gli orari sono UTC. I 2.592 frame a cinque minuti
+rimangono tutti presenti: 43,2 fps producono 60 secondi, senza interpolazione
+o ripetizione. Frame mancanti o input cambiati rispetto alle mappe bloccano
+l'export. `--max-frames 3` permette una prova breve separata, dichiarata nei
+metadati. Il file finale viene pubblicato con rename dopo la chiusura riuscita
+dell'encoder; un output esistente non viene sovrascritto. Accanto al video
+si salvano metadati JSON, avanzamento `.progress.json`, anteprima e log FFmpeg.
+Tutti questi artefatti restano locali, fuori da Git. Il video completo citato
+è stato verificato mediante decodifica: 2.592 frame, durata 60,0 secondi.

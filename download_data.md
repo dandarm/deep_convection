@@ -80,7 +80,7 @@ nohup env PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_TH
   --zarr-root "$SEVIRI_ROOT" \
   --env-file "$SEVIRI_ENV_FILE" \
   --workers "$SEVIRI_WORKERS" \
-  --preferred-satellite MSG3 \
+  --satellite-priority MSG4 MSG3 MSG2 \
   --conversion-workers "$SEVIRI_CONVERSION_WORKERS" \
   --conversion-threads "$SEVIRI_CONVERSION_THREADS" \
   --conversion-prefetch "$SEVIRI_CONVERSION_PREFETCH" \
@@ -104,12 +104,15 @@ conservando la cronologia dei tentativi precedenti.
   e otto trasferimenti hanno mostrato forte variabilità, senza dimostrare un
   vantaggio stabile: valutare la velocità su intervalli lunghi durante i
   download, escludendo conversione, verifica e ripartenza.
-- `--preferred-satellite MSG3`: risolve soltanto uno slot offerto contemporaneamente
-  da satelliti diversi, scegliendo MSG3. Se c'è un unico prodotto RSS di MSG2,
-  lo conserva: il servizio ha già alternato MSG3 e MSG2 nell'archivio. Non è un
-  filtro che elimina tutti i frame MSG2. Senza il flag i duplicati restano
-  bloccanti; duplicati dello stesso satellite, nomi non riconosciuti o assenza
-  del satellite preferito in uno slot ambiguo restano sempre un errore.
+- `--satellite-priority MSG4 MSG3 MSG2`: negli slot offerti da più satelliti
+  sceglie il primo disponibile in quest'ordine tra i prodotti RSS ammissibili.
+  Prima del ranking esclude prodotti con intervallo di osservazione nel
+  catalogo superiore a cinque minuti; anche la durata Satpy viene controllata
+  prima della scrittura. I prodotti RSS unici vengono
+  conservati anche se il satellite non è nella lista. Duplicati dello stesso
+  satellite, nomi non riconosciuti e sovrapposizioni prive di un satellite
+  elencato restano bloccanti. Il precedente `--preferred-satellite MSG3`
+  rimane disponibile, alternativo alla lista, senza fallback.
 - `--conversion-workers`: processi separati di lettura, calibrazione e crop dei
   nativi. Sono distinti dagli otto thread di download. Zero mantiene il percorso
   seriale originale. Un solo processo valida e scrive gli Zarr in ordine temporale;
@@ -265,7 +268,34 @@ la selezione preserva questa continuità RSS senza richiedere un unico satellite
 per tutto l'anno. I numeri 2/3 identificano satelliti diversi della famiglia MSG.
 
 `selection_policy.json` conserva la preferenza dell'anno e impedisce di
-cambiarla accidentalmente durante la ripresa. Mantenere quindi lo stesso flag.
+cambiarla accidentalmente durante la ripresa. Mantenere quindi gli stessi flag.
+Per cambiare intenzionalmente la regola aggiungere `--update-selection-policy`
+al primo riavvio con la nuova lista: la transizione e gli hash dei report
+completati vengono conservati in `selection_policy_history/`. I giorni già
+completati e i frame preesistenti rimangono invariati; la nuova priorità vale
+solo per le osservazioni mancanti. Nei riavvii successivi il flag di aggiornamento
+non serve più.
+
+Il 17 ottobre 2026 l'acquisizione 2021 si è fermata sul 21 luglio, nello slot
+13:10 UTC offerto da MSG4 e MSG2 ma non da MSG3. Su richiesta dell'utente la
+priorità successiva è **MSG4 → MSG3 → MSG2**, preservando i 201 giorni completati
+con la selezione precedente. I report storici conservano la regola originale.
+
+Il 20 settembre 2021 il catalogo RSS offre anche MSG4
+`MSG4-SEVI-MSG15-0100-NA-20210920062742.829000000Z-NA`: l'intervallo del
+catalogo dura 665,115 secondi e Satpy riporta 06:15–06:30 UTC, quindi non è
+una scansione RSS di cinque minuti. Il nome terminante 06:27 veniva invece
+interpretato come slot 06:25, collidendo con il vero RSS MSG3 di quello slot.
+Il filtro introdotto il 20 ottobre 2026 esclude questo prodotto prima della
+priorità e seleziona MSG3 alle 06:15: tutti i 288 slot del giorno restano
+disponibili. Il nativo MSG4 già scaricato è conservato con SHA-256 in
+`unselected_native/20210920/`; `excluded_non_rss_products` nel report di selezione
+conserva intervallo e motivo. La transizione alla policy v3 va autorizzata
+esplicitamente nel comando con `--update-selection-policy`, come sopra.
+I 262 giorni già completati non vengono riscritti. Il precedente MSG4 del
+21 luglio ha intervallo nel catalogo di 22,896 secondi: non ricade in questa
+esclusione e la sua conversione aveva superato i controlli temporali Satpy.
+
 Le giornate completate prima dell'introduzione della regola vengono verificate
 e conservate. `product_selection/AAAAMMGG.json` registra tutti i prodotti scelti,
 satellite e slot, le alternative escluse e i frame preesistenti non sostituiti;

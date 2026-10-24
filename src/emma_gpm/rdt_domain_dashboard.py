@@ -21,7 +21,7 @@ from IPython.display import clear_output, display
 
 from .rdt.storage import DomainFrameReader, frame_key, read_table
 from .rdt_teacher import CLASS_COLORS
-from .rdt_event_explorer import btd_norm, rank_frames, study_window, study_origin
+from .rdt_event_explorer import btd_norm, rank_frames, study_window, study_origin, study_validity
 
 
 FIELDS = [("Classi sul satellite", "semantic_label"), ("Contorni adattivi", "cell_id"),
@@ -288,11 +288,15 @@ class RDTDomainDayViewer:
                 stamp=pd.Timestamp(time)
                 entry=self.archive.load(stamp,'track_id')
                 x,y,_=self.archive.reader.geometry
-                origin_y,origin_x=study_origin(entry['fields']['track_id'],track_id,x,y)
                 start=study_window(self.archive.committed,stamp)
                 # The annual frames are symlinks into independent sequences;
                 # use that sequence geometry/area cache for the study crop.
                 label_root=(self.archive.output/"frames"/frame_key(stamp)).resolve().parent.parent
+                tracks=entry['fields']['track_id']
+                centered=study_origin(tracks,track_id,x,y)
+                valid=study_validity(label_root,pd.date_range(start,periods=16,freq='5min'),
+                    tracks.shape,self.archive.protocol['config_hash'])
+                origin_y,origin_x=study_origin(tracks,track_id,x,y,valid_mask=valid)
                 example=load_domain_crop(self.root,label_root,start,origin_y,origin_x)
                 if track_id not in example['result']['objects'].track_id.values:
                     raise ValueError('La traccia selezionata non è visibile nel crop centrato; serve un dominio di zoom più ampio.')
@@ -308,7 +312,11 @@ class RDTDomainDayViewer:
                 self.zoom_viewer.play.value=self.zoom_viewer.frame.value
                 if track_id in [value for _,value in self.zoom_viewer.track.options]:
                     self.zoom_viewer.track.value=track_id
-                print('Crop centrato sulla traccia al picco; finestra completa, senza riempire gap. Candidati per traccia, non eventi meteorologici indipendenti validati.')
+                if (origin_y,origin_x)!=centered:
+                    print('Zoom spostato dal centro della traccia per evitare pixel non osservati/invalidi nei 16 frame; mostra una porzione della traccia.')
+                else:
+                    print('Crop centrato sulla traccia al picco.')
+                print('Finestra completa, senza riempire gap. Candidati per traccia, non eventi meteorologici indipendenti validati.')
                 display(self.zoom_viewer.widget)
             except (ValueError,FileNotFoundError,KeyError) as error:
                 print(f'Zoom non disponibile: {error}')

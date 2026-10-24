@@ -60,21 +60,40 @@ def product_satellite(product):
     return match.group(1) if match else None
 
 
-def selection_policy(preferred_satellite):
+def selection_policy(preferred_satellite=None,satellite_priority=None):
+    if satellite_priority is not None:
+        priority=list(satellite_priority)
+        if (not priority or len(set(priority))!=len(priority)
+                or any(s not in {'MSG1','MSG2','MSG3','MSG4'} for s in priority)
+                or preferred_satellite is not None):
+            raise ValueError('Satellite priority must contain distinct MSG satellites and cannot accompany preferred-satellite')
+        return dict(version='rss-satellite-overlap-v3',satellite_priority=priority,
+            maximum_sensing_duration_seconds=300,
+            unique_slot='retain available RSS satellite',same_satellite_duplicates='error')
     return dict(version='rss-satellite-overlap-v1',preferred_satellite=preferred_satellite,
         unique_slot='retain available RSS satellite',same_satellite_duplicates='error')
 
 
-def pin_selection_policy(work,preferred_satellite):
+def pin_selection_policy(work,preferred_satellite=None,satellite_priority=None,allow_update=False):
     path=work/'selection_policy.json'
-    policy=selection_policy(preferred_satellite)
+    policy=selection_policy(preferred_satellite,satellite_priority)
     if path.exists() and json.loads(path.read_text())!=policy:
-        raise ValueError('Satellite selection policy changed; resume with the recorded --preferred-satellite')
+        if not allow_update:
+            raise ValueError('Satellite selection policy changed; resume with the recorded flags or explicitly use --update-selection-policy')
+        previous=json.loads(path.read_text())
+        transition=dict(previous_policy=previous,new_policy=policy,
+            updated_utc=datetime.now(timezone.utc).isoformat(),
+            completed_day_reports={p.name:native_digest(p) for p in sorted((work/'completed_days').glob('*.json'))},
+            existing_frames='preserved; new priority applies only to missing observations')
+        digest=hashlib.sha256(json.dumps([previous,policy],sort_keys=True).encode()).hexdigest()
+        atomic_json(work/'selection_policy_history'/f'{digest}.json',transition)
     atomic_json(path,policy)
 
 
-def select_slot_products(products,preferred_satellite=None):
+def select_slot_products(products,preferred_satellite=None,satellite_priority=None):
     """Resolve cross-satellite overlap only; never drop a unique RSS slot."""
+    selection_policy(preferred_satellite,satellite_priority)
+    priority=list(satellite_priority) if satellite_priority is not None else [preferred_satellite]
     grouped=defaultdict(list)
     for product in products:
         grouped[product_slot(product)].append(product)
@@ -84,18 +103,43 @@ def select_slot_products(products,preferred_satellite=None):
             selected.extend(group)
             continue
         satellites=[product_satellite(product) for product in group]
-        if (preferred_satellite is None or None in satellites
+        chosen_satellite=next((s for s in priority if s is not None and s in satellites),None)
+        if (chosen_satellite is None or None in satellites
                 or len(set(satellites))!=len(satellites)
-                or preferred_satellite not in satellites):
+                ):
             raise ValueError(f'Multiple provider products for the same RSS slot {slot.isoformat()}; '
-                f'cannot uniquely select preferred satellite {preferred_satellite}: {[str(p) for p in group]}')
-        chosen=group[satellites.index(preferred_satellite)]
+                f'cannot uniquely select satellite from priority {priority}: {[str(p) for p in group]}')
+        chosen=group[satellites.index(chosen_satellite)]
         selected.append(chosen)
         decisions.append(dict(slot=slot.isoformat(),selected_product=str(chosen),
-            selected_satellite=preferred_satellite,
+            selected_satellite=chosen_satellite,
             unselected_products=sorted(str(p) for p in group if p is not chosen),
-            reason='explicit preferred satellite at cross-satellite overlap'))
+            reason='explicit satellite priority at cross-satellite overlap'))
     return selected,decisions
+
+
+def rss_eligible_products(products):
+    """Reject longer scans before satellite ranking, preserving their provenance."""
+    eligible,excluded=[],[]
+    for product in products:
+        end=getattr(product,'sensing_end',None)
+        if end is None:
+            if product_satellite(product) is not None:
+                raise ValueError(f'Missing sensing end for RSS product {product}')
+            # Legacy references without satellite metadata receive native validation.
+            eligible.append(product)
+            continue
+        seconds=(end-product.sensing_start).total_seconds()
+        if seconds<=0:
+            raise ValueError(f'Invalid sensing interval for RSS product {product}')
+        if seconds>300:
+            excluded.append(dict(id=str(product),slot=product_slot(product).isoformat(),
+                sensing_start=product.sensing_start.isoformat(),sensing_end=end.isoformat(),
+                sensing_duration_seconds=seconds,
+                reason='scan exceeds five-minute RSS interval; excluded before satellite priority'))
+        else:
+            eligible.append(product)
+    return eligible,excluded
 
 
 def retain_unselected_native(native,day,work):
@@ -232,16 +276,19 @@ def acquire_day(day,collection,args,work,key,secret):
             verify_store(store,existing_times(store))
             shutil.rmtree(backup)
     provider_products=[p for p in collection.search(dtstart=day,dtend=following,set='brief') if day<=product_slot(p)<following]
+    rss_products,excluded_provider=rss_eligible_products(provider_products)
     preferred=getattr(args,'preferred_satellite',None)
-    products,decisions=select_slot_products(provider_products,preferred)
+    priority=getattr(args,'satellite_priority',None)
+    products,decisions=select_slot_products(rss_products,preferred,priority)
     before=existing_times(store)
     expected_slots={pd.Timestamp(product_slot(p)) for p in products}
     selection_path=work/'product_selection'/f'{day:%Y%m%d}.json'
     retained_directory=work/'unselected_native'/f'{day:%Y%m%d}'
     retained=[dict(file=p.name,path=str(p),sha256=native_digest(p),size_bytes=p.stat().st_size)
               for p in sorted(retained_directory.glob('*.nat'))]
-    selection=dict(day=f'{day:%Y-%m-%d}',policy=selection_policy(preferred),
+    selection=dict(day=f'{day:%Y-%m-%d}',policy=selection_policy(preferred,priority),
         provider_products=len(provider_products),selected_provider_products=len(products),
+        excluded_non_rss_products=excluded_provider,
         selected_satellites=dict(Counter(product_satellite(p) or 'unknown' for p in products)),
         products=[dict(id=str(p),slot=product_slot(p).isoformat(),satellite=product_satellite(p),
             existing_frame_preserved=pd.Timestamp(product_slot(p)) in before) for p in products],
@@ -249,7 +296,7 @@ def acquire_day(day,collection,args,work,key,secret):
     atomic_json(selection_path,selection)
     resolved={pd.Timestamp(d['slot']):d for d in decisions}
     for decision in decisions:
-        print(f'selected satellite={preferred} slot={decision["slot"]} product={decision["selected_product"]}',flush=True)
+        print(f'selected satellite={decision["selected_satellite"]} slot={decision["slot"]} product={decision["selected_product"]}',flush=True)
     missing=[p for p in products if pd.Timestamp(product_slot(p)) not in before]
     buffer=work/'native_buffer'/f'{day:%Y%m%d}'
     if missing:
@@ -265,8 +312,14 @@ def acquire_day(day,collection,args,work,key,secret):
         shutil.copytree(store,staging)
     bounds=geographic_bbox_to_geos_bounds(-20.,40.,30.,70.)
     pending=[]; converted=set(); rejected=[]; scheduled=set()
+    excluded_ids={row['id'] for row in excluded_provider}
     def eligible_natives():
         for native in sorted(buffer.rglob('*.nat'),key=lambda p:(native_slot_start_from_name(p),p.name)):
+            if native.stem in excluded_ids:
+                retained.append(retain_unselected_native(native,day,work))
+                atomic_json(selection_path,selection)
+                print(f'retained non-RSS native={native.name}; excluded before conversion',flush=True)
+                continue
             slot=native_slot_start_from_name(native)
             if not day<=slot<following:
                 raise ValueError('Native belongs to a different requested day')
@@ -299,7 +352,7 @@ def acquire_day(day,collection,args,work,key,secret):
                 print(f'excluded native={native.name} slot={slot} quarantine={quarantine}',flush=True)
                 continue
             if slot in scheduled:
-                raise ValueError('Multiple cached natives for the same RSS slot')
+                raise ValueError(f'Multiple cached natives for the same RSS slot {slot}: {native.name}')
             scheduled.add(slot)
             yield native
     conversion_started=time.monotonic()
@@ -332,6 +385,8 @@ def acquire_day(day,collection,args,work,key,secret):
                     continue
             if crop.channels!=THERMAL_CHANNELS or crop.units!='K':
                 raise ValueError('Native spectral/radiometric metadata mismatch')
+            if getattr(crop,'end_time',crop.start_time+timedelta(minutes=5))-crop.start_time>timedelta(minutes=5):
+                raise ValueError(f'Native scan exceeds five-minute RSS interval: {native.name}')
             if crop.start_time!=slot:
                 rejected.append(dict(file=native.name,filename_slot=slot.isoformat(),
                     metadata_start=crop.start_time.isoformat(),metadata_end=crop.end_time.isoformat(),
@@ -397,13 +452,22 @@ def main():
     parser.add_argument('--conversion-prefetch',type=int,default=2,help='Bound outstanding native conversions per process')
     parser.add_argument('--crop-batch-size',type=int,default=4)
     parser.add_argument('--env-file',type=Path,default=ROOT/'.env')
-    parser.add_argument('--preferred-satellite',choices=['MSG1','MSG2','MSG3','MSG4'],
+    satellites=parser.add_mutually_exclusive_group()
+    satellites.add_argument('--preferred-satellite',choices=['MSG1','MSG2','MSG3','MSG4'],
         help='Choose this satellite only at cross-satellite overlaps; unique RSS products are retained')
+    satellites.add_argument('--satellite-priority',nargs='+',choices=['MSG1','MSG2','MSG3','MSG4'],
+        help='Ordered satellite preference at overlaps, for example MSG4 MSG3 MSG2')
+    parser.add_argument('--update-selection-policy',action='store_true',
+        help='Explicitly archive and update pinned policy; completed days and existing frames are preserved')
     parser.add_argument('--recover-native-read-errors',action='store_true',
         help='Redownload independently unreadable native files; quarantine only identical payloads with the same reader buffer error')
     parser.add_argument('--exclude-native',action='append',default=[],metavar='FILENAME',
         help='Explicitly exclude a diagnosed native filename, retain it in quarantine and report its slot as missing; repeatable')
     args=parser.parse_args()
+    try:
+        selection_policy(args.preferred_satellite,args.satellite_priority)
+    except ValueError as error:
+        parser.error(str(error))
     if (args.workers<1 or args.crop_batch_size<1 or args.conversion_workers<0
             or args.conversion_threads<1 or args.conversion_prefetch<1):
         parser.error('Worker and batch counts must be positive')
@@ -415,7 +479,7 @@ def main():
     from download_msg_seviri import load_dotenv
     load_dotenv(args.env_file)
     with exclusive_file_lock(work/'acquisition.lock'):
-        pin_selection_policy(work,args.preferred_satellite)
+        pin_selection_policy(work,args.preferred_satellite,args.satellite_priority,args.update_selection_policy)
         key,secret=credentials()
         collection=eumdac.DataStore(eumdac.AccessToken((key,secret))).get_collection(DEFAULT_COLLECTION)
         day=datetime(args.year,1,1);stop=datetime(args.year+1,1,1)

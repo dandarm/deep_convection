@@ -41,3 +41,42 @@ def test_index_denominator_and_quality_selection(tmp_path):
     assert summary['valid_pixels']==6 and summary['convective_pixels']==4 and summary['ot_pixels']==1
     assert summary['convective_percent']==pytest.approx(100*4/6)
     assert [(e['track_id'],e['kind']) for e in events]==[(1,'convection'),(1,'ot')]
+
+
+@pytest.mark.parametrize('reverse_x,reverse_y',[(False,False),(True,False),(False,True),(True,True)])
+def test_study_moves_to_nearest_valid_crop_with_selected_track(reverse_x,reverse_y):
+    tracks=np.zeros((12,16),np.int64);tracks[2:7,5:10]=68721044871
+    valid=np.ones_like(tracks,bool);valid[:3]=False
+    x=np.arange(16);y=np.arange(12)[::-1]
+    if reverse_x:x=x[::-1]
+    if reverse_y:y=y[::-1]
+    oy,ox=study_origin(tracks,68721044871,x,y,crop_size=6,valid_mask=valid)
+    top=12-oy-6 if reverse_y else oy
+    left=16-ox-6 if reverse_x else ox
+    assert (top,left)==(3,4)
+    assert valid[top:top+6,left:left+6].all()
+    assert (tracks[top:top+6,left:left+6]==68721044871).any()
+    with pytest.raises(ValueError,match='Nessun crop'):
+        study_origin(tracks,68721044871,x,y,crop_size=6,valid_mask=np.zeros_like(valid))
+    # Valid windows elsewhere cannot silently replace the selected phenomenon.
+    valid[:]=False;valid[6:,10:]=True
+    with pytest.raises(ValueError,match='Nessun crop'):
+        study_origin(tracks,68721044871,x,y,crop_size=6,valid_mask=valid)
+
+
+def test_study_quality_intersection_checks_all_frames_and_keeps_gaps_explicit(tmp_path):
+    from emma_gpm.rdt_event_explorer import study_validity
+    times=pd.date_range('2020-09-18T13:10',periods=3,freq='5min')
+    for i,stamp in enumerate(times):
+        directory=tmp_path/'frames'/f'{stamp:%Y%m%dT%H%M}';directory.mkdir(parents=True)
+        (directory/'record.json').write_text('{}')
+        group=zarr.open_group(str(directory/'fields.zarr'),mode='w',zarr_format=2)
+        group.attrs.update(time=stamp.isoformat(),config_hash='same')
+        valid=np.ones((6,8),bool);valid[i,i]=False
+        group.create_array('valid_observation',data=valid)
+    valid=study_validity(tmp_path,times,(6,8),'same')
+    assert (~valid).sum()==3 and not valid[0,0] and not valid[2,2]
+    with pytest.raises(ValueError,match='version/timestamp'):
+        study_validity(tmp_path,times,(6,8),'different')
+    with pytest.raises(FileNotFoundError):
+        study_validity(tmp_path,times.append(pd.DatetimeIndex([times[-1]+pd.Timedelta(minutes=5)])),(6,8),'same')
