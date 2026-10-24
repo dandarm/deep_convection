@@ -20,7 +20,7 @@ pf_features_robust_mcs,DPR,155.0,count,PF-feature co-occurrence lower bound; abs
 time_offset_min_minutes,ALL,-29.996109008766666,minutes,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass
 time_offset_p05_minutes,ALL,-27.299995422366667,minutes,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass
 time_offset_median_minutes,ALL,2.1694707870583336,minutes,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass
-time_offset_mean_minutes,ALL,0.927956668076632,minutes,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass
+time_offset_mean_minutes,ALL,0.9279566680766321,minutes,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass
 time_offset_p95_minutes,ALL,27.016664028134166,minutes,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass
 time_offset_max_minutes,ALL,30.0,minutes,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass
 duplicate_system_orbit_groups,DPR,39.0,count,PF-feature co-occurrence lower bound; absence is not proof of no sensor overpass

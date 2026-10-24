@@ -36,13 +36,13 @@ come progetto nella app Codex desktop.
 Usare, per esempio:
 
 ```text
-D:\Datasets\Deep_convection
+E:\Datasets\Deep_convection
 ```
 
 Impostare la variabile per la sessione PowerShell corrente:
 
 ```powershell
-$env:EMMA_GPM_DATA_ROOT = "D:\Datasets\Deep_convection"
+$env:EMMA_GPM_DATA_ROOT = "E:\Datasets\Deep_convection"
 ```
 
 Per renderla persistente per l'utente:
@@ -50,7 +50,7 @@ Per renderla persistente per l'utente:
 ```powershell
 [Environment]::SetEnvironmentVariable(
   "EMMA_GPM_DATA_ROOT",
-  "D:\Datasets\Deep_convection",
+  "E:\Datasets\Deep_convection",
   "User"
 )
 ```
@@ -147,7 +147,7 @@ progetto clonato con questo prompt:
 > Leggi integralmente README.md, HANDOFF_WINDOWS.md, REPORT.md e
 > PLAN_COMPLETAMENTO.md prima di agire. Questo computer non contiene la directory
 > dati del pilot Linux: ricostruiscila da zero seguendo la sezione 4 di
-> HANDOFF_WINDOWS.md, usando `D:\Datasets\Deep_convection` come
+> HANDOFF_WINDOWS.md, usando `E:\Datasets\Deep_convection` come
 > `EMMA_GPM_DATA_ROOT`. Scarica soltanto EMMA 2020, i cinque mesi GMI PF, i cinque
 > mesi DPR PF e l'inventario CMR necessari al pilot maggio-settembre 2020. Non
 > scaricare in massa i granuli GPM nativi da Earthdata e non avviare alcun
@@ -169,3 +169,98 @@ allora usare il prompt della sezione 5.
 
 Non copiare alla cieca l'intera directory `.codex` tra sistemi operativi:
 potrebbe includere credenziali, configurazioni locali e percorsi non portabili.
+
+## 7. Aggiornamento 2026-09-11: chiusura del pilot pixel-level
+
+Il pilot è stato ricostruito su Windows usando
+`E:\Datasets\Deep_convection` come `EMMA_GPM_DATA_ROOT`. Non sono stati
+scaricati in massa granuli GPM nativi da Earthdata e non è stato avviato alcun
+training. I campi pixel-level aggiuntivi provengono dai contenitori orbitali PF
+pubblici e sono stati letti con richieste HTTP parziali e checkpoint per orbita.
+
+### Interpretazione consolidata dei dati
+
+EMMA fornisce maschere orarie di MCS. Una `track_uid` identifica lo stesso MCS
+seguito nelle ore successive e va interpretata come un evento distinto, non
+come una singola cella della griglia. Le celle EMMA sono gli elementi spaziali
+della maschera; il numero di celle misura l'area discretizzata dell'oggetto, non
+il numero di eventi. EMMA è sempre weak supervision e non è una ground truth
+indipendente per GPM.
+
+Le PF sono oggetti di precipitazione derivati dai prodotti GPM. `PRECIP` per
+GMI e `NSPRECIP` per DPR sono invece retrieval continui del rate di
+precipitazione, espressi in mm/h. Nei grafici sono indicati rispettivamente come
+`Precipitation-rate retrieval GMI` e
+`Near-surface precipitation-rate retrieval DPR`. Non sono PF: applicando una
+soglia al retrieval e raggruppando i pixel connessi si possono costruire gli
+oggetti PF. I cataloghi conservano anche tutte le osservazioni GPM fuori EMMA.
+
+### Figure pixel-level
+
+Sono state selezionate 30 scene, sei per ciascun mese da maggio a settembre, e
+sono state prodotte figure individuali a due pannelli GMI/DPR. Non si usano
+ellissi: vengono mostrati i pixel dei retrieval ricampionati sulla griglia EMMA.
+La maschera EMMA è rossa, semitrasparente, con bordo rosso scuro disegnato in
+primo piano; le coste sono visibili; la colorbar riporta soltanto
+`Rate di precipitazione [mm/h]`. I trenta file correnti sono identificati in
+`results/presentation_precipitation_figure_manifest.csv`. Nella directory delle
+figure è stato conservato anche un PNG storico valido, ma non appartiene al
+manifest corrente.
+
+### Overlap ottenuto dai pixel reali
+
+La misura usa i pixel con rate maggiore di 0,1 mm/h, ricampionati per centro
+più vicino sulla griglia EMMA. Nei 30 casi selezionati:
+
+- GMI presenta almeno un'intersezione in 26 scene su 30; il 15,2% delle celle
+  precipitanti ricampionate ricade dentro EMMA e le celle precipitanti coprono
+  il 60,9% dell'area EMMA aggregata;
+- DPR presenta almeno un'intersezione in 26 scene su 30; il 23,5% delle celle
+  precipitanti ricampionate ricade dentro EMMA e le celle precipitanti coprono
+  il 27,8% dell'area EMMA aggregata;
+- 41 componenti GMI su 4.732 e 66 componenti DPR su 1.819 toccano EMMA.
+
+Le percentuali nelle due direzioni non sono equivalenti. La frazione di
+precipitazione dentro EMMA usa come denominatore l'area precipitante GPM; la
+frazione di EMMA coperta usa come denominatore l'area EMMA. La maggiore
+copertura EMMA di GMI è coerente con una swath più ampia, mentre DPR osserva una
+fascia più stretta. La selezione delle 30 scene è volutamente ricca di overlap e
+non stima la probabilità naturale di coincidenza.
+
+Il manifest era stato costruito con 27 scene positive secondo le ellissi PF e
+tre scene contestuali. Il controllo con i pixel reali ne conferma 26: almeno un
+caso positivo secondo l'ellisse non presenta overlap nel retrieval rasterizzato.
+Questa differenza documenta il limite dell'approssimazione ellittica.
+
+### Conteggi e ordine di grandezza
+
+Nel periodo maggio-settembre 2020 il dominio contiene 343 track MCS distinte,
+2.652 maschere-oggetto orarie e 1.672 ore con almeno un oggetto EMMA. Il catalogo
+completo contiene 92.004 PF GMI in 1.169 orbite e 34.680 PF DPR in 938 orbite.
+Le PF con co-occorrenza EMMA secondo la geometria PF sono 161 per GMI e 155 per
+DPR.
+
+La sola proiezione lineare del tasso MJJAS sull'anno bisestile usa il fattore
+`366/153 = 2,392`. Produce circa 821 eventi EMMA, 6.344 maschere-oggetto EMMA,
+4.000 scene orarie positive, 220.088 PF GMI e 82.960 PF DPR per anno. Le sole PF
+in overlap diventerebbero circa 385 GMI e 371 DPR. È un ordine di grandezza, non
+una stima climatologica: estendere a tutto l'anno il tasso della stagione calda
+può sovrastimare la frequenza invernale.
+
+### Output e riproducibilità aggiunti
+
+- `catalogs/presentation_scene_manifest_2020.csv`;
+- `results/presentation_precipitation_figure_manifest.csv`;
+- `results/presentation_precipitation_map_settings.csv`;
+- `results/pixel_retrieval_overlap_selected_scenes.csv`;
+- `results/pixel_retrieval_overlap_selected_summary.csv`;
+- `results/training_sample_order_of_magnitude.csv`;
+- `$EMMA_GPM_DATA_ROOT/interim/orbital_pixel_feature_masks_2020.parquet`;
+- `scripts/select_presentation_scenes.py`;
+- `scripts/extract_orbital_pixel_feature_masks.py`;
+- `scripts/plot_presentation_precipitation_maps.py`;
+- `scripts/measure_pixel_retrieval_overlap.py`.
+
+Il file pixel-level unificato contiene 162.797 righe relative alle 30 orbite.
+L'ultima verifica ha dato 30 figure catalogate, nessun file mancante, nessun
+`.part` residuo e 7 test superati su 7.

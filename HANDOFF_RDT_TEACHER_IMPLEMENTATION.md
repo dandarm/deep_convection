@@ -76,6 +76,65 @@ artefatti sono dataset intermedi e non vanno aggiunti a Git.
 
 ## 4. Pipeline deterministica
 
+### 4.0 Pre-filtro Cloud Type IR-only
+
+Prima della gerarchia termica RDT applicare una Cloud Type/Cloud Mask causale
+ricavata esclusivamente dai sette canali SEVIRI. Questo stadio sostituisce il
+prodotto CT/CMa esterno richiesto dalla configurazione operativa: non cambia
+`TWARM`, la prominence, la geometria dei contorni o il tracking, ma impedisce
+che una superficie terrestre fredda entri nella gerarchia come nube.
+
+Calcolare le sei BTD della sezione 4.1. Un pixel è `surface_like` se almeno tre
+dei quattro test indipendenti sono veri:
+
+```text
+WV_062 - IR_108 <= -20 K
+WV_073 - IR_108 <=  -7 K
+IR_097 - IR_108 <= -15 K
+IR_134 - IR_108 <= -12 K
+```
+
+La firma nuvolosa conta invece i cinque test:
+
+```text
+WV_062 - IR_108 >= -18 K
+WV_073 - IR_108 >=  -9 K
+IR_087 - IR_108 >=  -2 K
+IR_097 - IR_108 >= -14 K
+IR_134 - IR_108 >= -11.5 K
+```
+
+Per nube opaca con `IR_108 < 260.15 K` richiedere almeno tre voti nuvolosi.
+Per nube calda fra 260.15 e 278.15 K richiedere almeno due voti e una
+depressione di almeno 6 K rispetto a un riferimento superficiale causale per
+pixel. Il riferimento è inizializzato con la prima osservazione, aggiornato
+con coefficiente 0.35 solo sui pixel `surface_like` e, sotto copertura
+nuvolosa, può raffreddarsi al massimo di 0.25 K/h. In questo modo una nube non
+diventa progressivamente la propria superficie di riferimento.
+
+La classe termica CT è:
+
+```text
+0 clear/unclassified
+1 low/warm opaque,       260.15 <= IR_108 < 278.15 K
+2 medium opaque,         240.15 <= IR_108 < 260.15 K
+3 high opaque,           220.15 <= IR_108 < 240.15 K
+4 very high/deep opaque, IR_108 < 220.15 K
+5 semitransparent cirrus
+```
+
+Il cirro semitrasparente usa la curva split-window
+`IR_108-IR_120 > 2.2 + 0.025*clip(IR_108-230,0,45)`, insieme a
+`WV_062-IR_108 < -11 K`, `IR_087-IR_108 > -1.5 K` e
+`228.15 < IR_108 < 268.15 K`; è escluso dalla maschera opaca. Soltanto le
+classi 1--4 vengono passate a `detect_rdt_cells` come `ct_cloudy_mask`.
+
+Questa è una proxy CT SEVIRI-only, non una replica completa del prodotto
+operativo NWC SAF Cloud Type. Persistono limiti inevitabili per nubi basse
+calde osservate prima di una superficie clear-sky. Salvare sempre `ct_class`,
+`opaque_cloud_mask`, `surface_reference_k`, `surface_depression_k` e il numero
+di voti spettrali per rendere l'euristica verificabile.
+
 ### 4.1 Feature spettrali
 
 Calcolare in kelvin, senza standardizzazione per canale:
