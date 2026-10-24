@@ -78,6 +78,21 @@ Nei dati storici possono comparire nomi/prodotti legati alla qualità, ad
 esempio `DBZH_QIND`, `ACRR_QIND` e `QIND_RATE`; quindi elencare prima la
 cartella e non presumere che ogni data abbia la medesima nomenclatura.
 
+### Nota verificata sui file storici ODYSSEY
+
+Per il 2020 i file non sono duplicati in un prodotto dati e in un prodotto di
+qualità separato. `DBZH_QIND.h5` contiene due dataset ODIM nello stesso file:
+`DBZH` e `QIND`; analogamente gli altri nomi composti includono la quantità
+meteorologica e il relativo quality index. Il file
+`OPERA@20200815T0200@0@DBZH_QIND.h5` è stato aperto e verificato: griglia
+2200×1900 a 2 km, `DBZH` in dBZ e `QIND` normalizzato fra 0 e 1.
+
+La produzione storica ODYSSEY fino al 2024 è a **15 minuti**. La cadenza di 5
+minuti e i nomi semplici `DBZH.h5`, `RATE.h5` e `ACRR.h5` appartengono alla
+produzione corrente CIRRUS/NIMBUS. Di conseguenza, per le date EMMA 2020 usare
+gli slot `00`, `15`, `30`, `45` e cercare i file `*_QIND.h5`; non costruire
+nomi a 5 minuti.
+
 ## Elencare i file di una giornata
 
 Archivio storico:

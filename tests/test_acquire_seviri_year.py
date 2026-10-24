@@ -5,7 +5,12 @@ import json
 import pandas as pd
 import pytest
 
-from scripts.acquire_seviri_year import acquire_day,product_slot
+from scripts.acquire_seviri_year import (
+    acquire_day,
+    exclusive_file_lock,
+    frames_per_second,
+    product_slot,
+)
 
 
 class SatelliteProduct:
@@ -173,6 +178,19 @@ def test_rss_duration_filter_precedes_satellite_priority(seconds,eligible):
 
 def test_product_slot_is_utc_and_on_native_five_minute_grid():
     assert product_slot(SimpleNamespace(sensing_start=datetime(2020,1,1,0,4,30,tzinfo=timezone.utc)))==datetime(2020,1,1)
+
+
+def test_conversion_rate_is_finite_before_monotonic_clock_advances():
+    assert frames_per_second(0,0.0)==0.0
+    assert frames_per_second(4,2.0)==2.0
+
+
+def test_acquisition_lock_rejects_a_second_holder(tmp_path):
+    lock_path=tmp_path/'acquisition.lock'
+    with exclusive_file_lock(lock_path):
+        with pytest.raises(RuntimeError,match='already held'):
+            with exclusive_file_lock(lock_path):
+                pass
 
 
 def test_empty_provider_day_can_resume_without_a_nonexistent_store(tmp_path):

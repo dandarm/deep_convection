@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Repeat the frozen V2 size comparison at encoder90/decoder50, from scratch."""
 import argparse
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,7 @@ import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 sys.path.insert(0,str(ROOT/'src'))
+from emma_gpm.file_lock import exclusive_file_lock
 from run_seviri_v2_experiments import prepare,train
 from run_seviri_masking_experiments import write_json
 
@@ -70,8 +70,7 @@ def main():
     if args.epochs<1:
         parser.error('Positive epoch count required')
     output=args.queue_dir.resolve()
-    with (output/'queue.lock').open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with exclusive_file_lock(output/'queue.lock'):
         plan=dict(epochs=args.epochs,sizes=[4000,8000],encoder_mask=.9,decoder_mask=.5,
                   initialization='scratch',source_queue=str(output),zarr_root=str(args.zarr_root.resolve()))
         path=output/'mask90_scaling_plan.json'

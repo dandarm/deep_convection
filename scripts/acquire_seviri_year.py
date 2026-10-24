@@ -8,7 +8,6 @@ and native files outside this buffer are never removed.
 import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-import fcntl
 import hashlib
 import json
 import re
@@ -26,10 +25,10 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 sys.path.insert(0,str(ROOT/'scripts'))
 from emma_gpm.seviri_conversion import ordered_native_conversions
+from emma_gpm.file_lock import exclusive_file_lock
 from download_msg_seviri import credentials, download_interval, DEFAULT_COLLECTION
 from crop_msg_seviri_native import append_batch, existing_times
 from emma_gpm.seviri import geographic_bbox_to_geos_bounds,load_native_crop,native_slot_start_from_name,THERMAL_CHANNELS
-
 
 def atomic_json(path,value):
     path.parent.mkdir(parents=True,exist_ok=True)
@@ -42,6 +41,11 @@ def update_phase(work,phase,**values):
     state=json.loads(path.read_text()) if path.exists() else {}
     state.update(status='running',phase=phase,updated_unix=time.time(),**values)
     atomic_json(path,state)
+
+
+def frames_per_second(frame_count,elapsed_seconds):
+    """Return a finite startup rate when the platform timer has not advanced."""
+    return frame_count/elapsed_seconds if elapsed_seconds>0 else 0.0
 
 
 def product_slot(product):
@@ -362,7 +366,8 @@ def acquire_day(day,collection,args,work,key,secret):
             converted_frames=len(converted),frames_to_convert=len(missing),
             conversion_workers=conversion_workers,conversion_threads=getattr(args,'conversion_threads',2),
             conversion_prefetch=getattr(args,'conversion_prefetch',2),conversion_batch_size=args.crop_batch_size,
-            conversion_elapsed_seconds=elapsed,conversion_frames_per_second=len(converted)/elapsed)
+            conversion_elapsed_seconds=elapsed,
+            conversion_frames_per_second=frames_per_second(len(converted),elapsed))
     conversion_progress()
     try:
         for native,read_crop in stream:
@@ -421,7 +426,8 @@ def acquire_day(day,collection,args,work,key,secret):
         product_selection_report=str(selection_path),previous_frames=len(before),
         conversion_workers=conversion_workers,conversion_threads=getattr(args,'conversion_threads',2),
         conversion_prefetch=getattr(args,'conversion_prefetch',2),conversion_batch_size=args.crop_batch_size,
-        conversion_seconds=conversion_seconds,conversion_frames_per_second=len(converted)/conversion_seconds,
+        conversion_seconds=conversion_seconds,
+        conversion_frames_per_second=frames_per_second(len(converted),conversion_seconds),
         new_frames=len(converted),stored_frames=len(all_times),stored_times=[t.isoformat() for t in sorted(all_times)],
         missing_nominal_slots=[t.isoformat() for t in sorted(expected_nominal-all_times)],
         rejected_products=rejected,
@@ -472,8 +478,7 @@ def main():
     work.mkdir(parents=True,exist_ok=True)
     from download_msg_seviri import load_dotenv
     load_dotenv(args.env_file)
-    with (work/'acquisition.lock').open('w') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with exclusive_file_lock(work/'acquisition.lock'):
         pin_selection_policy(work,args.preferred_satellite,args.satellite_priority,args.update_selection_policy)
         key,secret=credentials()
         collection=eumdac.DataStore(eumdac.AccessToken((key,secret))).get_collection(DEFAULT_COLLECTION)

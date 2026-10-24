@@ -1,0 +1,38 @@
+{
+  "name": "deepstorm_like_gmi_cloudsat_probe_v1",
+  "start": "2020-05-01T00:00:00Z",
+  "end": "2020-08-19T00:00:00Z",
+  "domain": {
+    "lat_min": 25.0,
+    "lat_max": 55.0,
+    "lon_min": -10.0,
+    "lon_max": 45.0
+  },
+  "source": {
+    "product": "2B-CSATGPM",
+    "version": "V05",
+    "root": "data/raw/deepstorm/2b_csatgpm_v05",
+    "glob": "**/*.nc4",
+    "maximum_coincidence_offset_minutes": 15
+  },
+  "targets": {
+    "deep_convection_code": 8,
+    "iwp_threshold_kg_m2": 0.5,
+    "primary_classification": "target_dc_any",
+    "primary_regression": "target_iwp_max_kg_m2"
+  },
+  "training": {
+    "seed": 20260910,
+    "splits": {
+      "train": 0.6,
+      "validation": 0.2,
+      "test": 0.2
+    },
+    "stratify_on": "target_iwp_gt_0p5"
+  },
+  "outputs": {
+    "interim": "data/interim/deepstorm_probe",
+    "catalog": "data/interim/deepstorm_probe/deepstorm_like_gmi_cloudsat_probe.parquet",
+    "inventory": "data/interim/deepstorm_probe/source_inventory.csv"
+  }
+}

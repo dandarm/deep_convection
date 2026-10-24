@@ -40,13 +40,19 @@ def fetch_emma_year(record_id: int, year: int, raw_dir: str | Path, extract_dir:
         raise RuntimeError(f"Expected one EMMA archive for {year}, found {len(candidates)}")
     item = candidates[0]
     archive = Path(raw_dir) / item["key"]
-    stream_download(item["links"]["self"], archive)
     algorithm, expected = item["checksum"].split(":", 1)
-    if algorithm != "md5" or md5(archive) != expected:
+    if algorithm != "md5":
+        raise RuntimeError(f"Unsupported checksum algorithm for {archive}: {algorithm}")
+    if not archive.exists() or md5(archive) != expected:
+        stream_download(item["links"]["self"], archive)
+    if md5(archive) != expected:
         raise RuntimeError(f"Checksum verification failed for {archive}")
-    Path(extract_dir).mkdir(parents=True, exist_ok=True)
+    extract_root = Path(extract_dir)
+    extract_root.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as handle:
-        handle.extractall(extract_dir, filter="data")
+        expected_members = [member for member in handle.getmembers() if member.isfile()]
+        if not expected_members or not all((extract_root / member.name).is_file() for member in expected_members):
+            handle.extractall(extract_root, filter="data")
     return archive
 
 

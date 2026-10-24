@@ -25,6 +25,13 @@ CLASS_COLORS = {
 }
 
 
+def save_figure_atomic(fig, destination: Path, *, dpi: int) -> None:
+    """Render beside the destination and replace it only after a complete save."""
+    partial = destination.with_name(f"{destination.stem}.part{destination.suffix}")
+    fig.savefig(partial, dpi=dpi)
+    partial.replace(destination)
+
+
 def nearest_grid_index(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
     insertion = np.searchsorted(grid, values)
     right = np.clip(insertion, 0, len(grid) - 1)
@@ -213,6 +220,63 @@ def plot_panel(ax, case, selected, mcs, robust, metrics, grid) -> None:
     ax.grid(alpha=0.18)
 
 
+def plot_overlap_panel(ax, case, mcs, metrics, grid) -> None:
+    """Show only the PF ellipse and EMMA masks used by the matching rule."""
+    extent = [metrics["lon_min"], metrics["lon_max"], metrics["lat_min"], metrics["lat_max"]]
+    is_hit = case.case_kind == "hit"
+    target_id = int(str(case.target_track_uid).split(":")[-1]) if is_hit else 0
+    any_mcs = np.where(mcs > 0, 1.0, np.nan)
+    target = np.where(mcs == target_id, 1.0, np.nan)
+    ax.pcolormesh(
+        grid.pilot_lon,
+        grid.pilot_lat,
+        any_mcs,
+        cmap=ListedColormap(["#ded6eb"]),
+        shading="nearest",
+        alpha=0.75,
+        rasterized=True,
+    )
+    if is_hit:
+        ax.pcolormesh(
+            grid.pilot_lon,
+            grid.pilot_lat,
+            target,
+            cmap=ListedColormap(["#7c4d9e"]),
+            shading="nearest",
+            alpha=0.9,
+            rasterized=True,
+        )
+    lat0, lon0 = float(case.r_lat), float(case.r_lon)
+    width = float(case.r_major) / (111.320 * max(np.cos(np.deg2rad(lat0)), 0.2))
+    height = float(case.r_minor) / 110.574
+    ax.add_patch(
+        Ellipse(
+            (lon0, lat0),
+            width=width,
+            height=height,
+            angle=90.0 - float(case.r_orientation),
+            fill=False,
+            edgecolor="black",
+            linewidth=2.0,
+            linestyle="--",
+            zorder=6,
+        )
+    )
+    ax.plot(lon0, lat0, marker="+", color="black", markersize=7, markeredgewidth=1.5, zorder=7)
+    ax.set_xlim(extent[:2])
+    ax.set_ylim(extent[2:])
+    ax.set_aspect(1 / max(np.cos(np.deg2rad(np.mean(extent[2:]))), 0.3))
+    overlap_count = int(case.n_overlapped_emma_grid_centres)
+    ax.set_title(
+        f"{case.case_id} · PF {case.case_kind.upper()} · {overlap_count} overlapping EMMA centres\n"
+        f"orbit {int(case.orbit)} · EMMA {pd.Timestamp(case.emma_time):%Y-%m-%d %H:%MZ}",
+        fontsize=8.5,
+    )
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.grid(alpha=0.18)
+
+
 def main() -> None:
     config = load_config(ROOT / "config/pilot_2020.json")
     manifest = pd.read_csv(ROOT / "catalogs/visual_case_manifest_2020.csv", parse_dates=["observation_time", "emma_time"])
@@ -234,33 +298,92 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(7, 5.5))
         plot_panel(ax, case, selected, mcs, robust, metrics, grid)
         fig.tight_layout()
-        fig.savefig(output_dir / f"{case.case_id}.png", dpi=190)
+        save_figure_atomic(fig, output_dir / f"{case.case_id}.png", dpi=190)
         plt.close(fig)
 
     case_metrics = pd.DataFrame(metrics_rows)
     case_metrics.to_csv(ROOT / "results/qc_case_metrics.csv", index=False)
-    manifest.merge(case_metrics, on=["case_id", "orbit", "emma_time", "target_track_uid"], how="left").to_csv(
+    join_columns = ["case_id", "orbit", "emma_time", "target_track_uid"]
+    metric_columns = [column for column in case_metrics.columns if column not in join_columns]
+    # Keep repeated plotting idempotent: a previously enriched manifest may
+    # already contain these metrics, including _x/_y columns left by an older
+    # merge. Rebuild that part from the newly computed case metrics.
+    stale_metric_columns = [
+        column
+        for column in manifest.columns
+        if column in metric_columns
+        or any(column == f"{metric}_{suffix}" for metric in metric_columns for suffix in ("x", "y"))
+    ]
+    manifest_base = manifest.drop(columns=stale_metric_columns, errors="ignore")
+    manifest_base.merge(case_metrics, on=join_columns, how="left").to_csv(
         ROOT / "catalogs/visual_case_manifest_2020.csv", index=False
     )
 
-    fig, axes = plt.subplots(2, 5, figsize=(21, 9), constrained_layout=True)
+    fig = plt.figure(figsize=(23, 11.5), constrained_layout=True)
+    grid_spec = fig.add_gridspec(3, 5, height_ratios=[1, 1, 0.30])
+    axes = np.array(
+        [[fig.add_subplot(grid_spec[row, col]) for col in range(5)] for row in range(2)]
+    )
+    legend_ax = fig.add_subplot(grid_spec[2, :])
+    legend_ax.axis("off")
     for ax, prepared_case in zip(axes.flat, prepared):
         plot_panel(ax, *prepared_case, grid)
     handles = [
-        Line2D([0], [0], marker="s", color="none", markerfacecolor="#7c4d9e", markersize=9, label="target EMMA MCS"),
-        Line2D([0], [0], color="#32154f", lw=1.5, label="target robust boundary"),
-        Line2D([0], [0], color="black", lw=1.2, ls="--", label="PF fitted ellipse"),
+        Line2D([0], [0], marker="s", color="none", markerfacecolor="#ded6eb", markersize=10, label="Light lilac area: any EMMA MCS mask"),
+        Line2D([0], [0], marker="s", color="none", markerfacecolor="#7c4d9e", markersize=10, label="Dark purple area: target EMMA MCS (HIT panels)"),
+        Line2D([0], [0], color="#32154f", lw=1.8, label="Dark purple outline: official robust phase"),
+        Line2D([0], [0], color="black", lw=1.4, ls="--", label="Dashed ellipse: fitted DPR precipitation feature (not the full swath)"),
     ] + [
-        Line2D([0], [0], marker="o", color="none", markerfacecolor=color, markersize=6, label=label)
+        Line2D(
+            [0], [0], marker="o", color="none", markerfacecolor=color, markersize=7,
+            label=f"DPR pixel centre: {label.replace('_', ' ')}",
+        )
         for label, color in CLASS_COLORS.items()
     ]
-    fig.legend(handles=handles, loc="outside lower center", ncol=7, frameon=False)
-    fig.suptitle(
-        "EMMA masks and actual DPR pixel centres · centre is the explicit footprint approximation",
-        fontsize=14,
+    legend_ax.legend(
+        handles=handles,
+        loc="upper center",
+        ncol=4,
+        frameon=True,
+        fontsize=9.5,
+        columnspacing=1.6,
+        handlelength=2.7,
     )
-    fig.savefig(ROOT / "figures/qc_cases_overview.png", dpi=180)
+    legend_ax.text(
+        0.5,
+        0.03,
+        "How to read — HIT is validated when at least one DPR pixel centre falls inside the target EMMA mask.  "
+        "MISS is validated when DPR centres inside the local dashed PF ellipse overlap no EMMA MCS.\n"
+        "Only centres within ±30 min of the displayed EMMA hour are shown. Pixel centres approximate footprints; "
+        "the fitted ellipse is a PF summary and does not represent complete DPR swath coverage.",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+    )
+    fig.suptitle(
+        "EMMA masks and actual DPR pixel centres — five validated HIT cases and five validated MISS cases",
+        fontsize=15,
+    )
+    save_figure_atomic(fig, ROOT / "figures/qc_cases_overview.png", dpi=180)
     plt.close(fig)
+
+    simple_fig, simple_axes = plt.subplots(2, 5, figsize=(22, 9.5), constrained_layout=True)
+    for ax, (_, _, mcs, _, metrics) in zip(simple_axes.flat, prepared):
+        case = manifest.loc[manifest.case_id.eq(metrics["case_id"])].iloc[0]
+        plot_overlap_panel(ax, case, mcs, metrics, grid)
+    simple_handles = [
+        Line2D([0], [0], marker="s", color="none", markerfacecolor="#ded6eb", markersize=10, label="Any EMMA MCS at the matched hour"),
+        Line2D([0], [0], marker="s", color="none", markerfacecolor="#7c4d9e", markersize=10, label="Target EMMA MCS selected for a HIT"),
+        Line2D([0], [0], color="black", lw=2.0, ls="--", label="DPR-PF fitted ellipse"),
+        Line2D([0], [0], marker="+", color="black", lw=0, markersize=8, label="DPR-PF centre"),
+    ]
+    simple_fig.legend(handles=simple_handles, loc="outside lower center", ncol=4, frameon=True)
+    simple_fig.suptitle(
+        "Simplified EMMA–DPR overlap: fitted precipitation-feature ellipse versus hourly MCS mask",
+        fontsize=15,
+    )
+    save_figure_atomic(simple_fig, ROOT / "figures/qc_cases_overlap_overview.png", dpi=180)
+    plt.close(simple_fig)
     print(case_metrics.to_string(index=False))
 
 

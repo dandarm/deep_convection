@@ -77,6 +77,18 @@ def thread_datastore(key: str, secret: str) -> eumdac.DataStore:
     return datastore
 
 
+def matches_cadence(sensing_start: datetime, cadence_minutes: int) -> bool:
+    """Match an RSS scan to a cadence using its nominal five-minute slot.
+
+    RSS sensing starts near minutes 04, 09, 14, ...; flooring to the native
+    five-minute grid maps those timestamps to nominal slots 00, 05, 10, ... .
+    """
+    if not cadence_minutes:
+        return True
+    nominal_minutes = sensing_start.hour * 60 + (sensing_start.minute // 5) * 5
+    return nominal_minutes % cadence_minutes == 0
+
+
 def download_interval(
     collection,
     start: datetime,
@@ -90,8 +102,15 @@ def download_interval(
     workers: int,
     retries: int,
     read_timeout: int,
+    cadence_minutes: int = 0,
 ) -> int:
     products = list(collection.search(dtstart=start, dtend=end, set="brief"))
+    if cadence_minutes:
+        products = [
+            product
+            for product in products
+            if matches_cadence(product.sensing_start, cadence_minutes)
+        ]
     print(f"interval={start.isoformat()}Z/{end.isoformat()}Z products={len(products)}")
     for product in products:
         print(f"{product} {product.sensing_start.isoformat()}Z")
@@ -209,9 +228,25 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--read-timeout", type=int, default=180)
+    parser.add_argument(
+        "--cadence-minutes",
+        type=int,
+        default=0,
+        help="Keep only products whose sensing-start minute is a multiple of this value; 0 keeps all products.",
+    )
     args = parser.parse_args()
-    if args.workers < 1 or args.retries < 0 or args.read_timeout < 1:
-        raise SystemExit("Require --workers >= 1, --retries >= 0, --read-timeout >= 1")
+    if (
+        args.workers < 1
+        or args.retries < 0
+        or args.read_timeout < 1
+        or args.cadence_minutes < 0
+        or args.cadence_minutes > 60
+        or args.cadence_minutes % 5 != 0
+    ):
+        raise SystemExit(
+            "Require --workers >= 1, --retries >= 0, --read-timeout >= 1, "
+            "and --cadence-minutes to be 0 or a multiple of 5 up to 60"
+        )
     if args.manifest and (args.start or args.end):
         raise SystemExit("Use --manifest or --start/--end, not both")
     if not args.manifest and (not args.start or not args.end):
@@ -243,6 +278,7 @@ def main() -> int:
             workers=args.workers,
             retries=args.retries,
             read_timeout=args.read_timeout,
+            cadence_minutes=args.cadence_minutes,
         )
     print(f"products_total={total}")
     return 0
