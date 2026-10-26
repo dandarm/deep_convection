@@ -52,7 +52,9 @@ def product_slot(product):
     value=product.sensing_start
     if value.tzinfo is not None:
         value=value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value.replace(minute=(value.minute//5)*5,second=0,microsecond=0)
+    total_sec = value.minute * 60 + value.second + value.microsecond / 1e6
+    rounded_min = int(round(total_sec / 300.0) * 5)
+    return value.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=rounded_min)
 
 
 def product_satellite(product):
