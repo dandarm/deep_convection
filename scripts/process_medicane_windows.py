@@ -167,27 +167,23 @@ def _load_full_domain_geometry(zarr_path: Path) -> dict[str, Any]:
     to_ll = Transformer.from_crs(crs, CRS.from_epsg(4326), always_xy=True)
     lon_deg, lat_deg = to_ll.transform(xx, yy)
 
-    a = 6378137.0
-    b = 6356752.3142
-    e2 = 1.0 - (b * b) / (a * a)
+    lon_deg = np.where(np.isfinite(lon_deg), lon_deg, np.nan)
+    lat_deg = np.where(np.isfinite(lat_deg), lat_deg, np.nan)
+
+    # Vectorized WGS84 ellipsoidal pixel area (km^2) via Jacobian d(lat, lon)/d(row, col)
     lat_rad = np.radians(lat_deg)
+    lon_rad = np.radians(lon_deg)
+    dlat_dr, dlat_dc = np.gradient(lat_rad)
+    dlon_dr, dlon_dc = np.gradient(lon_rad)
+    a_wgs = 6378.137
+    e2_wgs = 0.00669437999014
     sin_lat = np.sin(lat_rad)
-    cos_lat = np.cos(lat_rad)
-    w_e = np.sqrt(1.0 - e2 * sin_lat * sin_lat)
-    m_per_deg_lat = (np.pi * a * (1.0 - e2)) / (180.0 * (w_e**3))
-    m_per_deg_lon = (np.pi * a * cos_lat) / (180.0 * w_e)
-
-    dx_deg = np.zeros_like(lon_deg)
-    dy_deg = np.zeros_like(lat_deg)
-    dx_deg[:, 1:-1] = np.abs(lon_deg[:, 2:] - lon_deg[:, :-2]) / 2.0
-    dx_deg[:, 0] = np.abs(lon_deg[:, 1] - lon_deg[:, 0])
-    dx_deg[:, -1] = np.abs(lon_deg[:, -1] - lon_deg[:, -2])
-    dy_deg[1:-1, :] = np.abs(lat_deg[2:, :] - lat_deg[:-2, :]) / 2.0
-    dy_deg[0, :] = np.abs(lat_deg[1, :] - lat_deg[0, :])
-    dy_deg[-1, :] = np.abs(lat_deg[-1, :] - lat_deg[-2, :])
-
-    area_m2 = (dx_deg * m_per_deg_lon) * (dy_deg * m_per_deg_lat)
-    area_km2 = np.clip(area_m2 / 1e6, 5.0, 100.0).astype(np.float32)
+    denom = np.sqrt(np.maximum(1.0 - e2_wgs * sin_lat * sin_lat, 1e-6))
+    r_merid = a_wgs * (1.0 - e2_wgs) / (denom ** 3)
+    r_prime = a_wgs / denom
+    jac_rad2 = np.abs(dlat_dr * dlon_dc - dlat_dc * dlon_dr)
+    area_km2 = (r_merid * r_prime * np.cos(lat_rad) * jac_rad2).astype(np.float32)
+    area_km2 = np.where(np.isfinite(area_km2) & (area_km2 > 0.0) & (area_km2 < 250.0), area_km2, 12.0).astype(np.float32)
 
     return {
         "x_raw": x_raw,
