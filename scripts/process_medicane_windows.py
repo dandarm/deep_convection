@@ -443,7 +443,8 @@ def process_single_day_pure_rdt(
     out_dir: Path,
     fps: float = 24.0,
     max_frames: int | None = None,
-) -> Path:
+    time_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+) -> Path | None:
     """Compute Pure RDT for one day, write _cache_{day}_pure.npz, and render MP4."""
     day_str = zarr_path.stem
     day_pure_mp4 = out_dir / f"_day_{day_str}_pure.mp4"
@@ -471,16 +472,87 @@ def process_single_day_pure_rdt(
         chronological_indices = np.arange(len(g["seviri"]))
         times_all = pd.date_range(day_str, periods=len(g["seviri"]), freq="5min", tz="UTC")
 
+    orig_day_indices = np.arange(len(chronological_indices))
+    if time_window is not None:
+        st_raw, et_raw = time_window
+        st_win = pd.Timestamp(st_raw).tz_localize("UTC") if pd.Timestamp(st_raw).tzinfo is None else pd.Timestamp(st_raw).tz_convert("UTC")
+        et_win = pd.Timestamp(et_raw).tz_localize("UTC") if pd.Timestamp(et_raw).tzinfo is None else pd.Timestamp(et_raw).tz_convert("UTC")
+        in_win = (times_all >= st_win) & (times_all <= et_win)
+        if not np.any(in_win):
+            print(f"[Pure RDT] Day {day_str} completely outside window ({st_win} to {et_win}), skipping.", flush=True)
+            return None
+        orig_day_indices = orig_day_indices[in_win]
+        chronological_indices = chronological_indices[in_win]
+        times_all = times_all[in_win]
+
     num_frames = len(chronological_indices)
     if max_frames is not None:
         num_frames = min(num_frames, max_frames)
+        orig_day_indices = orig_day_indices[:num_frames]
+        chronological_indices = chronological_indices[:num_frames]
+        times_all = times_all[:num_frames]
 
-    # Resume from cache if already complete
-    if cache_file.exists() and day_pure_mp4.exists():
-        with np.load(cache_file) as c:
-            if "semantic_pure" in c and len(c["semantic_pure"]) >= num_frames:
-                print(f"[Pure RDT] Day {day_str} already complete ({num_frames} frames). Resuming!", flush=True)
-                return day_pure_mp4
+    # Check for existing pre-computed cache (in ev_dir or historical comparison dir)
+    cached_sem = None
+    alt_cache = RDT_ORIG_ROOT / "results" / "comparison_seviri_2020" / f"_cache_{day_str}.npz"
+    source_cache = cache_file if cache_file.exists() else (alt_cache if alt_cache.exists() else None)
+    if source_cache is not None:
+        try:
+            with np.load(source_cache) as c:
+                key = "semantic_pure" if "semantic_pure" in c else ("sem_pure" if "sem_pure" in c else None)
+                if key is not None:
+                    cached_sem = np.asarray(c[key], dtype=np.uint8)
+        except Exception:
+            cached_sem = None
+
+    # Resume from cache if video already rendered
+    if cached_sem is not None and day_pure_mp4.exists():
+        print(f"[Pure RDT] Day {day_str} already complete ({num_frames} frames). Resuming!", flush=True)
+        return day_pure_mp4
+
+    # Fast rendering directly from pre-computed semantic cache if available
+    if cached_sem is not None:
+        print(f"[Pure RDT] Fast-rendering day {day_str} from cached masks ({num_frames} frames)...", flush=True)
+        writer = FfmpegStreamWriter(day_pure_mp4, total_w, total_h, fps=fps)
+        renderer_pure = SmoothSemanticRenderer((h, w), gamma=0.38)
+        t_start = time.time()
+        for step_idx in range(num_frames):
+            raw_idx = int(chronological_indices[step_idx])
+            ts_curr = times_all[step_idx]
+            orig_idx = int(orig_day_indices[step_idx])
+            sem_pure = cached_sem[orig_idx]
+
+            raw_curr = np.asarray(g["seviri"][raw_idx], dtype=np.float32)
+            f_curr, _, _ = _orient_north_up_west_left(raw_curr, geom["y_raw"], geom["x_raw"])
+
+            cold_c = np.isfinite(f_curr[4]) & (f_curr[4] < 235.0)
+            t_tr_c = (
+                float(0.6 * np.nanpercentile(f_curr[0][cold_c], 10) + 0.4 * np.nanpercentile(f_curr[4][cold_c], 5))
+                if int(np.count_nonzero(cold_c)) >= 50
+                else 215.0
+            )
+            pure_tropo_c = np.full(f_curr[4].shape, float(np.clip(t_tr_c, 205.0, 226.0)), dtype=np.float32)
+
+            ir_pure_ground = apply_parallax_correction_2d(
+                f_curr[4], f_curr[4], lat_deg, lon_deg, t_surf_k=292.0, t_tropo_k=pure_tropo_c, fill_value=290.0
+            )
+            base_rgb_pure = _ir108_to_rgb_base(ir_pure_ground)
+            rgb_pure = renderer_pure.render(base_rgb_pure, sem_pure)
+            ts_str = ts_curr.strftime("%Y-%m-%d %H:%M")
+            composed = _compose_single_full_domain_frame(
+                rgb_pure, f"RDT puro (NWC SAF GEN, IR ancillary, parallasse), {ts_str} UTC"
+            )
+            writer.write_frame(composed)
+
+            if (step_idx + 1) % 50 == 0 or (step_idx + 1) == num_frames:
+                rate = (step_idx + 1) / (time.time() - t_start)
+                print(f"   [{day_str}] frame {step_idx + 1}/{num_frames} ({rate:.2f} fps)", flush=True)
+
+        writer.close()
+        if not cache_file.exists():
+            np.savez_compressed(cache_file, semantic_pure=cached_sem)
+        print(f"[Pure RDT] Rendered {day_pure_mp4.name}", flush=True)
+        return day_pure_mp4
 
     print(f"[Pure RDT] Computing day {day_str} ({num_frames} frames)...", flush=True)
     writer = FfmpegStreamWriter(day_pure_mp4, total_w, total_h, fps=fps)
@@ -675,6 +747,7 @@ def process_event(
     download_only: bool = False,
     render_only: bool = False,
     max_frames: int | None = None,
+    tight_window: bool = False,
 ) -> Path | None:
     event_slug = f"{event.name}_{event.id_final}_{event.start_time:%Y%m%d}_{event.end_time:%Y%m%d}"
     ev_dir = out_dir / event_slug
@@ -682,7 +755,7 @@ def process_event(
 
     print("\n" + "=" * 80)
     print(f"PROCESSING MEDICANE EVENT: {event.name} (ID: {event.id_final})")
-    print(f"Window: {event.start_time} UTC to {event.end_time} UTC")
+    print(f"Window: {event.start_time} UTC to {event.end_time} UTC (tight={tight_window})")
     print(f"Days: {event.days}")
     print(f"Target dir: {ev_dir}")
     print("=" * 80, flush=True)
@@ -708,8 +781,16 @@ def process_event(
     # 3. Process each day with Pure RDT
     day_mp4s: list[Path] = []
     for zp in day_zarrs:
-        d_mp4 = process_single_day_pure_rdt(zp, geom, ev_dir, fps=fps, max_frames=max_frames)
-        day_mp4s.append(d_mp4)
+        d_mp4 = process_single_day_pure_rdt(
+            zp,
+            geom,
+            ev_dir,
+            fps=fps,
+            max_frames=max_frames,
+            time_window=(event.start_time, event.end_time) if tight_window else None,
+        )
+        if d_mp4 is not None:
+            day_mp4s.append(d_mp4)
 
     # 4. Concatenate if multi-day
     final_mp4 = ev_dir / f"medicane_{event_slug}_pure_rdt.mp4"
@@ -753,6 +834,7 @@ def main() -> None:
     parser.add_argument("--download-only", action="store_true", help="Only download/convert data without rendering")
     parser.add_argument("--render-only", action="store_true", help="Only render without downloading")
     parser.add_argument("--max-frames", type=int, default=None, help="Max frames per day for testing")
+    parser.add_argument("--tight-window", action="store_true", default=False, help="Crop strictly between CSV start_time and end_time")
     args = parser.parse_args()
 
     events = load_medicane_events(args.csv)
@@ -803,6 +885,7 @@ def main() -> None:
             download_only=args.download_only,
             render_only=args.render_only,
             max_frames=args.max_frames,
+            tight_window=args.tight_window,
         )
 
 
