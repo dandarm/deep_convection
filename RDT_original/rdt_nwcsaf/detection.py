@@ -334,46 +334,49 @@ def detect_rdt_cells(
         comp_id: int,
         minimum_k: float,
         is_isolated_single_tower: bool,
+        depth: int = 0,
     ) -> None:
-        bt_floor_k = _local_bt_floor(bbox, loc_mask, minimum_k)
-        lower_levels = np.arange(
-            threshold_k - cfg.deltat_k, bt_floor_k - 1e-6, -cfg.deltat_k
-        )
-        parent_labels_flat = hierarchy.slice_at(threshold_k)[0].ravel()
         cur_area = float(area[bbox][loc_mask].sum())
-        for lower_k in lower_levels:
-            qual_cids, qual_seeds, _, child_areas, child_minima = hierarchy.qualifying_towers_at(float(lower_k))
-            if len(qual_cids) == 0:
-                break
-            valid_children = qual_cids[parent_labels_flat[qual_seeds] == comp_id]
-            if len(valid_children) >= 2:
-                child_labels, _, _, child_bboxes = hierarchy.slice_at_with_bboxes(float(lower_k))
-                for cid_val in valid_children:
-                    cid = int(cid_val)
-                    c_bbox = child_bboxes[cid]
+        bt_floor_k = _local_bt_floor(bbox, loc_mask, minimum_k)
+        if depth <= 12:
+            lower_levels = np.arange(
+                threshold_k - cfg.deltat_k, bt_floor_k - 1e-6, -cfg.deltat_k
+            )
+            parent_labels_flat = hierarchy.slice_at(threshold_k)[0].ravel()
+            for lower_k in lower_levels:
+                qual_cids, qual_seeds, _, child_areas, child_minima = hierarchy.qualifying_towers_at(float(lower_k))
+                if len(qual_cids) == 0:
+                    break
+                valid_children = qual_cids[parent_labels_flat[qual_seeds] == comp_id]
+                if len(valid_children) >= 2:
+                    child_labels, _, _, child_bboxes = hierarchy.slice_at_with_bboxes(float(lower_k))
+                    for cid_val in valid_children:
+                        cid = int(cid_val)
+                        c_bbox = child_bboxes[cid]
+                        assert c_bbox is not None
+                        c_loc_mask = child_labels[c_bbox] == cid
+                        _descend(
+                            c_bbox,
+                            c_loc_mask,
+                            float(lower_k),
+                            cid,
+                            float(child_minima[cid]),
+                            is_isolated_single_tower=False,
+                            depth=depth + 1,
+                        )
+                    return
+                if len(valid_children) == 1 and cur_area > cfg.smax_km2:
+                    only_cid = int(valid_children[0])
+                    child_labels, _, _, child_bboxes = hierarchy.slice_at_with_bboxes(float(lower_k))
+                    c_bbox = child_bboxes[only_cid]
                     assert c_bbox is not None
-                    c_loc_mask = child_labels[c_bbox] == cid
-                    _descend(
-                        c_bbox,
-                        c_loc_mask,
-                        float(lower_k),
-                        cid,
-                        float(child_minima[cid]),
-                        is_isolated_single_tower=False,
-                    )
-                return
-            if len(valid_children) == 1 and cur_area > cfg.smax_km2:
-                only_cid = int(valid_children[0])
-                child_labels, _, _, child_bboxes = hierarchy.slice_at_with_bboxes(float(lower_k))
-                c_bbox = child_bboxes[only_cid]
-                assert c_bbox is not None
-                bbox = c_bbox
-                loc_mask = child_labels[c_bbox] == only_cid
-                threshold_k = float(lower_k)
-                comp_id = only_cid
-                parent_labels_flat = child_labels.ravel()
-                minimum_k = float(child_minima[only_cid])
-                cur_area = float(child_areas[only_cid])
+                    bbox = c_bbox
+                    loc_mask = child_labels[c_bbox] == only_cid
+                    threshold_k = float(lower_k)
+                    comp_id = only_cid
+                    parent_labels_flat = child_labels.ravel()
+                    minimum_k = float(child_minima[only_cid])
+                    cur_area = float(child_areas[only_cid])
 
         # Single tower (or mature cell reaching BT floor without further valid split)
         loc_ir_arr = ir108[bbox]

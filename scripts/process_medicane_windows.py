@@ -400,6 +400,43 @@ def ensure_day_zarr(
     return store
 
 
+def _make_snapshot(cell: dict[str, Any], cid: int, event: str, frame_idx: int) -> dict[str, Any]:
+    """Extract only lightweight scalar attributes to avoid keeping full masks and hierarchy in memory."""
+    t_bt = cell.get("t_bt_k", 240.0)
+    vp: dict[int, float] = {}
+    raw_vp = cell.get("vertical_profile")
+    if raw_vp is not None:
+        try:
+            k = int(round((t_bt - 198.15) / 1.0))
+            if k in raw_vp:
+                vp[k] = float(raw_vp[k])
+        except Exception:
+            pass
+    return {
+        "frame_index": frame_idx,
+        "timestamp": None,
+        "cell_id": cid,
+        "track_id": cid,
+        "event": event,
+        "border": cell["border"],
+        "seed_yx": cell["seed_yx"],
+        "t_bt_k": cell["t_bt_k"],
+        "t_st_k": cell["t_st_k"],
+        "t_min_k": cell["t_min_k"],
+        "t_mean_k": cell["t_mean_k"],
+        "contrast_k": cell["contrast_k"],
+        "area_km2": cell["area_km2"],
+        "vertical_profile": vp,
+        "btd_wv62_ir108_max_k": cell["btd_wv62_ir108_max_k"],
+        "btd_wv62_ir108_p90_k": cell["btd_wv62_ir108_p90_k"],
+        "cooling_rate_k_per_h": cell["cooling_rate_k_per_h"],
+        "is_convective": cell["is_convective"],
+        "vertical_cat": cell["vertical_cat"],
+        "phase_code": cell["phase_code"],
+        "severity": cell["severity"],
+    }
+
+
 def process_single_day_pure_rdt(
     zarr_path: Path,
     geom: dict[str, Any],
@@ -574,7 +611,7 @@ def process_single_day_pure_rdt(
             )
             cp.update(dp)
             curr_cells_pure[cid] = cp
-            new_hist_pure[cid] = (hp + [cp])[-12:]
+            new_hist_pure[cid] = (hp + [_make_snapshot(cp, cid, ev, step_idx)])[-12:]
             sem_pure[bbox][mask] = int(dp["class_id"])
             if dp["is_convective"]:
                 if np.any(ot_conf_loc):
