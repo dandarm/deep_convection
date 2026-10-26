@@ -39,6 +39,7 @@ class ThresholdSliceHierarchy:
         self.area = area_km2
         self.valid = valid_mask
         self.cfg = cfg
+        self.area_flat = np.asarray(area_km2, dtype=np.float64).ravel()
         self._cache: dict[
             int,
             tuple[np.ndarray, np.ndarray, np.ndarray, list[tuple[slice, slice] | None] | None],
@@ -93,10 +94,9 @@ class ThresholdSliceHierarchy:
                     np.array([np.inf], dtype=float),
                 )
             else:
-                idx_bin = np.flatnonzero(binary)
                 areas = np.bincount(
-                    labels.ravel()[idx_bin], weights=self.area.ravel()[idx_bin], minlength=num + 1
-                ).astype(float)
+                    labels.ravel(), weights=self.area_flat, minlength=num + 1
+                )
                 areas[0] = 0.0
                 minima = np.full(num + 1, np.inf, dtype=float)
                 seeds = np.zeros(num + 1, dtype=np.int64)

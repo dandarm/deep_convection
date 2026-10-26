@@ -642,7 +642,7 @@ def process_single_day_pure_rdt(
         )
         writer.write_frame(composed)
 
-        if (step_idx + 1) % 40 == 0:
+        if (step_idx + 1) % 20 == 0:
             gc.collect()
 
         if (step_idx + 1) % 50 == 0 or (step_idx + 1) == num_frames:
