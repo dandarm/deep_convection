@@ -377,10 +377,10 @@ def ensure_day_zarr(
         zarr_root_path = zarr_root
         year = day_dt.year
         workers = 4
-        conversion_workers = 2
-        conversion_threads = 2
-        conversion_prefetch = 2
-        crop_batch_size = 4
+        conversion_workers = 1
+        conversion_threads = 1
+        conversion_prefetch = 1
+        crop_batch_size = 2
         preferred_satellite = None
         satellite_priority = ["MSG4", "MSG3", "MSG2", "MSG1"]
         update_selection_policy = True

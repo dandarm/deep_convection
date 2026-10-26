@@ -94,8 +94,9 @@ class ThresholdSliceHierarchy:
                     np.array([np.inf], dtype=float),
                 )
             else:
+                idx_bin = np.flatnonzero(binary)
                 areas = np.bincount(
-                    labels.ravel(), weights=self.area_flat, minlength=num + 1
+                    labels.ravel()[idx_bin], weights=self.area_flat[idx_bin], minlength=num + 1
                 )
                 areas[0] = 0.0
                 minima = np.full(num + 1, np.inf, dtype=float)
