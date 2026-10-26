@@ -239,7 +239,7 @@ def verify_store(store,expected_times):
             raise ValueError('Unexpected channel order')
         if ds.attrs.get('calibration') != 'brightness_temperature' or ds.attrs.get('units') != 'K':
             raise ValueError('Unexpected radiometry')
-        if ds.seviri.dtype != np.float16 or (ds.sizes['y'],ds.sizes['x']) != (763,1762):
+        if ds.seviri.dtype != np.float16 or (ds.sizes['y'], ds.sizes['x']) not in {(763, 1762), (764, 1762)}:
             raise ValueError('Unexpected domain or dtype')
         if not (np.all(np.diff(ds.x.values)>0) or np.all(np.diff(ds.x.values)<0)) or not (np.all(np.diff(ds.y.values)>0) or np.all(np.diff(ds.y.values)<0)):
             raise ValueError('Non-monotonic coordinates')
@@ -394,7 +394,7 @@ def acquire_day(day,collection,args,work,key,secret):
                 atomic_json(work/'rejected_products'/f'{day:%Y%m%d}.json',rejected)
                 print(f'rejected native={native.name} filename_slot={slot} metadata_start={crop.start_time}',flush=True)
                 continue
-            if crop.data.shape!=(7,763,1762):
+            if crop.data.shape not in {(7, 763, 1762), (7, 764, 1762)}:
                 raise ValueError('Native crop shape mismatch')
             pending.append(crop);converted.add(pd.Timestamp(slot))
             if len(pending)>=args.crop_batch_size:
