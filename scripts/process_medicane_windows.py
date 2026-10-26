@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import gc
 import json
 import os
 from pathlib import Path
@@ -608,11 +609,15 @@ def process_single_day_pure_rdt(
         )
         writer.write_frame(composed)
 
+        if (step_idx + 1) % 40 == 0:
+            gc.collect()
+
         if (step_idx + 1) % 50 == 0 or (step_idx + 1) == num_frames:
             rate = (step_idx + 1) / (time.time() - t_start)
             print(f"   [{day_str}] frame {step_idx + 1}/{num_frames} ({rate:.2f} fps)", flush=True)
 
     writer.close()
+    gc.collect()
 
     # Save cache atomically
     tmp_cache = cache_file.with_name(f"{cache_file.stem}_part.npz")
