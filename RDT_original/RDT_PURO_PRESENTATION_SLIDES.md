@@ -117,28 +117,36 @@
 - **Approccio Topografico Inverso:**
   - La temperatura di brillanza $\text{IR}_{10.8}$ viene considerata come una quota (più freddo = più alto).
   - Vengono eseguite sezioni orizzontali a passi di **$1\text{ K}$**, partendo dal livello caldo $T_{\text{warm}} = 278.15\text{ K}$ ($+5^\circ\text{C}$) fino al livello freddo $T_{\text{cold}} = 198.15\text{ K}$ ($-75^\circ\text{C}$).
-- **Uso di `ct_cloudy_mask` e $T_{\text{tropo}}$:**
-  - L'affettamento opera esclusivamente sui pixel validati dalla maschera nubi `ct_cloudy_mask` (da **Fase 1**).
-  - La discesa si arresta al limite $LimitTropo$ derivato da $T_{\text{tropo}}$ (da **Fase 0**).
+- **Uso di `ct_cloudy_mask` (da Fase 1):**
+  - L'affettamento opera esclusivamente sui pixel validati dalla maschera nubi opache.
+- **Arresto della Discesa (`LimitTropo`):**
+  - Impedisce di scendere nelle quote fredde stratiformi dell'incudine (*anvil*).
+  - Definisce il pavimento termico minimo di arresto della torre:
+    $$T_{\text{limit}} = \max\left(T_{\text{BTLIMIT}},\, T_{\text{tropo}}\right)$$
+    con soglia climatica fissa $T_{\text{BTLIMIT}} = 213.15\text{ K}$ ($-60^\circ\text{C}$) e tropopausa locale $T_{\text{tropo}}$ (da **Fase 0**).
 - **Struttura Dati ad Albero (`ThresholdSliceHierarchy`):**
-  - Per ciascun livello termico $k$, si estraggono le componenti connesse spaziali.
-  - Le componenti a livelli successivi vengono collegate ai nodi genitori al livello precedente.
+  - Per ciascun livello termico $k$, si estraggono le componenti connesse spaziali e si collegano ai nodi genitori.
   - Filtro dimensionale: superficie minima $S \ge 60\text{ km}^2$ (4–5 pixel SEVIRI), massima $S_{\max} = 400.000\text{ km}^2$.
 
 ---
 
-## Slide 8: Fase 2B — Isolamento delle Torri e Taglio dell'Incudine
-### Separazione della vera attività convettiva dai cirri stratiformi
+## Slide 8: Fase 2B — Isolamento delle Torri e Definizione di $T_{\text{base}}$
+### Separazione della convezione attiva dai cirri stratiformi circostanti
 
-- **Criterio di Torre Convettiva (Prominenza Termica):**
-  - Una torre è valida se il suo nucleo freddo $T_{\min}$ è più freddo della base di almeno **$6\text{ K}$**:
-    $$\Delta T_{\text{tower}} = T_{\text{base}} - T_{\min} \ge 6\text{ K}$$
-- **Separazione dei Massimi Multipli (Biforcazione):**
-  - Due torri termiche adiacenti vengono separate alla soglia $T_{\text{merge}} - 1\text{ K}$ in cui i rispettivi rami dell'albero si fondono.
+- **Definizione della Base della Torre ($T_{\text{base}}$ o $T_{\text{BT}}$):**
+  - È la temperatura $\text{IR}_{10.8}$ dell'isoterma che racchiude il contorno geometrico 2D inferiore della torre convettiva.
+- **Criterio di Prominenza Termica ($\Delta T_{\text{tower}}$):**
+  - Una torre esiste solo se il nucleo sommitale freddo $T_{\min}$ sporge dalla base di almeno **$6\text{ K}$**:
+    $$\Delta T_{\text{tower}} = T_{\text{base}} - T_{\min} \ge 6.0\text{ K}$$
+- **Separazione di Torri Coalescenti alla Soglia di Fusione ($T_{\text{merge}}$):**
+  - Se due torri distinte si uniscono su un tronco comune all'isoterma $T_{\text{merge}}$, ciascuna torre viene separata e la sua base fissata a:
+    $$T_{\text{base}} = T_{\text{merge}} - 1.0\text{ K}$$
 - **Raffinamento Morfologico della Base (Anti-Anvil):**
-  - *Caso A (Torre isolata con base sproporzionata):* Se l'area della base supera 4 volte l'area a $T_{\min} + 6\text{ K}$, la base viene riscalata verso l'alto per escludere l'incudine sottile.
-  - *Caso B (Torri nidificate su base comune):* Si applica una ripartizione guidata dalla quota dei rispettivi minimi.
-- **Variabili estratte per cella:** Minimo $T_{\min}$, base $T_{\text{base}}$, area $S$, centroide e contorno 2D.
+  - *Caso A (Strozzatura verticale):* taglio se il rapporto di allargamento tra livelli adiacenti supera la strozzatura ripida ($S_{n+1}/S_n \le 0.70$).
+  - *Caso B (Taglio piramidale):* l'area di base $S(T_{\text{base}})$ non può superare 4 volte l'area sommitale $S_{\text{ST}}$ (misurata a $T_{\min} + 6\text{ K}$):
+    $$S(T_{\text{base}}) \le 4 \cdot S_{\text{ST}}$$
+    Se eccede, $T_{\text{base}}$ viene alzata (forzata a un'isoterma più fredda) per eliminare l'incudine piatta circostante.
+- **Variabili Estratte per Cella:** Minimo $T_{\min}$, base $T_{\text{base}}$, area $S$, centroide e contorno 2D.
 
 ---
 
@@ -167,7 +175,9 @@
   - *Split (1-a-Molti):* Una cella madre si suddivide in due o più frammenti figli.
   - *Merge (Molti-a-1):* Più celle distinte convergono in un unico sistema.
 - **Risoluzione sulla Soglia Termica Comune ($T_{\text{comm}}$):**
-  - In caso di split o merge, il "ramo principale" (*primary parent*) è assegnato al frammento che massimizza la somiglianza superficiale alla **soglia di temperatura condivisa** tra i nodi dell'albero.
+  - In caso di split o merge, il "ramo principale" (*primary parent*) è assegnato al frammento che massimizza la somiglianza superficiale alla **temperatura comune condivisa**:
+    $$T_{\text{comm}} = \min\left(T_{\text{base}}(t),\, T_{\text{base}}(t - \Delta t)\right)$$
+  - Garantisce che i tassi di espansione $\Delta S/\Delta t$ confrontino la medesima isoterma fisica nel tempo.
 - **Smussamento Esponenziale della Velocità (EMA):**
   - La velocità di spostamento viene filtrata causalmente per evitare strappi:
     $$\vec{v}_t = (1 - \alpha) \cdot \vec{v}_{t-1} + \alpha \cdot \vec{v}_{\text{inst}}, \quad \text{con } \alpha = 0.5$$
@@ -196,8 +206,9 @@
 ### Separazione fisica tra nubi stratiformi e convezione attiva
 
 - **Formulazione dell'Indice di Profondità Relativa $D$:**
-  - Misura la frazione di colonna troposferica occupata dalla torre rispetto all'altezza massima disponibile tra la base e la tropopausa $T_{\text{tropo}}$ (introdotta in **Fase 0**):
+  - Misura la frazione di colonna troposferica occupata dalla torre rispetto all'altezza massima teorica disponibile:
     $$D = \frac{T_{\text{base}} - T_{\min}}{T_{\text{base}} - T_{\text{tropo}}}$$
+    con $T_{\text{base}}$ e $T_{\min}$ definiti in **Fase 2B**, e $T_{\text{tropo}}$ calcolata in **Fase 0**.
 - **Significato Fisico e Regimi Operativi di $D$:**
   - $D < 0.25$: Torre debole o embrionale (convezione superficiale / cumulo modesto).
   - $0.25 \le D < 0.50$: Convezione moderata a medio sviluppo.
