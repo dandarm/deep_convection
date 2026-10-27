@@ -56,6 +56,7 @@ class ThresholdSliceHierarchy:
         cloudy_mask = valid_mask & (ir108 <= cfg.twarm_k)
         self._cloudy_idx = np.flatnonzero(cloudy_mask)
         self._cloudy_area = area_km2.ravel()[self._cloudy_idx].astype(float)
+        self._temp_binary = np.zeros(ir108.shape, dtype=bool)
         lmin_mask = (
             cloudy_mask
             & (ir_v == ndimage.minimum_filter(ir_v, size=3, mode="constant", cval=np.inf))
@@ -77,29 +78,32 @@ class ThresholdSliceHierarchy:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[tuple[slice, slice] | None] | None]:
         if key not in self._cache:
             thresh = self.threshold_from_key(key)
-            binary = self.valid & (self.ir <= thresh)
-            labels, num = ndimage.label(binary, structure=CONNECTIVITY_8)
+            np.less_equal(self.ir, thresh, out=self._temp_binary)
+            np.logical_and(self.valid, self._temp_binary, out=self._temp_binary)
+            labels, num = ndimage.label(self._temp_binary, structure=CONNECTIVITY_8)
+            if num <= 32767:
+                labels = labels.astype(np.int16, copy=False)
             if num == 0:
                 self._cache[key] = (
                     labels,
-                    np.zeros(1, dtype=float),
-                    np.array([np.inf], dtype=float),
+                    np.zeros(1, dtype=np.float32),
+                    np.array([np.inf], dtype=np.float32),
                     [None],
                 )
                 self._qual_cache[key] = (
                     np.empty(0, dtype=np.int32),
                     np.empty(0, dtype=np.int64),
                     labels,
-                    np.zeros(1, dtype=float),
-                    np.array([np.inf], dtype=float),
+                    np.zeros(1, dtype=np.float32),
+                    np.array([np.inf], dtype=np.float32),
                 )
             else:
-                idx_bin = np.flatnonzero(binary)
+                idx_bin = np.flatnonzero(self._temp_binary)
                 areas = np.bincount(
                     labels.ravel()[idx_bin], weights=self.area_flat[idx_bin], minlength=num + 1
-                )
+                ).astype(np.float32)
                 areas[0] = 0.0
-                minima = np.full(num + 1, np.inf, dtype=float)
+                minima = np.full(num + 1, np.inf, dtype=np.float32)
                 seeds = np.zeros(num + 1, dtype=np.int64)
 
                 mask_sub = self._lmin_vals_desc <= thresh
