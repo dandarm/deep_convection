@@ -408,6 +408,7 @@ def acquire_day(day,collection,args,work,key,secret):
                 append_batch(staging,pending,'float16');pending=[]
                 conversion_progress()
                 print(f'converted day={day:%Y-%m-%d} frames={len(converted)}/{len(missing)}',flush=True)
+                gc.collect()
     finally:
         stream.close()
     if pending:
