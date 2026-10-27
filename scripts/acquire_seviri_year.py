@@ -8,6 +8,7 @@ and native files outside this buffer are never removed.
 import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+import gc
 import hashlib
 import json
 import re
