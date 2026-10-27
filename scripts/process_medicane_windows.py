@@ -721,6 +721,9 @@ def process_single_day_pure_rdt(
             rate = (step_idx + 1) / (time.time() - t_start)
             print(f"   [{day_str}] frame {step_idx + 1}/{num_frames} ({rate:.2f} fps)", flush=True)
 
+        if step_idx % 25 == 0:
+            gc.collect()
+
     writer.close()
     gc.collect()
 
@@ -779,6 +782,7 @@ def process_event(
     geom = _load_full_domain_geometry(day_zarrs[0])
 
     # 3. Process each day with Pure RDT
+    gc.collect()
     day_mp4s: list[Path] = []
     for zp in day_zarrs:
         d_mp4 = process_single_day_pure_rdt(

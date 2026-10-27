@@ -254,17 +254,17 @@ def compute_hrw_amv_guess_field(
 
     zoom_y = H / float(nr)
     zoom_x = W / float(nc)
-    amv_dy_full = zoom(amv_dy_coarse, (zoom_y, zoom_x), order=1)[:H, :W]
-    amv_dx_full = zoom(amv_dx_coarse, (zoom_y, zoom_x), order=1)[:H, :W]
-    w_full = np.clip(zoom(w_coarse, (zoom_y, zoom_x), order=1)[:H, :W], 0.0, 0.85)
+    amv_dy_full = zoom(amv_dy_coarse, (zoom_y, zoom_x), order=1)[:H, :W].astype(np.float32)
+    amv_dx_full = zoom(amv_dx_coarse, (zoom_y, zoom_x), order=1)[:H, :W].astype(np.float32)
+    w_full = np.clip(zoom(w_coarse, (zoom_y, zoom_x), order=1)[:H, :W], 0.0, 0.85).astype(np.float32)
 
     # Warm clouds (> 253 K) rely more on 700 hPa NWP steering flow; cold clouds (< 235 K)
     # rely predominantly on upper-tropospheric HRW AMVs.
-    cold_factor = np.clip((258.15 - np.nan_to_num(curr_ir108, nan=290.0)) / 25.0, 0.0, 1.0)
-    alpha = w_full * (0.4 + 0.6 * cold_factor)
+    cold_factor = np.clip((np.float32(258.15) - np.nan_to_num(curr_ir108, nan=290.0).astype(np.float32)) / np.float32(25.0), np.float32(0.0), np.float32(1.0))
+    alpha = (w_full * (np.float32(0.4) + np.float32(0.6) * cold_factor)).astype(np.float32)
 
-    guess_dy_px = alpha * amv_dy_full + (1.0 - alpha) * nwp_dy_px
-    guess_dx_px = alpha * amv_dx_full + (1.0 - alpha) * nwp_dx_px
+    guess_dy_px = alpha * amv_dy_full + (np.float32(1.0) - alpha) * nwp_dy_px.astype(np.float32)
+    guess_dx_px = alpha * amv_dx_full + (np.float32(1.0) - alpha) * nwp_dx_px.astype(np.float32)
 
     return guess_dy_px.astype(np.float32), guess_dx_px.astype(np.float32)
 
