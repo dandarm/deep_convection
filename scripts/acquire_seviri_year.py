@@ -52,9 +52,9 @@ def product_slot(product):
     value=product.sensing_start
     if value.tzinfo is not None:
         value=value.astimezone(timezone.utc).replace(tzinfo=None)
-    total_sec = value.minute * 60 + value.second + value.microsecond / 1e6
-    rounded_min = int(round(total_sec / 300.0) * 5)
-    return value.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=rounded_min)
+    if value.minute % 5 == 4 and value.second >= 45:
+        value = value + timedelta(seconds=15)
+    return value.replace(minute=value.minute // 5 * 5, second=0, microsecond=0)
 
 
 def product_satellite(product):
@@ -139,6 +139,11 @@ def rss_eligible_products(products):
                 sensing_start=product.sensing_start.isoformat(),sensing_end=end.isoformat(),
                 sensing_duration_seconds=seconds,
                 reason='scan exceeds five-minute RSS interval; excluded before satellite priority'))
+        elif seconds<180:
+            excluded.append(dict(id=str(product),slot=product_slot(product).isoformat(),
+                sensing_start=product.sensing_start.isoformat(),sensing_end=end.isoformat(),
+                sensing_duration_seconds=seconds,
+                reason='scan duration is too short for complete RSS repeat cycle; excluded before satellite priority'))
         else:
             eligible.append(product)
     return eligible,excluded
