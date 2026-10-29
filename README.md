@@ -276,6 +276,16 @@ memoria GPU e attività CUDA usando misure isolate e verifiche su epoche complet
 Le configurazioni e i risultati sono in
 `results/ssl_scaling_20261025/performance_review/`; lo script riproducibile è
 `scripts/profile_seviri_ssl.py`.
+
+L'audit delle ottimizzazioni PyTorch riutilizzate da Demetra, i riferimenti al
+codice HPC e il protocollo dei benchmark sono descritti in
+[`docs/SEVIRI_GPU_RUNTIME.md`](docs/SEVIRI_GPU_RUNTIME.md). Il trainer accetta
+`--cuda-runtime CONFIG.json` per selezionare compilazione Inductor, AdamW fused,
+autotuning cuDNN e buffer delle posizioni fisse. La continuazione di una matrice
+esistente usa `scripts/run_seviri_ssl_runtime_revision.py`, che archivia il
+checkpoint di partenza e registra le impostazioni di esecuzione mantenendo i
+piani scientifici originali.
+
 Il confronto include una cache lossless di frame nativi in Kelvin,
 costruita da `scripts/build_seviri_frame_cache.py`, e un percorso sperimentale
 con batch float16, normalizzazione e verifica dei valori finiti sulla GPU.
