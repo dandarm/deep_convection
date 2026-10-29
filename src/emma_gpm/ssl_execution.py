@@ -6,7 +6,7 @@ from pathlib import Path
 from .training_checkpoint import restore_checkpoint
 
 RUNTIME_KEYS = frozenset({'batch_size', 'loader_batch_size', 'gradient_accumulation',
-                          'num_workers', 'sources', 'input_pipeline'})
+                          'num_workers', 'sources', 'input_pipeline', 'cuda_runtime'})
 
 
 def file_digest(path):
@@ -36,6 +36,8 @@ def validate_migration(parent, current, checkpoint_digest, revision):
     for key in ('batch_size', 'loader_batch_size', 'gradient_accumulation', 'num_workers'):
         if current[key] != revision['runtime'][key]:
             raise ValueError(f'Execution settings differ from the revision: {key}')
+    if current.get('cuda_runtime') != revision.get('cuda_runtime'):
+        raise ValueError('CUDA execution settings differ from the revision')
     pipeline = current.get('input_pipeline', {})
     if pipeline.get('metadata_sha256') != revision['clip_metadata_sha256']:
         raise ValueError('Execution revision belongs to another clip-file collection')

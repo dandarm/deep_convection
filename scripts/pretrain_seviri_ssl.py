@@ -29,6 +29,8 @@ from emma_gpm.seviri_clips import SeviriVideoMAEDataset, SeviriZarrClipReader
 from emma_gpm.seviri_clip_files import ClipFileDataset, ClipBatchLoader
 from emma_gpm.seviri_frame_dataset import FrameFileDataset
 from emma_gpm.ssl_execution import restore_with_revision
+from emma_gpm.ssl_runtime import (CudaRuntime, configure_runtime, make_optimizer,
+    apply_optimizer_runtime, compile_model_regions)
 from emma_gpm.ssl_evaluation import evaluate_ssl
 from emma_gpm.ssl_masking import make_ssl_mask
 from emma_gpm.ssl_model import SeviriSSL, encoder_source_config, history_config, load_encoder_weights, ssl_loss
@@ -51,6 +53,7 @@ def parse_args(argv=None):
     parser.add_argument("--global-stats", type=Path)
     parser.add_argument("--clip-root", type=Path, help="Verified lossless per-clip files")
     parser.add_argument("--execution-revision", type=Path, help="Explicit checksum-bound runtime migration")
+    parser.add_argument("--cuda-runtime", type=Path, help="JSON with explicit CUDA execution settings")
     parser.add_argument("--profile-epoch", type=int, help="Capture this full training epoch with Nsight")
     parser.add_argument("--variability-reference-manifest", type=Path,
                         help="Training subset defining common variability groups across dataset sizes")
@@ -95,7 +98,7 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     # JSON defaults can also supply path fields, without depending on argparse's
     # treatment of non-string defaults.
-    for name in ("manifest", "validation_manifest", "zarr_root", "output_dir", "global_stats", "reserved_days", "encoder_from", "resume", "variability_reference_manifest", "clip_root", "frame_cache", "execution_revision"):
+    for name in ("manifest", "validation_manifest", "zarr_root", "output_dir", "global_stats", "reserved_days", "encoder_from", "resume", "variability_reference_manifest", "clip_root", "frame_cache", "execution_revision", "cuda_runtime"):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, Path(value))
@@ -205,7 +208,7 @@ def source_hashes():
     files += [ROOT / "src/emma_gpm" / name for name in (
         "forecasting.py", "advection.py", "ssl_model.py", "ssl_masking.py", "ssl_evaluation.py",
         "forecast_metrics.py", "videomae.py", "videomae_v2.py", "seviri_clips.py", "training_checkpoint.py",
-        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_frame_dataset.py", "ssl_execution.py")]
+        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_frame_dataset.py", "ssl_execution.py", "ssl_runtime.py")]
     return {str(path.relative_to(ROOT)): digest(path) for path in files}
 
 
@@ -254,6 +257,8 @@ def run(args):
     torch.set_num_threads(args.cpu_threads)
     seed_everything(args.seed)
     device = choose_device(args.device)
+    runtime = CudaRuntime(**json.loads(args.cuda_runtime.read_text())) if args.cuda_runtime else CudaRuntime()
+    configure_runtime(runtime, device)
     if args.precision == "bf16" and (device.type != "cuda" or not torch.cuda.is_bf16_supported()):
         raise ValueError("bf16 requires a compatible CUDA device")
     existing = [path for path in args.output_dir.iterdir() if path.name != ".lock"]
@@ -284,7 +289,7 @@ def run(args):
     if args.encoder_from:
         # Trusted local checkpoint paths only; never download model weights.
         initialization = load_encoder_weights(model.encoder, args.encoder_from)
-    optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.learning_rate, weight_decay=args.weight_decay)
+    optimizer = make_optimizer(model, runtime, lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.)
     identity = dict(window=asdict(window), model_config=model.config.to_dict(), objective=args.objective,
         stats=stats, train_sha256=digest(args.manifest) if args.manifest else None,
@@ -297,6 +302,7 @@ def run(args):
         mask_strategy=args.mask_strategy, mask_ratio=args.mask_ratio, head_width=args.head_width,
         max_motion_pixels=args.max_motion_pixels, frozen_encoder=args.freeze_encoder,
         synthetic=args.synthetic_smoke, initialization=initialization, sources=source_hashes())
+    identity["cuda_runtime"] = runtime.to_dict()
     if args.clip_root:
         identity['input_pipeline'] = dict(backend='lossless_clip_files',
             root=str(args.clip_root.resolve()), metadata_sha256=training.metadata_sha256,
@@ -311,6 +317,8 @@ def run(args):
     progress = dict(completed_epochs=0, optimizer_steps=0, best_score=None, epochs=[], variability_edges_k=None)
     if args.resume:
         progress = restore_with_revision(args.resume, model, optimizer, scheduler, generators, identity, args.execution_revision)
+    apply_optimizer_runtime(optimizer, runtime)
+    compiled_regions = compile_model_regions(model, runtime)
     if not args.evaluate_only and args.epochs < progress["completed_epochs"]:
         raise ValueError("Requested epochs cannot precede the completed checkpoint epoch")
     if args.evaluate_only:
@@ -347,6 +355,8 @@ def run(args):
         commit = None
     write_json(args.output_dir / "run_config.json", dict(arguments={key: str(value) if isinstance(value, Path) else value
         for key, value in vars(args).items()}, identity=identity, initialization=initialization, git_commit=commit,
+        cuda_runtime=runtime.to_dict(), compiled_regions=compiled_regions,
+        attention_implementation=model.encoder.config._attn_implementation,
         torch_version=torch.__version__, numpy_version=np.__version__,
         hardware=torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU",
         data_kind="synthetic engineering smoke" if args.synthetic_smoke else "SEVIRI pilot"))
@@ -378,6 +388,8 @@ def run(args):
                 decode = running_cell_mask(config, len(history), .5, device="cpu", generator=generators["mask"]).to(device)
             if args.objective == "residual":
                 adv, _, _ = advection_forecast(history, window.steps, args.max_motion_pixels)
+            if compiled_regions:
+                torch.compiler.cudagraph_mark_step_begin()
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=args.precision == "bf16"):
                 output = model(history, mask=mask, decode_mask=decode, advection=adv)
                 loss, terms = ssl_loss(output, target, loss=args.loss, huber_delta=args.huber_delta,
