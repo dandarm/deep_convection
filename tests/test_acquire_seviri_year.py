@@ -278,6 +278,19 @@ def test_parallel_download_cache_and_truncated_payload(tmp_path,monkeypatch):
         download.download_interval(Collection(),datetime(2020,1,1),datetime(2020,1,2),tmp_path/'bad',False,**options)
     assert not list((tmp_path/'bad').rglob('*.nat'))
     assert not list((tmp_path/'bad').rglob('*.part'))
+    failures=[]
+    download.download_interval(
+        Collection(),datetime(2020,1,1),datetime(2020,1,2),tmp_path/'bad',False,
+        continue_on_error=True,failure_sink=failures,**options)
+    assert failures and failures[0]['product_id']=='SCENE'
+    marker=tmp_path/'bad'/'_download_failures'/'SCENE.json'
+    assert marker.exists()
+    truncated=False
+    download.download_interval(
+        Collection(),datetime(2020,1,1),datetime(2020,1,2),tmp_path/'bad',False,
+        continue_on_error=True,failure_sink=[],**options)
+    assert (tmp_path/'bad'/'SCENE'/'SCENE.nat').exists()
+    assert not marker.exists()
 
 
 def test_success_publishes_new_frames_preserves_old_frames_and_cleans_owned_buffer(tmp_path,monkeypatch):

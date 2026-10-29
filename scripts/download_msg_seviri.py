@@ -12,6 +12,7 @@ import argparse
 import concurrent.futures
 import csv
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 from threading import local
@@ -103,6 +104,8 @@ def download_interval(
     retries: int,
     read_timeout: int,
     cadence_minutes: int = 0,
+    continue_on_error: bool = False,
+    failure_sink: list[dict[str, str]] | None = None,
 ) -> int:
     products = list(collection.search(dtstart=start, dtend=end, set="brief"))
     if cadence_minutes:
@@ -118,6 +121,11 @@ def download_interval(
         return len(products)
 
     output.mkdir(parents=True, exist_ok=True)
+    failure_directory = output / "_download_failures"
+
+    def failure_marker(product_id: str) -> Path:
+        return failure_directory / f"{product_id}.json"
+
     pending: list[str] = []
     for product in products:
         product_id = str(product)
@@ -129,6 +137,7 @@ def download_interval(
         # native metadata/radiometry are checked again during conversion.
         standard_target = product_dir / (product_id + '.nat')
         if is_valid_native(standard_target):
+            failure_marker(product_id).unlink(missing_ok=True)
             print(f'skip existing {standard_target.name}', flush=True)
             continue
         # Empty product directories cannot contain a reusable native payload.
@@ -141,6 +150,7 @@ def download_interval(
             raise RuntimeError(f"Expected one .nat entry for {product}, got {entries}")
         target = product_dir / Path(entries[0]).name
         if is_valid_native(target):
+            failure_marker(product_id).unlink(missing_ok=True)
             print(f"skip existing {target.name}")
             continue
         pending.append(product_id)
@@ -193,6 +203,7 @@ def download_interval(
                 temporary.replace(target)
                 if not is_valid_native(target):
                     raise RuntimeError(f"Invalid MSG native payload: {target}")
+                failure_marker(product_id).unlink(missing_ok=True)
                 print(
                     f"downloaded {target.name} ({target.stat().st_size / 1024**2:.1f} MiB)",
                     flush=True,
@@ -211,9 +222,33 @@ def download_interval(
 
     print(f"cached={len(products) - len(pending)} pending={len(pending)} workers={workers}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(download_one, product_id) for product_id in pending]
+        futures = {
+            executor.submit(download_one, product_id): product_id
+            for product_id in pending
+        }
         for future in concurrent.futures.as_completed(futures):
-            future.result()
+            product_id = futures[future]
+            try:
+                future.result()
+            except Exception as error:
+                if not continue_on_error:
+                    raise
+                record = {
+                    "product_id": product_id,
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+                if failure_sink is not None:
+                    failure_sink.append(record)
+                failure_directory.mkdir(parents=True, exist_ok=True)
+                marker = failure_marker(product_id)
+                temporary = marker.with_suffix(marker.suffix + ".part")
+                temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+                temporary.replace(marker)
+                print(
+                    f"continuing after failed product {product_id}: {error}",
+                    flush=True,
+                )
     return len(products)
 
 
@@ -228,6 +263,11 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--read-timeout", type=int, default=180)
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Record products that exhaust retries and continue with the remaining manifest",
+    )
     parser.add_argument(
         "--cadence-minutes",
         type=int,
@@ -262,6 +302,7 @@ def main() -> int:
     else:
         intervals = {(args.start, args.end)}
     total = 0
+    failures: list[dict[str, str]] = []
     for start_text, end_text in sorted(intervals):
         start, end = parse_utc(start_text), parse_utc(end_text)
         if end <= start:
@@ -279,9 +320,18 @@ def main() -> int:
             retries=args.retries,
             read_timeout=args.read_timeout,
             cadence_minutes=args.cadence_minutes,
+            continue_on_error=args.continue_on_error,
+            failure_sink=failures,
         )
-    print(f"products_total={total}")
-    return 0
+    report = args.out / "download_failures.json"
+    if failures:
+        temporary = report.with_suffix(report.suffix + ".part")
+        temporary.write_text(json.dumps(failures, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(report)
+    else:
+        report.unlink(missing_ok=True)
+    print(f"products_total={total} failures={len(failures)}")
+    return 2 if failures else 0
 
 
 if __name__ == "__main__":
