@@ -27,6 +27,7 @@ cells of notebooks. A machine-readable line inventory is stored locally in
 | Selective synchronization for profiling | `moduli/videomae/engine_for_pretraining.py:56` | Explicit device synchronization at epoch boundaries; integrity/finite checks also create synchronization points |
 | Optional expensive diagnostic logging | `moduli/videomae/arguments.py:194` | Per-step loss and periodic progress reporting; no weight-drift scan |
 | DDP static graph, gradient bucket views, 64 MiB buckets, unused-parameter detection and buffer broadcast controls | `moduli/videomae/utils.py:738` | Single GPU instance; requires a distributed trainer and multi-GPU validation |
+| Compile/DDP compatibility override | `moduli/videomae/utils.py:866` sets `dynamo.config.optimize_ddp=False` in `get_model` | Single-process compilation; this override is reserved for checking on the cluster |
 | DDP accumulation without intermediate all-reduce | `moduli/firstpass/src/cyclone_locator/train.py:1185` | Single GPU instance |
 | Distributed sampler, epoch-dependent shuffling | `moduli/videomae/specialization.py:431` | Random sampler reshuffles clips each epoch; temporal order within clips is preserved |
 | Rank discovery for torchrun/MPI/PMI/Slurm | `moduli/videomae/utils.py:567` | Single process |
@@ -122,3 +123,67 @@ the exact runtime JSON used by every remaining trainer. A fresh trainer can
 receive `--cuda-runtime configs/ssl_cuda_h200_mig.json` directly. A fresh matrix
 can be prepared with the ordinary matrix runner's `--prepare-only` option and
 started with this execution-revision runner.
+
+## Results on the current H200 MIG instance
+
+The final profile uses BF16 with Inductor `default`, fused AdamW, cuDNN
+autotuning, TF32 for remaining FP32 matrix multiplication and fixed positional
+buffers on the GPU. SDPA keeps automatic backend selection. The profiler found
+`aten::_scaled_dot_product_cudnn_attention` and its backward in both the baseline
+and the optimized training update. Explicit Flash Attention and `reduce-overhead`
+CUDA Graphs produced essentially the same elapsed times as this selected profile.
+
+| Model / objective | Before (ms/update) | After (ms/update) | Reduction in time | Allocated peak before → after (GiB) |
+|---|---:|---:|---:|---:|
+| Small / Future | 164 | 128 | 22% | 7.6 → 6.4 |
+| Small / Joint | 241 | 192 | 20% | 9.2 → 7.9 |
+| Base / Future | 317 | 254 | 20% | 13.9 → 11.6 |
+| Base / Joint | 443 | 360 | 19% | 16.7 → 14.3 |
+
+Batch size remains 32. Base/16,384 uses 512 updates per epoch; the 32,768- and
+65,536-clip datasets use 1,024 and 2,048 updates respectively. These counts are
+preserved. The host wait for the prepared batch is about 2 ms per update.
+This interval covers the part of loading visible to the training loop; data
+preparation overlaps GPU computation in the worker threads.
+
+The initial compilation took about one minute in the first Base/Joint test.
+Subsequent processes reused the disk compilation cache. Training and validation
+compile distinct graphs, and the first full epoch includes this startup cost.
+
+A frozen-weight comparison used the **epoch 114 Base/Future checkpoint** and all
+512 validation clips. Both executions report **4.60 K RMSE**; the largest RMSE
+difference across channel/horizon pairs is about **0.001 K**. For the first two
+validation clips, the RMS difference between the two predicted pixel arrays is
+**0.09 K**. These are numerical differences between executions of the same weights.
+All restored optimizer moments and step counters matched exactly before the
+resumed update, and the compiled backward/fused update passed finite-gradient
+checks. This validates execution compatibility; subsequent training trajectories
+can differ because floating-point rounding differs.
+
+The full CPU regression suite passed (323 tests, with one CUDA-only test skipped)
+before the final migration guard test was added. All 15 targeted runtime,
+checkpoint-migration and SSL-training tests then passed. Real CUDA checks covered
+Small and Base, Future and Joint, full validation, and an update from restored
+optimizer state. Compilation and `git diff --check` also passed.
+
+Additional GPU-related code in Demetra includes deterministic/cuDNN switches in
+`classification.py:55` and `inference_classification.py:63`, and one-time CUDA
+allocator cache clearing in `specialization.py:399` and inference entry points.
+Those settings belong to their respective execution paths. The selected SEVIRI
+profile keeps the measured convolution backend and normal allocator reuse.
+
+## Applied execution revision and complete epochs
+
+The active matrix now uses `runtime_revision_20261029`, resumed from epoch 114.
+The original plans and checkpoint copies are preserved; 33 execution source
+files are checked before every stage. The remaining Small/Base Future/Joint
+experiments inherit the same runtime profile.
+
+On Base/Future with 16,384 clips, training decreased from about **164 to
+131 seconds per epoch**. A complete epoch including validation and
+checkpoint writing decreased from about **173 to 140 seconds**.
+The first revised epoch (115), including compilation startup, took 154 seconds.
+The steady measurement uses epoch 116, 117.
+Batch size remains 32, with 512 updates per epoch. The allocated GPU peak for
+the complete steady epoch is about **11.7 GiB**, versus 13.9 GiB
+before the revision. These are allocator measurements within this process.
