@@ -19,6 +19,15 @@ capire quanta informazione su evoluzione temporale, morfologia termica,
 microfisica e altezza della sommità nuvolosa sia già decodificabile dalle
 rappresentazioni self-supervised.
 
+## Estensione: confronto degli obiettivi SSL
+
+Il progetto descritto in [`handoff_codex_ssl_seviri.md`](handoff_codex_ssl_seviri.md)
+aggiunge previsione causale a +15/+30 minuti, joint masked modeling + future
+prediction e previsione del residuo advettivo. La pipeline iniziale, i comandi
+Windows/WSL per trasferire gli Zarr e i test sono documentati in
+[`SSL_SEVIRI.md`](SSL_SEVIRI.md). Il nuovo trainer è
+`scripts/pretrain_seviri_ssl.py`; il trainer VideoMAE storico resta separato.
+
 ## Pretraining SEVIRI
 
 Il protocollo corrente usa **VideoMAE V2 Small** a sette canali, con masking
@@ -73,9 +82,9 @@ temporale 2 e patch spaziale 16×16. Ogni target ricostruito contiene quindi
   color jitter.
 - Il pretraining non usa etichette RDT né altri dataset meteorologici.
 
-Le clip spaziali non vengono duplicate su disco: i manifest conservano
-timestamp e origine del crop, mentre il cubo viene letto dagli Zarr durante il
-training.
+I manifest conservano timestamp e origine del crop. Il loader di base legge
+i cubi dagli Zarr; gli esperimenti SSL ripetuti usano file locali verificati,
+con clip compresse per Small e frame giornalieri condivisi per Base.
 
 ## Ground truth RDT e probing
 
@@ -175,6 +184,107 @@ Per il primo test CUDA e per i requisiti necessari prima di un job lungo,
 seguire l'handoff GPU anziché riutilizzare alla cieca il comando CPU.
 
 ## Notebook
+
+[`notebooks/study_seviri_ssl_training.ipynb`](notebooks/study_seviri_ssl_training.ipynb)
+riunisce i risultati di tutti i 22 training conclusi al 28 ottobre:
+MVM, Future, Joint, Residual e cinque probe su 4.096 e 8.192 clip Small;
+Future e Joint su 16.384 clip Small e 32.768 clip Base. La validation comune
+contiene 512 clip del 17 settembre. Le dimensioni del dataset compaiono negli
+stessi confronti, con architettura indicata nelle legende e nei titoli.
+Le curve mostrano i quattro obiettivi insieme rispetto a epoche e aggiornamenti;
+Joint compare una volta con la somma delle sue loss. Le sezioni successive
+confrontano errori per canale/orizzonte e variabilità, gradienti, ricostruzioni
+storiche, previsioni salvate e rappresentazioni congelate.
+A 38.400 aggiornamenti, da 8.192 a 16.384 clip Future passa da 3,77 a 3,67 K
+di RMSE e Joint da 3,99 a 3,92 K, conservando l'architettura Small. Base a
+32.768 clip termina 150 epoche e 153.600 aggiornamenti con 3,78 K per Future
+e 3,70 K per Joint; il confronto a pari aggiornamenti distingue il budget
+comune dal risultato dell'intero training.
+Il testo chiarisce il riferimento deterministico Advection, i dati e la testa
+convoluzionale dei probe, le regressioni ridge e l'interpretazione dei grafici.
+La visualizzazione corrente usa assi logaritmici per loss, epoche e aggiornamenti,
+barre per canale con tutti i training affiancati e grafici delle variazioni
+di RMSE a budget uguale. Le tabelle sono opzionali (`SHOW_TABLES = True`);
+valori completi, figure e copia eseguita sono in
+`results/notebook_revision_20261028_plots/`. La revisione precedente rimane
+in `results/notebook_revision_20261028/`.
+Le valutazioni sono lette dai report delle epoche completate; copertura dei
+confronti e analisi ancora attese sono esplicite. Le conclusioni si aggiornano
+dai risultati disponibili. Il kernel è `Python (deep_convection)`.
+Il testo scientifico in inglese definisce metodi, metriche e nomi delle legende.
+La modalità predefinita produce figure dirette; `USE_WIDGETS = True` abilita
+i selettori per il confronto dei canali. Rieseguire le celle dall'inizio
+aggiorna lo snapshot. Protocollo e ripresa sono in `SSL_SEVIRI.md`.
+
+[`notebooks/study_seviri_ssl_scaling.ipynb`](notebooks/study_seviri_ssl_scaling.ipynb)
+contiene il rimando allo studio unificato. La versione precedente è archiviata
+in `results/ssl_scaling_20261025/notebook_review_20261025/`, insieme alla versione
+precedente del notebook di training. I risultati storici del pilot restano
+in `results/ssl_pilot_20261024/`.
+
+Per controllare la serie dal terminale, anche attraverso SSH, eseguire
+`python3 /home/isac/deep_convection/scripts/status_seviri_ssl.py`.
+Il riepilogo verifica i processi, mostra epoca e batch correnti, gli esperimenti
+previsti nella serie selezionata e il tempo residuo stimato del run attivo. La serie
+predefinita segue `results/ssl_active_series.json` quando presente; `--series`
+permette di selezionare esplicitamente una serie storica. `--watch 15` aggiorna ogni
+15 secondi; `--json` restituisce lo stato strutturato. Il comando legge i log
+e i metadati dei processi e può essere chiuso indipendentemente dal training.
+Gli esempi per PowerShell e bridge SSH sono in `SSL_SEVIRI.md`.
+
+L'estensione `results/ssl_extension_20261026` comprende Future e Joint su
+16.384 clip, con 75 epoche e batch effettivo 32: 38.400 aggiornamenti per modello,
+come i precedenti training da 8.192 clip a 150 epoche. Il nuovo dataset conserva
+le 8.192 clip precedenti e la stessa validation. I file delle clip condivise sono
+collegati alla nuova raccolta tramite hard link; i metadati delle raccolte sono separati. Dal
+27 ottobre le due raccolte di clip Small risiedono fisicamente in
+`/data1/deep_convection_data/` su `/dev/sdb`, mantenendo i vecchi percorsi
+tramite collegamenti simbolici. La destinazione per riprendere l'upload Zarr è
+`/data1/deep_convection_data/MSG-SEVIRI/`. La cache del training Base e gli
+originali Zarr del 2020 rimangono fisicamente nei percorsi sotto `/home/isac/`
+usati dai training in corso; la sottodirectory originale `MSG-SEVIRI/2022`
+è un collegamento alla raccolta su `/data1`. Le verifiche delle due operazioni
+sono in `results/storage_migration_20261027/` e
+`results/archive_migration_20261027/`.
+
+La serie `results/ssl_base_32768_20261026` usa VideoMAE-Base a sette canali,
+con encoder da 768 componenti, 12 blocchi e circa 88 milioni di parametri.
+Future e Joint hanno batch 32, 1.024 aggiornamenti per epoca e 150 epoche.
+Il dataset da 32.768 clip include tutte le precedenti 16.384; la validation
+conserva le stesse 512 clip. I frame giornalieri float16 in Kelvin permettono
+di condividere le osservazioni tra finestre sovrapposte. La cache occupa circa
+20 GiB e riutilizza circa 10 GiB già presenti tramite hard link.
+Il notebook confronta anche i checkpoint Small e Base a pari aggiornamenti;
+il nuovo budget completo misura l'effetto combinato di capacità, campionamento
+e durata dell'ottimizzazione. Il protocollo e il comando di lancio sono in
+`SSL_SEVIRI.md`.
+
+La matrice `results/ssl_factorial_20261028` completa i confronti con Small su
+32.768 e 65.536 clip e Base su 16.384 e 65.536 clip. Ogni combinazione comprende
+Future e Joint da zero per 150 epoche, con batch 32 e la stessa validation da
+512 clip del 17 settembre 2020. L'estensione a 65.536 conserva le 32.768 clip
+precedenti e aggiunge finestre del 12 ottobre 2010, 13 aprile 2012,
+30 settembre 2015 e 28 febbraio 2016. Il confronto misura insieme l'aumento
+dei campioni e la diversità delle date osservate. Il monitor SSH distingue
+esplicitamente Small e Base; configurazione, ripresa e percorso dei dati sono
+documentati in `SSL_SEVIRI.md`.
+
+[`notebooks/profile_seviri_ssl_performance.ipynb`](notebooks/profile_seviri_ssl_performance.ipynb)
+analizza i tempi di lettura e preparazione dei batch, forward, backward,
+aggiornamento dei pesi, validation e checkpoint. Confronta batch size,
+memoria GPU e attività CUDA usando misure isolate e verifiche su epoche complete.
+Le configurazioni e i risultati sono in
+`results/ssl_scaling_20261025/performance_review/`; lo script riproducibile è
+`scripts/profile_seviri_ssl.py`.
+Il confronto include una cache lossless di frame nativi in Kelvin,
+costruita da `scripts/build_seviri_frame_cache.py`, e un percorso sperimentale
+con batch float16, normalizzazione e verifica dei valori finiti sulla GPU.
+La versione adottata nei training Small usa clip complete compresse senza perdita,
+preparate da `scripts/materialize_ssl_clip_files.py`. La ripresa con batch 32,
+quattro thread e normalizzazione globale sulla GPU è gestita da
+`scripts/run_seviri_ssl_series.py`, con revisione esplicita della configurazione
+esecutiva e conservazione del protocollo scientifico originale. I dettagli e
+le misure prima/dopo sono in `SSL_SEVIRI.md` e nel notebook delle prestazioni.
 
 [`notebooks/visualize_seviri_rdt_rules.ipynb`](notebooks/visualize_seviri_rdt_rules.ipynb)
 esplora l'archivio scaricato con clip, Play sincronizzato e pseudo-classi
