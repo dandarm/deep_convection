@@ -1,0 +1,23 @@
+{
+  "objective": "future",
+  "history_frames": 10,
+  "horizons_minutes": [15, 30],
+  "epochs": 1,
+  "batch_size": 2,
+  "gradient_accumulation": 2,
+  "learning_rate": 0.00015,
+  "weight_decay": 0.05,
+  "loss": "mse",
+  "lambda_mvm": 1.0,
+  "lambda_future": 1.0,
+  "mask_strategy": "tube",
+  "mask_ratio": 0.9,
+  "head_width": 192,
+  "max_motion_pixels": 12,
+  "device": "cuda",
+  "precision": "bf16",
+  "num_workers": 4,
+  "prefetch_factor": 1,
+  "cpu_threads": 4,
+  "seed": 20261024
+}

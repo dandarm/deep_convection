@@ -52,6 +52,16 @@ def videomae_small_7ch_config(**overrides: Any) -> Any:
     return VideoMAEConfig(**values)
 
 
+def videomae_base_7ch_config(**overrides: Any) -> Any:
+    """ViT-B/16 encoder and four-layer 384-wide MAE decoder, seven channels."""
+    values = dict(hidden_size=768, num_hidden_layers=12, num_attention_heads=12,
+                  intermediate_size=3072, decoder_hidden_size=384,
+                  decoder_num_hidden_layers=4, decoder_num_attention_heads=6,
+                  decoder_intermediate_size=1536)
+    values.update(overrides)
+    return videomae_small_7ch_config(**values)
+
+
 def build_videomae_small_7ch_from_scratch(**config_overrides: Any) -> Any:
     """Instantiate a randomly initialized seven-channel VideoMAE-Small MAE."""
 
