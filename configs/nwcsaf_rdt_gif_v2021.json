@@ -1,0 +1,26 @@
+{
+  "archive": "v2021",
+  "image_size": [2221, 1119],
+  "map_bbox_xyxy": [0, 37, 2221, 1006],
+  "geos_crs": "+proj=geos +lon_0=0 +h=35785831 +a=6378169 +rf=295.488065897014 +units=m +no_defs",
+  "geos_to_pixel": [
+    [0.0003334984993684134, -4.5089792786665335e-08, 1110.5584772869586],
+    [-4.508979278667018e-08, -0.0003334984993684135, 1842.8181836728625],
+    [0.0, 0.0, 1.0]
+  ],
+  "calibration": {
+    "method": "fixed same-slot IR_120 background SIFT registration; lifecycle contours inpainted before matching",
+    "timestamp_utc": "2025-01-15T12:00:00",
+    "reference_gif": "S_NWC_RDT-CW_MSG3_Europe-VISIR_20250115T120000Z.rdt.gif",
+    "reference_gif_sha256": "93d658ee0d344afcb90f096af649d796315629381ad21b29d641a1db48d934bf",
+    "primary_source_collection": "EO:EUM:DAT:MSG:HRSEVIRI",
+    "primary_product": "MSG3-SEVI-MSG15-0100-NA-20250115121243.717000000Z-NA",
+    "background_channel": "IR_120 brightness temperature",
+    "pearson_correlation": 0.7860000941935803,
+    "sift_candidate_matches": 1980,
+    "sift_inliers": 1927,
+    "sift_median_residual_pixels": 0.3468717333392887,
+    "sift_p95_residual_pixels": 1.5662028532594192,
+    "pixel_scale_km_at_projection_plane": 2.9985
+  }
+}
