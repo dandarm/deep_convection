@@ -1,0 +1,14 @@
+# Ignore binary reference PDFs, intermediate datasets, comparison outputs, and figures
+docs/*.pdf
+outputs/
+results/
+*.png
+*.mp4
+*.zarr
+*.zarr.zip
+*.npy
+*.npz
+*.pkl
+*.zlib
+__pycache__/
+.pytest_cache/
