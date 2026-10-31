@@ -40,8 +40,10 @@ def plot_comparison(frame):
                 rows=subset[(subset.model==model)&(subset.clips==clips)&(subset.pretraining_epochs==epochs)]
                 if len(rows):
                     xs.append(i+(j-2)*.16);ys.append(100*rows.iloc[0][metric])
-            ax.bar(xs,ys,width=.15,label=OBJECTIVE_NAMES[objective],color=COLORS[objective])
+            if xs:
+                ax.bar(xs,ys,width=.15,label=OBJECTIVE_NAMES[objective],color=COLORS[objective])
         ax.set_xticks(range(len(groups)),[f'{m}\n{n:,}\n{e} ep.' for m,n,e in groups],fontsize=9)
+        ax.set_xlim(-.5,len(groups)-.5)
         ax.set_ylim(0,100);ax.set_ylabel('Test score (%)');ax.set_title(title);ax.grid(axis='y',alpha=.2)
     axes[-1].legend(ncol=3)
     return fig
