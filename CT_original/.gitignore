@@ -1,0 +1,12 @@
+# Ignora PDF ufficiali scaricati, dati intermedi e artefatti binari/multimediali
+*.pdf
+*.nc
+*.zarr/
+*.npy
+*.npz
+*.mp4
+*.png
+*.jpg
+results/
+__pycache__/
+.pytest_cache/
