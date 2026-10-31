@@ -37,6 +37,7 @@ def main():
     parser.add_argument('--output-dir',type=Path,default=ROOT/'results/cloud_mask_probe_20261031')
     parser.add_argument('--results-root',type=Path,default=ROOT/'results')
     parser.add_argument('--plan',type=Path,default=ROOT/'configs/ssl_cloud_probe_series.json')
+    parser.add_argument('--extend-from-series',type=Path,help='Continue completed probes from this series into a new output directory')
     parser.add_argument('--no-wait',action='store_true',help='Process available encoders and exit')
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
@@ -49,6 +50,10 @@ def main():
     sources = {name:sha256(ROOT/name) for name in ['scripts/run_seviri_cloud_probes.py',
         'src/emma_gpm/cloud_probe.py','src/emma_gpm/cloud_probe_data.py','src/emma_gpm/ssl_model.py','src/emma_gpm/seviri_clips.py']}
     identity = dict(plan=plan,dataset=str(args.dataset.resolve()),results_root=str(args.results_root.resolve()),sources=sources)
+    if args.extend_from_series is not None:
+        if args.extend_from_series.resolve() == args.output_dir.resolve():
+            raise ValueError('Extension output must differ from the parent series')
+        identity['extend_from_series'] = str(args.extend_from_series.resolve())
     def interrupted(signum,frame):
         raise KeyboardInterrupt(f'Signal {signum}')
     signal.signal(signal.SIGTERM,interrupted)
@@ -95,8 +100,12 @@ def main():
                         publish(phase=progress['stage'],job_progress=progress)
                     print(f'Starting {name}',flush=True)
                     try:
+                        parent = args.extend_from_series/name if args.extend_from_series is not None else None
+                        if parent is not None and not parent.exists():
+                            parent = None  # Newly completed encoders train the head from epoch 1.
                         result = run_cloud_probe(path,args.dataset,args.output_dir/name,kind=kind,
-                            **{k:plan[k] for k in ['epochs','batch_size','learning_rate','weight_decay','seed','precision']},heartbeat=heartbeat)
+                            **{k:plan[k] for k in ['epochs','batch_size','learning_rate','weight_decay','seed','precision']},
+                            heartbeat=heartbeat,extend_from=parent)
                         atomic_json(args.output_dir/name/'comparison.json',dict(paired_random_control=control,run_directory=str(path)))
                         completed.append(name)
                         print(f"Completed {name}: cloud IoU {result['test']['cloud_iou']:.3f}",flush=True)

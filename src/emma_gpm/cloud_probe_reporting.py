@@ -20,6 +20,7 @@ def load_results(directory):
         record=dict(case=path.parent.name,path=str(path.parent),kind=identity['kind'],
             model=identity['model_size'].capitalize(),clips=identity['pretraining_clips'],
             pretraining_epochs=identity['pretraining_epochs'],best_epoch=result['best_epoch'],
+            head_epochs=identity['epochs'],validation_bce=result['validation']['bce'],
             objective='random' if identity['kind']=='random' else identity['pretraining_objective'],**result['test'])
         record['paired_random_control']=json.loads(comparison.read_text())['paired_random_control']
         records.append(record)
@@ -63,6 +64,26 @@ def plot_paired_gain(frame):
     ax.set_xticks(range(len(pairs)),[f'{r.model}\n{r.clips:,}\n{OBJECTIVE_NAMES[r.objective]}' for r,_ in pairs],rotation=45,ha='right')
     ax.axhline(0,color='black',linewidth=.8);ax.set_ylabel('Cloud IoU difference (percentage points)')
     ax.set_title('Pretrained encoder versus paired random encoder');ax.grid(axis='y',alpha=.2)
+    return fig
+
+
+def plot_budget_gain(current,previous):
+    """Paired change at the selected checkpoints; both budgets use validation."""
+    if current.empty or previous.empty:
+        print('Il confronto dei budget apparirà al completamento dei primi probe estesi.');return
+    pairs=current.merge(previous,on='case',suffixes=('_new','_old'))
+    if pairs.empty:
+        print('Nessun probe comune ai due budget è ancora completo.');return
+    pairs=pairs.sort_values(['model_new','clips_new','objective_new'])
+    fig,axes=plt.subplots(2,1,figsize=(max(9,len(pairs)*.65),7),sharex=True,layout='constrained')
+    colors=[COLORS[x] for x in pairs.objective_new]
+    values=[100*(pairs.cloud_iou_new-pairs.cloud_iou_old),pairs.validation_bce_new-pairs.validation_bce_old]
+    for ax,delta,title,label in zip(axes,values,
+            ['Effect of head training budget: test cloud IoU','Effect of head training budget: validation loss'],
+            ['Cloud IoU difference (percentage points)','Binary cross-entropy difference']):
+        ax.bar(range(len(pairs)),delta,color=colors)
+        ax.axhline(0,color='black',linewidth=.8);ax.set_ylabel(label);ax.set_title(title);ax.grid(axis='y',alpha=.2)
+    axes[-1].set_xticks(range(len(pairs)),[f'{r.model_new}\n{r.clips_new:,}\n{OBJECTIVE_NAMES[r.objective_new]}' for r in pairs.itertuples()],rotation=45,ha='right')
     return fig
 
 

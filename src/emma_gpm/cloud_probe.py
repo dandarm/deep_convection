@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 
 import numpy as np
@@ -19,6 +20,73 @@ from .forecasting import ForecastWindow
 from .rdt.storage import atomic_json, sha256
 from .seviri_clips import normalize_seviri_clip
 from .ssl_model import encoder_source_config, load_encoder_weights
+
+
+# Original 30-epoch implementation. The extension changes checkpoint import,
+# while preserving the feature computation, head, optimizer and training loop.
+COMPATIBLE_V1_SOURCE_SHA256 = '4e689752b279f4ad4ec5191a157d41f929288709b1dd6ef783e19cbe452b46cf'
+
+
+def extension_provenance(parent, identity):
+    """Authorize only a longer budget with the same data, weights and optimizer."""
+    parent = Path(parent).resolve()
+    previous = json.loads((parent/'identity.json').read_text())
+    if json.loads((parent/'progress.json').read_text()).get('status') != 'completed':
+        raise ValueError('Extension requires a completed parent probe')
+    ignored = {'epochs', 'sources', 'extension'}
+    if {k:v for k,v in previous.items() if k not in ignored} != {k:v for k,v in identity.items() if k not in ignored}:
+        raise ValueError('Only the epoch budget may change when extending a probe')
+    if identity['epochs'] <= previous['epochs']:
+        raise ValueError('Extension epoch budget must exceed the parent budget')
+    changed = {k for k in set(previous['sources']) | set(identity['sources'])
+               if previous['sources'].get(k) != identity['sources'].get(k)}
+    if changed and (changed != {'cloud_probe.py'} or previous['sources']['cloud_probe.py'] != COMPATIBLE_V1_SOURCE_SHA256):
+        raise ValueError('Parent probe sources are incompatible with this implementation')
+    return dict(parent_dir=str(parent),parent_epochs=previous['epochs'],
+        parent_identity_sha256=sha256(parent/'identity.json'),
+        parent_checkpoint_sha256=sha256(parent/'head_checkpoint.pt'),
+        parent_features_metadata_sha256=sha256(parent/'features.json'),
+        parent_result_sha256=sha256(parent/'result.json'),
+        compatible_source_changes=sorted(changed))
+
+
+def import_extension(parent, output, identity, shape):
+    """Share immutable features and copy the last head/optimizer, preserving best."""
+    parent, output = Path(parent), Path(output)
+    previous = json.loads((parent/'identity.json').read_text())
+    metadata = json.loads((parent/'features.json').read_text())
+    if metadata.get('encoder_unchanged') is not True or metadata['shape'] != list(shape):
+        raise ValueError('Parent feature shape or frozen-encoder audit is invalid')
+    if sha256(parent/'features.npy') != metadata['sha256']:
+        raise ValueError('Parent feature cache changed')
+    state = torch.load(parent/'head_checkpoint.pt',map_location='cpu',weights_only=False)
+    if state['identity'] != previous or state['epoch'] != previous['epochs']:
+        raise ValueError('Parent checkpoint is inconsistent with its completed budget')
+    if [r['epoch'] for r in state['history']] != list(range(1,state['epoch']+1)):
+        raise ValueError('Parent checkpoint has incomplete training history')
+    if sha256(parent/'head_checkpoint.pt') != identity['extension']['parent_checkpoint_sha256']:
+        raise ValueError('Parent checkpoint changed during import')
+    feature_path = output/'features.npy'
+    if not feature_path.exists():
+        temporary = output/'features.import.part'
+        if temporary.exists():
+            temporary.unlink()
+        try:
+            os.link(parent/'features.npy',temporary)
+        except OSError:
+            shutil.copyfile(parent/'features.npy',temporary)
+        if sha256(temporary) != metadata['sha256']:
+            raise ValueError('Copied feature cache differs from its parent')
+        atomic_json(output/'features.json',metadata)
+        temporary.replace(feature_path)
+    elif sha256(feature_path) != metadata['sha256']:
+        raise ValueError('Existing extension features differ from the parent')
+    atomic_json(output/'features.json',metadata)
+    atomic_json(output/'extension.json',identity['extension'])
+    state['identity'] = identity
+    atomic_json(output/'history.json',state['history'])
+    # Publish the checkpoint last: restarting an interrupted import is safe.
+    atomic_torch(output/'head_checkpoint.pt',state)
 
 
 def state_digest(model):
@@ -119,10 +187,13 @@ def audit_pretraining_days(run, manifest):
 
 
 def run_cloud_probe(run_dir, dataset, output, *, kind='pretrained', epochs=30, batch_size=16,
-                    learning_rate=1e-3, weight_decay=1e-4, seed=20261031, precision='bf16', heartbeat=None):
+                    learning_rate=1e-3, weight_decay=1e-4, seed=20261031, precision='bf16', heartbeat=None,
+                    extend_from=None):
     """CPU-only resumable extraction and training. Test is evaluated after selection."""
     from .file_lock import exclusive_file_lock
     run_dir, dataset, output = Path(run_dir),Path(dataset),Path(output)
+    if extend_from is not None and Path(extend_from).resolve() == output.resolve():
+        raise ValueError('Keep the parent probe in a separate output directory')
     output.mkdir(parents=True,exist_ok=True)
     if kind not in ('pretrained','random') or precision not in ('bf16','fp32'):
         raise ValueError('Unknown encoder kind or CPU precision')
@@ -162,6 +233,8 @@ def run_cloud_probe(run_dir, dataset, output, *, kind='pretrained', epochs=30, b
             seed=seed,epochs=epochs,batch_size=batch_size,learning_rate=learning_rate,weight_decay=weight_decay,
             selection='maximum validation mean IoU; first epoch in ties',probability_threshold=0.5,
             sources=sources,torch_version=torch.__version__)
+        if extend_from is not None:
+            identity['extension'] = extension_provenance(extend_from,identity)
         if (output/'identity.json').exists():
             if json.loads((output/'identity.json').read_text()) != identity:
                 raise ValueError('Probe identity changed; use a new output directory')
@@ -179,6 +252,9 @@ def run_cloud_probe(run_dir, dataset, output, *, kind='pretrained', epochs=30, b
         rows = manifest['samples']
         feature_path = output/'features.npy'
         shape = (len(rows),196,config.hidden_size)
+        if extend_from is not None and not (output/'head_checkpoint.pt').exists():
+            progress('importing_checkpoint',parent_epoch=identity['extension']['parent_epochs'])
+            import_extension(extend_from,output,identity,shape)
         if feature_path.exists():
             if sha256(feature_path) != json.loads((output/'features.json').read_text())['sha256']:
                 raise ValueError('Feature cache changed')

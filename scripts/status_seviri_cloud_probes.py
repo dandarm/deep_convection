@@ -9,6 +9,14 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def active_output(root=ROOT):
+    pointer = root/'results/cloud_probe_active_series.json'
+    if pointer.exists():
+        path = Path(json.loads(pointer.read_text())['output_dir'])
+        return path if path.is_absolute() else root/path
+    return root/'results/cloud_mask_probe_20261031'
+
+
 def process_alive(pid):
     if not pid:
         return False
@@ -53,13 +61,16 @@ def inspect(output,stale_seconds=180):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output-dir',type=Path,default=ROOT/'results/cloud_mask_probe_20261031')
+    parser.add_argument('--output-dir',type=Path,default=None)
     parser.add_argument('--stale-seconds',type=float,default=180)
     parser.add_argument('--json',action='store_true')
-    args = parser.parse_args(); s = inspect(args.output_dir,args.stale_seconds)
+    args = parser.parse_args()
+    args.output_dir = args.output_dir or active_output()
+    s = inspect(args.output_dir,args.stale_seconds)
     if args.json:
         print(json.dumps(s)); return
     print(f"Cloud-mask probe: {s['status']} — {s['health']}")
+    print('Serie:',args.output_dir)
     if s['status'] == 'waiting_for_dataset':
         identity = json.loads((args.output_dir/'queue_identity.json').read_text())
         print(f"Encoder pianificati: {len(identity['plan']['run_directories'])}; in attesa del dataset prima di avviare i probe")

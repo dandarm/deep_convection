@@ -124,3 +124,40 @@ can run at reduced scheduling priority while the GPU continues pretraining.
 every execution. It contains class balance, model comparisons, paired random
 controls, learning curves and spatial examples. Its committed version contains
 code and explanations; execution outputs remain local.
+
+## Extension from 30 to 150 head-training epochs
+
+The extended series uses 150 total head-training epochs. Completed 30-epoch
+probes continue from their **last** checkpoint, including AdamW moments and
+step counts, the previous best validation score and all 30 history entries.
+The same learning rate, minibatch order, seed and validation selection rule
+apply. Epoch 31 therefore follows the original optimization trajectory. Frozen
+features are verified and shared by hard link, with a checked copy as fallback.
+The original 30-epoch result directories remain available for comparison.
+
+The importer requires the same dataset, encoder state, normalization, feature
+precision, head, optimizer settings and seed. It accepts the audited original
+implementation identified by its source SHA-256, or the current implementation;
+other source changes fail compatibility checks. The extension records hashes
+of the parent identity, checkpoint, feature metadata and result. Tests compare
+an uninterrupted run with a shorter run followed by extension, including exact
+head parameters and optimizer tensors. A newly available encoder whose head
+has no 30-epoch parent trains directly for 150 epochs.
+
+```bash
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 CUDA_VISIBLE_DEVICES='' \
+  nice -n 15 .venv/bin/python scripts/run_seviri_cloud_probes.py \
+  --dataset /data1/deep_convection_data/cloud_mask_probe_20261031 \
+  --plan configs/ssl_cloud_probe_series_150ep.json \
+  --output-dir results/cloud_mask_probe_150ep_20261031 \
+  --extend-from-series results/cloud_mask_probe_20261031
+```
+
+The previously waiting 30-epoch supervisor is stopped when the extended series
+is launched. The GPU pretraining supervisor continues independently. The status
+command and notebook follow `results/cloud_probe_active_series.json` when it
+exists. Explicit `--output-dir` and `SEVIRI_CLOUD_PROBE_RESULTS` respectively
+select a different series. The notebook shows full learning curves and paired
+changes in test cloud IoU and validation BCE between the 30- and 150-epoch
+selected checkpoints. Final checkpoint selection continues to use validation
+mean IoU across the entire training history.

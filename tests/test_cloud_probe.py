@@ -144,3 +144,42 @@ def test_real_feature_extraction_and_atomic_head_resume(tmp_path,monkeypatch):
     b=torch.load(tmp_path/'resumed/head_best.pt',weights_only=False)['head']
     assert all(torch.equal(a[k],b[k]) for k in a)
     assert reference['encoder_frozen_verified'] and reference['test']['valid_pixels']==222*224
+
+    # A longer budget continues the final optimizer state and reuses features.
+    module.run_cloud_probe(run,dataset,tmp_path/'one_epoch',epochs=1,batch_size=1,precision='fp32')
+    original_digest=sha256(tmp_path/'one_epoch/head_checkpoint.pt')
+    def forbidden_extraction(*args,**kwargs):
+        raise AssertionError('An extension must reuse the existing feature cache')
+    monkeypatch.setattr(module,'encode_last_time',forbidden_extraction)
+    extended=module.run_cloud_probe(run,dataset,tmp_path/'extended',epochs=2,batch_size=1,
+        precision='fp32',extend_from=tmp_path/'one_epoch')
+    assert extended['test']==reference['test']
+    assert sha256(tmp_path/'one_epoch/head_checkpoint.pt')==original_digest
+    assert (tmp_path/'extended/features.npy').samefile(tmp_path/'one_epoch/features.npy')
+    ref=torch.load(tmp_path/'reference/head_checkpoint.pt',weights_only=False)
+    ext=torch.load(tmp_path/'extended/head_checkpoint.pt',weights_only=False)
+    assert all(torch.equal(ref['head'][k],ext['head'][k]) for k in ref['head'])
+    for parameter,state in ref['optimizer']['state'].items():
+        assert all(torch.equal(value,ext['optimizer']['state'][parameter][key]) for key,value in state.items())
+    with pytest.raises(ValueError,match='Only the epoch budget'):
+        module.run_cloud_probe(run,dataset,tmp_path/'bad_extension',epochs=2,batch_size=1,
+            precision='fp32',learning_rate=.02,extend_from=tmp_path/'one_epoch')
+
+
+def test_extension_accepts_only_the_audited_source_migration(tmp_path):
+    from emma_gpm.cloud_probe import extension_provenance,COMPATIBLE_V1_SOURCE_SHA256
+    from emma_gpm.rdt.storage import atomic_json
+    previous=dict(epochs=30,seed=7,sources={'cloud_probe.py':COMPATIBLE_V1_SOURCE_SHA256,'ssl_model.py':'same'})
+    current=dict(epochs=150,seed=7,sources={'cloud_probe.py':'new','ssl_model.py':'same'})
+    atomic_json(tmp_path/'identity.json',previous);atomic_json(tmp_path/'progress.json',{'status':'completed'})
+    for name in ['head_checkpoint.pt','features.json','result.json']:
+        (tmp_path/name).write_bytes(b'fixture')
+    assert extension_provenance(tmp_path,current)['parent_epochs']==30
+    with pytest.raises(ValueError,match='epoch budget must exceed'):
+        extension_provenance(tmp_path,{**current,'epochs':30})
+    with pytest.raises(ValueError,match='sources are incompatible'):
+        extension_provenance(tmp_path,{**current,'sources':{**current['sources'],'ssl_model.py':'changed'}})
+    previous['sources']['cloud_probe.py']='unknown'
+    atomic_json(tmp_path/'identity.json',previous)
+    with pytest.raises(ValueError,match='sources are incompatible'):
+        extension_provenance(tmp_path,current)
