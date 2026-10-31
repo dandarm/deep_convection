@@ -1,0 +1,15 @@
+# Ignore data, figures, media, PDFs, and benchmark output artifacts
+*.pdf
+*.nc
+*.h5
+*.hdf5
+*.zarr/
+*.npy
+*.npz
+*.png
+*.jpg
+*.mp4
+*.gif
+__pycache__/
+*.pyc
+results/
