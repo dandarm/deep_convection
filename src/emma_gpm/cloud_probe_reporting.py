@@ -13,13 +13,15 @@ COLORS = dict(mvm='#7651a8',future='#2676b8',joint='#df842e',residual='#258f72',
 def load_results(directory):
     records=[]
     for path in sorted(Path(directory).glob('*/result.json')):
+        comparison=path.parent/'comparison.json'
+        if not comparison.exists():
+            continue  # The queue publishes the pairing after the final result.
         result=json.loads(path.read_text());identity=result['identity']
         record=dict(case=path.parent.name,path=str(path.parent),kind=identity['kind'],
             model=identity['model_size'].capitalize(),clips=identity['pretraining_clips'],
             pretraining_epochs=identity['pretraining_epochs'],best_epoch=result['best_epoch'],
             objective='random' if identity['kind']=='random' else identity['pretraining_objective'],**result['test'])
-        comparison=path.parent/'comparison.json'
-        record['paired_random_control']=json.loads(comparison.read_text())['paired_random_control'] if comparison.exists() else None
+        record['paired_random_control']=json.loads(comparison.read_text())['paired_random_control']
         records.append(record)
     return pd.DataFrame(records)
 

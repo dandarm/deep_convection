@@ -60,7 +60,11 @@ def main():
     if args.json:
         print(json.dumps(s)); return
     print(f"Cloud-mask probe: {s['status']} — {s['health']}")
-    print(f"Completati: {len(s.get('completed',[]))}/{s.get('available_jobs','?')} probe disponibili; encoder attesi: {len(s.get('pending',[]))}; errori: {len(s.get('failed',{}))}")
+    if s['status'] == 'waiting_for_dataset':
+        identity = json.loads((args.output_dir/'queue_identity.json').read_text())
+        print(f"Encoder pianificati: {len(identity['plan']['run_directories'])}; in attesa del dataset prima di avviare i probe")
+    else:
+        print(f"Completati: {len(s.get('completed',[]))}/{s.get('available_jobs','?')} probe disponibili; encoder attesi: {len(s.get('pending',[]))}; errori: {len(s.get('failed',{}))}")
     print(f"PID: {s.get('pid','—')}; ultimo aggiornamento: {s.get('heartbeat_age_seconds','—')} s fa")
     if s.get('current'):
         print('Modello:',s['current'])
