@@ -323,3 +323,15 @@ Output incrementali in `results/rdt_preview/domain_utls_july2020/`; aggiungere
 `--end-date 2020-07-17` per estendere alla settimana preservando lo stato.
 Il notebook legge crop successivi delle mappe pubblicate e non ricalcola il
 teacher per clip. Regole e valori v0 sono esplorativi, ancora da validare.
+
+## Cloud-mask probing degli encoder congelati
+
+Il nuovo probe usa il target binario del modulo `CMA_original` per predire la
+copertura nuvolosa dell'ultimo frame osservato. Il dataset downstream ha giornate
+separate dal pretraining; una testa con due layer Linear viene addestrata sopra
+ciascun encoder congelato e sopra controlli casuali appaiati. La serie viene
+eseguita su CPU mentre prosegue il pretraining GPU.
+
+Protocollo e comandi: [SEVIRI_CLOUD_MASK_PROBE.md](docs/SEVIRI_CLOUD_MASK_PROBE.md).
+Confronti e mappe: [study_seviri_cloud_mask_probe.ipynb](notebooks/study_seviri_cloud_mask_probe.ipynb).
+Avanzamento da SSH: `python3 scripts/status_seviri_cloud_probes.py`.
