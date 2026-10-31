@@ -62,6 +62,8 @@ pretraining normalization and initialization seed. Its architecture and initial
 weights follow the corresponding original run. This permits a comparison
 between pretrained and random representations with the same head procedure.
 The `random_*` directory name contains a hash of those control settings.
+Random bars are placed in the corresponding pretrained model’s group; their
+encoder weights remain at initialization.
 
 ## Selection and metrics
 
