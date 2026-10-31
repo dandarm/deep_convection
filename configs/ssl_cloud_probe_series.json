@@ -1,0 +1,32 @@
+{
+  "run_directories": [
+    "ssl_scaling_20261025/n4096/future",
+    "ssl_scaling_20261025/n4096/joint",
+    "ssl_scaling_20261025/n4096/mvm",
+    "ssl_scaling_20261025/n4096/residual",
+    "ssl_scaling_20261025/n8192/future",
+    "ssl_scaling_20261025/n8192/joint",
+    "ssl_scaling_20261025/n8192/mvm",
+    "ssl_scaling_20261025/n8192/residual",
+    "ssl_extension_20261026/n16384/future",
+    "ssl_extension_20261026/n16384/joint",
+    "ssl_base_32768_20261026/n32768/future",
+    "ssl_base_32768_20261026/n32768/joint",
+    "ssl_factorial_20261028/small_n32768/future",
+    "ssl_factorial_20261028/small_n32768/joint",
+    "ssl_factorial_20261028/base_n16384/future",
+    "ssl_factorial_20261028/base_n16384/joint",
+    "ssl_factorial_20261028/small_n65536/future",
+    "ssl_factorial_20261028/small_n65536/joint",
+    "ssl_factorial_20261028/base_n65536/future",
+    "ssl_factorial_20261028/base_n65536/joint"
+  ],
+  "epochs": 30,
+  "batch_size": 16,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "seed": 20261031,
+  "cpu_threads": 2,
+  "precision": "bf16",
+  "include_random_controls": true
+}
