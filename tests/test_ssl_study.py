@@ -291,3 +291,68 @@ def test_channel_training_comparison_preserves_missing_runs_and_shared_reference
             study.channel_training_figure(changed, channels=['IR_108'])
         finally:
             plt.close('all')
+
+
+def test_mixed_architecture_plan_uses_case_model_size(series):
+    path = series/'scaling_plan.json'
+    plan = json.loads(path.read_text())
+    plan['cases'][1]['model_size'] = 'base'
+    write(path, plan)
+    snapshot = study.load_study(series)
+    assert snapshot['cases']['n2']['encoder'] == 'Small'
+    assert snapshot['cases']['n4']['encoder'] == 'Base'
+
+
+def test_architectures_can_share_exactly_the_same_training_set(series,tmp_path):
+    original = study.load_study(series)
+    shared = {**original, 'cases': {'base_n2': {**original['cases']['n2'], 'encoder': 'Base'}},
+              'runs': {('base_n2',name): {**run,'case':'base_n2'}
+                       for (case,name),run in original['runs'].items() if case == 'n2'}}
+    combined = study.merge_studies(original,shared)
+    assert len(combined['cases']) == 3
+    assert combined['cases']['base_n2']['encoder'] == 'Base'
+    # Matching counts alone are insufficient: equal-size cases must share clips.
+    other = tmp_path/'other'
+    (other/'dataset').mkdir(parents=True)
+    frame = pd.read_csv(series/'n2/dataset/train.csv')
+    frame['origin_y'] += 100
+    frame.to_csv(other/'dataset/train.csv',index=False)
+    shared['cases']['base_n2']['queue'] = other
+    with pytest.raises(ValueError,match='every smaller-set'):
+        study.merge_studies(original,shared)
+
+
+def test_objective_panels_preserve_architecture_size_and_partial_history(series):
+    snapshot = study.load_study(series)
+    # Five sizes and two architectures exceed the old four-style limit.
+    base = snapshot['runs']['n2','future']
+    snapshot['cases'] = {};snapshot['runs'] = {}
+    for size in [4096,8192,16384,32768,65536]:
+        for encoder in ['Small','Base']:
+            case=f'{encoder}_{size}'
+            snapshot['cases'][case]=dict(train_samples=size,encoder=encoder,stats={'global_std_k':2.})
+            for objective in ['future','joint']:
+                snapshot['runs'][case,objective]={**base,'case':case,'name':objective,
+                    'complete':(size,encoder,objective)!=(65536,'Base','joint'),
+                    'epochs':[dict(epoch=1,optimizer_steps=size//32,train_mvm=3.,train_future=2.,
+                        train_total=5. if objective=='joint' else 2.,validation_mvm=5.,validation_future=4.)]}
+    figures=study.objective_learning_figures(snapshot)
+    assert set(figures)=={'future','joint'}
+    try:
+        for objective,fig in figures.items():
+            assert len(fig.axes)==4
+            for axis in fig.axes:
+                assert len(axis.lines)==10
+                assert axis.get_xscale()==axis.get_yscale()=='log'
+            lines={line.get_label():line for line in fig.axes[0].lines}
+            for size in [4096,8192,16384,32768,65536]:
+                small,large=lines[f'Small · {size:,} clips'],lines[f'Base · {size:,} clips']
+                assert small.get_color()==large.get_color()
+                assert small.get_linestyle()=='-' and large.get_linestyle()=='--'
+            val=next(line for line in fig.axes[2].lines
+                     if line.get_label()=='Base · 65,536 clips')
+            np.testing.assert_allclose(val.get_ydata(),[36. if objective=='joint' else 16.])
+            assert val.get_marker()==('o' if objective=='joint' else 'None')
+            assert val.get_xdata().tolist()==[1]
+    finally:
+        for fig in figures.values():plt.close(fig)

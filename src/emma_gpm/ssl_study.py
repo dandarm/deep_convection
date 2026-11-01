@@ -52,7 +52,7 @@ def load_study(root):
                 validation_hashes.add(actual)
         stats = read_json(queue/'dataset/channel_stats.json', required=True)
         study['cases'][name] = {**case, 'queue': queue, 'stats': stats,
-            'encoder': plan.get('model_size', 'small').title(),
+            'encoder': case.get('model_size', plan.get('model_size', 'small')).title(),
             'protocol': read_json(queue/'dataset/protocol.json'), 'plan': local}
         for stage in local['stages']:
             identity = read_json(queue/stage['name']/'run_config.json').get('identity', {})
@@ -73,7 +73,7 @@ def load_study(root):
 
 
 def merge_studies(*studies):
-    """Collect registered runs, requiring common validation and nested training clips."""
+    """Collect runs with common validation; architectures may share a dataset."""
     if not studies or len({item['validation_sha256'] for item in studies}) != 1:
         raise ValueError('Merged studies require the exact same validation manifest')
     cases, runs = {}, {}
@@ -89,7 +89,7 @@ def merge_studies(*studies):
         keys = set(zip(pd.to_datetime(frame.start_time, utc=True), frame.origin_y, frame.origin_x))
         if len(keys) != len(frame) or len(frame) != case['train_samples']:
             raise ValueError('Training manifests must contain the registered number of unique clips')
-        if previous is not None and not previous < keys:
+        if previous is not None and not previous <= keys:
             raise ValueError('Each larger dataset must contain every smaller-set training clip')
         previous = keys
     return dict(root=studies[0]['root'], roots=[item['root'] for item in studies],
@@ -584,6 +584,63 @@ def native_loss_history(study, run):
                 raise ValueError('Recorded total loss differs from the weighted objective components')
         history[f'{split}_objective_k2'] = values * scale
     return history
+
+
+def objective_learning_figures(study):
+    """One objective per figure; colour encodes sample count, style architecture."""
+    objectives = ('mvm', 'future', 'joint', 'residual')
+    canonical_colors = {4096: '#0072B2', 8192: '#E69F00', 16384: '#009E73',
+                        32768: '#CC79A7', 65536: '#D55E00'}
+    sizes = sorted({data['train_samples'] for data in study['cases'].values()})
+    palette = plt.get_cmap('tab10')
+    colors = {size: canonical_colors.get(size, palette(i % 10)) for i, size in enumerate(sizes)}
+    styles = {'Small': '-', 'Base': '--'}
+    figures = {}
+    for name in objectives:
+        runs = [run for run in study['runs'].values()
+                if run['name'] == name and run['stage']['kind'] == 'pretraining' and run['epochs']]
+        if not runs:
+            continue
+        runs.sort(key=lambda run: (study['cases'][run['case']]['train_samples'],
+                                  study['cases'][run['case']].get('encoder', 'Small')))
+        figure, axes = plt.subplots(2, 2, figsize=(14, 8), sharey=True, layout='constrained')
+        plotted_sizes, architectures, unfinished = set(), set(), False
+        for run in runs:
+            data = study['cases'][run['case']]
+            size, encoder = data['train_samples'], data.get('encoder', 'Small')
+            if encoder not in styles:
+                raise ValueError(f'No registered line style for encoder {encoder}')
+            history = native_loss_history(study, run)
+            if (history[['epoch', 'optimizer_steps']] <= 0).any().any():
+                raise ValueError('Logarithmic training axes require positive recorded budgets')
+            plotted_sizes.add(size); architectures.add(encoder)
+            ongoing = not run['complete']
+            unfinished |= ongoing
+            for i, split in enumerate(('train', 'validation')):
+                for j, budget in enumerate(('epoch', 'optimizer_steps')):
+                    axes[i, j].plot(history[budget], history[f'{split}_objective_k2'],
+                        color=colors[size], linestyle=styles[encoder], linewidth=1.6,
+                        marker='o' if ongoing else None, markevery=[len(history)-1],
+                        markerfacecolor='white', markersize=6,
+                        label=f'{encoder} · {size:,} clips')
+        for i, split in enumerate(('Training', 'Validation')):
+            for j, budget in enumerate(('Epoch', 'Optimizer updates')):
+                axis = axes[i, j]
+                axis.set(title=f'{LABELS[name]} · {split} · {budget.lower()}', xlabel=budget,
+                         ylabel='Objective loss (K²)', yscale='log', xscale='log')
+                axis.xaxis.set_major_locator(LogLocator(base=10))
+                axis.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}' if v >= 1 else f'{v:g}'))
+                axis.grid(alpha=.2, which='both')
+        handles = [Line2D([], [], color=colors[size], linewidth=2, label=f'{size:,} clips')
+                   for size in sorted(plotted_sizes)]
+        handles += [Line2D([], [], color='black', linestyle=styles[encoder], label=encoder)
+                    for encoder in styles if encoder in architectures]
+        if unfinished:
+            handles.append(Line2D([], [], color='black', linestyle='', marker='o',
+                                  markerfacecolor='white', label='Latest saved epoch · in progress'))
+        figure.legend(handles=handles, loc='outside lower center', ncol=4, fontsize=10)
+        figures[name] = figure
+    return figures
 
 
 def learning_figure(study, family='pretraining'):

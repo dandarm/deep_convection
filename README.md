@@ -191,8 +191,11 @@ MVM, Future, Joint, Residual e cinque probe su 4.096 e 8.192 clip Small;
 Future e Joint su 16.384 clip Small e 32.768 clip Base. La validation comune
 contiene 512 clip del 17 settembre. Le dimensioni del dataset compaiono negli
 stessi confronti, con architettura indicata nelle legende e nei titoli.
-Le curve mostrano i quattro obiettivi insieme rispetto a epoche e aggiornamenti;
-Joint compare una volta con la somma delle sue loss. Le sezioni successive
+Le curve mostrano un grafico per obiettivo rispetto a epoche e aggiornamenti,
+includendo la matrice Small/Base fino a 65.536 clip. Il colore indica il numero
+di clip; la linea continua identifica Small e quella tratteggiata Base. Joint
+compare con la somma delle sue loss. I confronti degli errori di previsione
+conservano le serie di riferimento elencate sopra. Le sezioni successive
 confrontano errori per canale/orizzonte e variabilità, gradienti, ricostruzioni
 storiche, previsioni salvate e rappresentazioni congelate.
 A 38.400 aggiornamenti, da 8.192 a 16.384 clip Future passa da 3,77 a 3,67 K
