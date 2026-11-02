@@ -1194,3 +1194,116 @@ Base Joint riprende poi il checkpoint e completa una terza epoca, passando da
 otto a dodici aggiornamenti. Con batch 32 i picchi di memoria allocata sono
 circa 8 GiB per Small Future, 9 GiB per Small Joint, 14 GiB per Base Future e
 17 GiB per Base Joint.
+
+
+## Campionamento spaziale e dominio geografico — 2 novembre 2026
+
+Il dominio di acquisizione concordato è 20°W–40°E, 30–70°N. La conversione
+`geographic_bbox_to_geos_bounds` costruisce un rettangolo nella proiezione
+geostazionaria che contiene il rettangolo geografico. Questo salvataggio conserva
+anche pixel esterni al dominio geografico, soprattutto alle latitudini maggiori.
+Il precedente campionamento ammetteva tutte le finestre complete di quel raster.
+Il controllo su tutti i pixel dei crop da 65.536 clip trova 33.235 finestre
+interamente entro il dominio e 265 delle 512 finestre della vecchia validation.
+Il dettaglio per giornata è conservato in
+`results/ssl_131072_20261102/historical_domain_audit.json`.
+
+La mappa del notebook mostra il pixel (0,0) dopo l'orientamento north-up e
+west-left. La conversione geografica usa coordinate e proiezione della giornata
+originale; questo gestisce anche la differenza fra griglie da 763 e 764 righe.
+Il colore riporta la quota di clip che usa ciascuna origine. Il contorno
+tratteggiato identifica il dominio geografico concordato. Le mappe storiche
+mostrano anche le origini esterne effettivamente presenti nei rispettivi manifest.
+
+Su richiesta dell'utente, tutte le 131.072 clip della nuova serie sono
+ricampionate. Le origini hanno risoluzione di un pixel; la costruzione verifica
+che ogni pixel del crop 224×224, mediante le coordinate del suo centro, rientri
+nei limiti geografici. La verifica della presenza fisica dei blocchi Zarr copre
+ogni frame della finestra. Il campionatore bilancia le proposte per data UTC e
+fascia di sei ore, poi estrae uniformemente le combinazioni ammissibili di
+istante iniziale e origine spaziale senza duplicati. Entro il training sono
+ammesse sovrapposizioni spaziali e temporali. La cadenza resta cinque minuti e
+ogni clip comprende sedici osservazioni consecutive.
+
+Le giornate di training sono 12 ottobre 2010; 5 novembre 2011; 13 aprile 2012;
+18 novembre 2013; 7 e 30 novembre 2014; 30 settembre 2015; 28 febbraio 2016;
+16 novembre 2017; 10 novembre 2019; 12, 13 e 15 settembre 2020.
+La proposta iniziale comprende 196.608 clip. Dopo il controllo dei valori
+finiti e dell'intervallo radiometrico 100–400 K, la selezione finale conserva
+la componente uniforme del 50% e la componente stratificata del 50% sulla
+variazione temporale storica di IR 10.8, con pesi 1:2:4. La media e la deviazione
+standard globali sono calcolate sui pixel di tutte le clip selezionate.
+La frequenza finale delle origini dipende quindi anche dalla stratificazione
+per variabilità. L'uniformità delle proposte è definita sulla griglia nativa.
+
+Anche la validation usa nuove origini a risoluzione di un pixel e il vincolo
+sull'intero crop: 512 clip estratte uniformemente fra quelle valide del
+17 settembre 2020. La separazione temporale viene verificata a partire
+dall'ultima osservazione di ciascuna clip, con almeno 24 ore fra gli split.
+Le soglie per raggruppare gli errori secondo la variabilità storica derivano
+dal nuovo manifest di training, comune ai sei esperimenti.
+
+La nuova serie cambia insieme numero di clip, date, campionamento spaziale,
+restrizione geografica e manifest di validation. Le curve storiche conservano
+le valutazioni originali; i nuovi risultati costituiscono un protocollo
+separato. Un confronto degli errori tra i protocolli richiede una valutazione
+dei checkpoint sullo stesso insieme di clip. Entro la nuova serie, Small e
+Base condividono esattamente dati, normalizzazione, validation e budget.
+
+La configurazione `configs/ssl_131072_20261102.json` include MVM, Future e Joint
+per Small, seguiti dagli stessi tre obiettivi per Base. Ogni run parte da pesi
+casuali, usa 150 epoche, batch effettivo 32, seed 20261024, AdamW con learning
+rate 0,00015 e weight decay 0,05. Il budget è 4.096 aggiornamenti per epoca,
+614.400 per run. Il training usa bf16. Il runtime `configs/ssl_cuda_h200_mig.json` abilita
+AdamW fuso, compilazione delle regioni dense, posizioni statiche e
+scelta automatica dei kernel SDPA. Il masking MVM resta tube masking al 90%.
+
+Le sorgenti congelate sono sotto
+`/data1/deep_convection_data/ssl_sources_20261102_n131072`; la cache lossless
+usa `/home/isac/deep_convection_data/cache_native_seviri_20261102_n131072`.
+Le date già disponibili condividono i file nativi con la cache precedente
+tramite hard link; le sei nuove date aggiungono circa 30 GiB. Le clip casuali
+sono lette ritagliando questi array, conservando i valori originali float16.
+Lo spazio complessivo degli array è circa 70 GiB. La preparazione iniziata
+con la vecchia griglia è stata fermata prima della selezione; il nuovo output
+è `results/ssl_131072_20261102/data_preparation_random`.
+
+`scripts/build_seviri_ssl_random_dataset.py` conserva proposte, verifiche,
+statistiche, copie delle sorgenti eseguibili e checksum. Il file
+`data_preparation_random/launcher.json` registra il comando completo; il
+file `preparation_progress.json` mostra quante proposte sono state controllate.
+`dataset_ready.json` viene scritto dopo le verifiche radiometriche,
+geografiche, temporali, di provenienza e di uguaglianza fra Zarr e cache.
+I test del campionatore confrontano i vincoli sui blocchi con enumerazioni
+complete delle origini e verificano l'intero crop nelle quattro combinazioni
+di orientamento degli assi.
+
+La verifica MVM su dati reali, isolata in `results/ssl_131072_20261102/mvm_smoke`,
+completa due epoche per Small e Base su 128 clip, con 32 di validation.
+Base riprende il checkpoint e completa una terza epoca. Sulle stesse maschere
+fisse, il confronto FP32/bf16 e il confronto fra runtime bf16 standard e
+ottimizzato danno differenze di RMSE inferiori a 0,001 K per entrambi i modelli.
+I risultati sono controlli di integrazione e precisione numerica.
+
+Dopo la preparazione del dataset, i piani dei sei esperimenti si congelano con:
+
+```bash
+cd /home/isac/deep_convection
+.venv/bin/python scripts/run_seviri_ssl_matrix.py \
+  --output-dir results/ssl_131072_20261102 \
+  --config configs/ssl_131072_20261102.json --prepare-only
+```
+
+Il supervisore con runtime ottimizzato si avvia o riprende mediante:
+
+```bash
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 TORCHINDUCTOR_COMPILE_THREADS=4 \
+.venv/bin/python -u scripts/run_seviri_ssl_runtime_revision.py \
+  --output-dir results/ssl_131072_20261102 \
+  --revision-dir results/ssl_131072_20261102/runtime_revision_20261102 \
+  --cuda-runtime configs/ssl_cuda_h200_mig.json
+```
+
+Dalla sessione SSH, `python3 scripts/status_seviri_ssl.py --watch 15` segue
+la serie indicata in `results/ssl_active_series.json`. Il puntatore viene
+aggiornato dopo la verifica dell'avvio del nuovo supervisore.

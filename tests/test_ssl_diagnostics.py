@@ -4,7 +4,7 @@ import torch
 from emma_gpm.forecasting import ForecastWindow
 from emma_gpm.ssl_model import history_config
 from emma_gpm.ssl_diagnostics import pool_embeddings,radiometric_descriptors,DESCRIPTOR_NAMES,load_run_model,purely_advected_history
-from emma_gpm.ssl_dashboard import spatial_coverage
+from emma_gpm.ssl_dashboard import spatial_coverage, crop_origin_counts, crop_origin_locations
 
 
 def test_pooled_temporal_slope_retains_order_and_channel_identity():
@@ -47,6 +47,36 @@ def test_spatial_coverage_counts_exact_crop_footprints():
     assert coverage.sum()==2*224**2
     assert coverage[150,150]==2
     assert coverage[0,335]==0
+
+
+def test_crop_origin_is_tensor_top_left_after_coordinate_reversal():
+    import pandas as pd
+    frame=pd.DataFrame({'origin_y':[0,0,112],'origin_x':[0,0,112]})
+    points=crop_origin_counts(frame,336,448,x_increasing=False,y_increasing=True)
+    repeated=points[points.clips==2].iloc[0]
+    assert repeated.north_up_y==112 and repeated.west_left_x==224
+    assert repeated.clip_fraction_percent==200/3
+    assert points.clips.sum()==3 and len(points)==2
+    for x_increasing in (False,True):
+        for y_increasing in (False,True):
+            point=crop_origin_counts(frame.iloc[[2]],336,448,
+                x_increasing=x_increasing,y_increasing=y_increasing).iloc[0]
+            assert point.north_up_y==(0 if y_increasing else 112)
+            assert point.west_left_x==112
+
+
+def test_geographic_origins_align_different_native_grids(monkeypatch,tmp_path):
+    import pandas as pd
+    import xarray as xr
+    x=np.arange(448)*.1-20
+    first=xr.Dataset(coords={'x':x[::-1],'y':np.arange(336)*.1+30},attrs={'projection_wkt':'EPSG:4326'})
+    second=xr.Dataset(coords={'x':x,'y':(np.arange(337)*.1+30)[::-1]},attrs={'projection_wkt':'EPSG:4326'})
+    monkeypatch.setattr(xr,'open_zarr',lambda path,**kwargs: first if path.name=='a.zarr' else second)
+    frame=pd.DataFrame({'store':['a.zarr','b.zarr'],'origin_y':[0,113],'origin_x':[0,224]})
+    points=crop_origin_locations(frame,tmp_path)
+    assert len(points)==1 and points.clips.iloc[0]==2
+    np.testing.assert_allclose(points[['longitude','latitude']].iloc[0],[2.4,52.3])
+    assert points.clip_fraction_percent.iloc[0]==100
 
 
 def test_advected_history_preserves_translation_and_reports_border_support():

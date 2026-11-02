@@ -245,6 +245,16 @@ permette di selezionare esplicitamente una serie storica. `--watch 15` aggiorna 
 e i metadati dei processi e può essere chiuso indipendentemente dal training.
 Gli esempi per PowerShell e bridge SSH sono in `SSL_SEVIRI.md`.
 
+La configurazione `configs/ssl_131072_20261102.json` prepara sei training da
+150 epoche: Small e Base per MVM, Future e Joint. Il nuovo protocollo ricampiona
+tutte le 131.072 clip a risoluzione spaziale di un pixel e richiede che ogni
+pixel del crop rientri nel dominio 20°W–40°E, 30–70°N. Anche le 512 clip di
+validation del 17 settembre 2020 vengono ricampionate entro questi limiti.
+I confronti tra Small e Base condividono manifest e statistiche; il confronto
+con gli esperimenti precedenti richiede di considerarne il diverso campionamento
+e di valutare i checkpoint sullo stesso manifest di validation. Il protocollo
+e i controlli sono descritti in `SSL_SEVIRI.md`.
+
 L'estensione `results/ssl_extension_20261026` comprende Future e Joint su
 16.384 clip, con 75 epoche e batch effettivo 32: 38.400 aggiornamenti per modello,
 come i precedenti training da 8.192 clip a 150 epoche. Il nuovo dataset conserva

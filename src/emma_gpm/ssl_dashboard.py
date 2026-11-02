@@ -77,8 +77,50 @@ def spatial_coverage(frame,height,width):
     return difference.cumsum(0).cumsum(1)[:-1,:-1]
 
 
+def crop_origin_counts(frame, height, width, *, x_increasing, y_increasing, crop=224):
+    """Locate each tensor's (0, 0) pixel in the north-up, west-left domain."""
+    origins = frame[['origin_y', 'origin_x']].to_numpy()
+    if (not np.isfinite(origins).all() or not np.equal(origins, origins.astype(int)).all()
+            or (origins < 0).any() or (origins[:, 0]+crop > height).any()
+            or (origins[:, 1]+crop > width).any()):
+        raise ValueError('Crop origins must be integer positions entirely inside the domain')
+    y, x = origins.astype(int).T
+    points = pd.DataFrame({'north_up_y': height-y-crop if y_increasing else y,
+                           'west_left_x': x if x_increasing else width-x-crop})
+    counts = points.value_counts(sort=False).rename('clips').reset_index()
+    counts['clip_fraction_percent'] = 100*counts.clips/len(frame) if len(frame) else 0.
+    return counts
+
+
+def crop_origin_locations(frame, root):
+    """Pool tensor (0, 0) locations geographically across native grids and dates."""
+    import xarray as xr
+    from pyproj import CRS, Transformer
+    frames=[]
+    for store, selected in frame.groupby('store',sort=True):
+        with xr.open_zarr(Path(root)/store,consolidated=True,chunks=None) as ds:
+            x,y=np.asarray(ds.x.values),np.asarray(ds.y.values)
+            x_increasing,y_increasing=bool(x[-1]>x[0]),bool(y[-1]>y[0])
+            if any(not (np.all(np.diff(a)>0) or np.all(np.diff(a)<0)) for a in (x,y)):
+                raise ValueError('Geographic crop origins require monotonic coordinates')
+            points=crop_origin_counts(selected,len(y),len(x),x_increasing=x_increasing,y_increasing=y_increasing)
+            xx=x if x_increasing else x[::-1]
+            yy=y[::-1] if y_increasing else y
+            transform=Transformer.from_crs(CRS.from_user_input(ds.attrs['projection_wkt']),
+                                           'EPSG:4326',always_xy=True)
+            lon,lat=transform.transform(xx[points.west_left_x],yy[points.north_up_y])
+            if not np.isfinite(lon).all() or not np.isfinite(lat).all():
+                raise ValueError('Crop (0, 0) lies outside the observable Earth')
+            frames.append(pd.DataFrame({'longitude':lon,'latitude':lat,'clips':points.clips.to_numpy()}))
+    locations=pd.concat(frames,ignore_index=True).groupby(['longitude','latitude'],as_index=False).clips.sum()
+    locations['clip_fraction_percent']=100*locations.clips/len(frame)
+    return locations
+
+
 def dataset_overview(queue, show_tables=True):
     from IPython.display import display
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
     queue=Path(queue)
     protocol=read_json(queue/'dataset/protocol.json')
     if not protocol:
@@ -93,25 +135,41 @@ def dataset_overview(queue, show_tables=True):
             'First observation (UTC)':str(times.min()),'Last observation (UTC)':str(times.max()+pd.Timedelta(minutes=75))})
     if show_tables:
         display(pd.DataFrame(rows).set_index('Subset'))
-    record=read_json(queue/'dataset/inventory.json')['stores'][0]
-    height,width=record['shape'][2:]
-    fig,axes=plt.subplots(2,2,figsize=(14,7),constrained_layout=True)
+    root=read_json(queue/'dataset/channel_stats.json')['zarr_root']
+    origins={name:crop_origin_locations(frame,root) for name,frame in frames.items()}
+    maximum=max(points.clip_fraction_percent.max() for points in origins.values())
+    all_points=pd.concat(origins.values(),ignore_index=True)
+    extent=[min(-20,all_points.longitude.min()-2),max(40,all_points.longitude.max()+2),
+            min(30,all_points.latitude.min()-2),max(70,all_points.latitude.max()+2)]
+    fig=plt.figure(figsize=(14,8),layout='constrained')
+    grid=fig.add_gridspec(2,2,height_ratios=[2,1])
+    axes=np.array([[fig.add_subplot(grid[0,j],projection=ccrs.PlateCarree()) for j in range(2)],
+                   [fig.add_subplot(grid[1,j]) for j in range(2)]])
     for column,(name,frame) in enumerate(frames.items()):
-        coverage=spatial_coverage(frame,height,width)
-        if record['y_increasing']:
-            coverage=coverage[::-1]
-        if not record['x_increasing']:
-            coverage=coverage[:,::-1]
-        image=axes[0,column].imshow(coverage,cmap='viridis',vmin=0)
-        axes[0,column].set_title(f'{name.capitalize()} spatial coverage')
-        axes[0,column].set_xlabel('West–east pixel index')
-        fig.colorbar(image,ax=axes[0,column],label='Number of clips')
+        points=origins[name]
+        axes[0,column].set_extent(extent,crs=ccrs.PlateCarree())
+        axes[0,column].plot([-20,40,40,-20,-20],[30,30,70,70,30],
+            transform=ccrs.PlateCarree(),color='black',linestyle='--',linewidth=1,
+            label='Requested acquisition domain',zorder=4)
+        axes[0,column].legend(loc='lower left',fontsize=8)
+        axes[0,column].add_feature(cfeature.NaturalEarthFeature('physical','land','10m'),
+                                   facecolor='#f1f1f1',edgecolor='#777777',linewidth=.4)
+        image=axes[0,column].scatter(points.longitude,points.latitude,transform=ccrs.PlateCarree(),
+            c=points.clip_fraction_percent,s=max(.6,min(30,4500/len(points))),
+            cmap='viridis',vmin=0,vmax=maximum,zorder=3,rasterized=True)
+        axes[0,column].set(title=f'{name.capitalize()} crop origins · {len(frame):,} clips',
+            xlabel='Longitude',ylabel='Latitude')
+        lines=axes[0,column].gridlines(draw_labels=True,linewidth=.5,alpha=.3)
+        lines.top_labels=lines.right_labels=False
+        fig.colorbar(image,ax=axes[0,column],label='Clips at this origin (%)')
         frame.groupby('day').size().plot.bar(ax=axes[1,column],color='tab:blue')
+        axes[1,column].set_xticklabels(pd.to_datetime(sorted(frame.day.unique())).strftime('%d %b\n%Y'))
         axes[1,column].set_ylabel('Number of clips')
         axes[1,column].set_xlabel('Observation date (UTC)')
-        axes[1,column].tick_params(axis='x',rotation=0)
+        axes[1,column].tick_params(axis='x',rotation=45 if frame.day.nunique()>8 else 0)
     display(fig)
     plt.close(fig)
+    return fig, origins
 
 
 def learning_curves(queue):
