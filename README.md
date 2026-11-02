@@ -319,6 +319,10 @@ quattro thread e normalizzazione globale sulla GPU è gestita da
 esecutiva e conservazione del protocollo scientifico originale. I dettagli e
 le misure prima/dopo sono in `SSL_SEVIRI.md` e nel notebook delle prestazioni.
 
+Il trasferimento su Leonardo, la ripresa dei checkpoint e gli script Slurm
+per Small/Base su 131.072 clip sono descritti in
+[`docs/SEVIRI_HPC.md`](docs/SEVIRI_HPC.md).
+
 [`notebooks/visualize_seviri_rdt_rules.ipynb`](notebooks/visualize_seviri_rdt_rules.ipynb)
 esplora l'archivio scaricato con clip, Play sincronizzato e pseudo-classi
 deterministiche **RDT-CW-inspired**. Mostra contorni adattivi, plateau, proxy

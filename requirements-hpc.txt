@@ -1,0 +1,4 @@
+# Install the CUDA 12.6 torch wheel first, as documented in docs/SEVIRI_HPC.md.
+-r requirements-training.txt
+torch==2.14.1
+transformers==5.20.2
