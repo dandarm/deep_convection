@@ -208,7 +208,7 @@ def source_hashes():
     files += [ROOT / "src/emma_gpm" / name for name in (
         "forecasting.py", "advection.py", "ssl_model.py", "ssl_masking.py", "ssl_evaluation.py",
         "forecast_metrics.py", "videomae.py", "videomae_v2.py", "seviri_clips.py", "training_checkpoint.py",
-        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_frame_dataset.py", "ssl_execution.py", "ssl_runtime.py")]
+        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_tiled_cache.py", "seviri_frame_dataset.py", "ssl_execution.py", "ssl_runtime.py")]
     return {str(path.relative_to(ROOT)): digest(path) for path in files}
 
 

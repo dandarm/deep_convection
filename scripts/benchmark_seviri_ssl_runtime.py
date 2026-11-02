@@ -20,7 +20,7 @@ from emma_gpm.ssl_model import SeviriSSL, history_config, ssl_loss
 from emma_gpm.ssl_masking import make_ssl_mask
 from emma_gpm.videomae_v2 import running_cell_mask
 from scripts.pretrain_videomae import seed_everything
-from scripts.pretrain_seviri_ssl import digest, write_json
+from scripts.pretrain_seviri_ssl import digest, source_hashes, write_json
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
     p.add_argument('--frame-cache', type=Path, required=True)
     p.add_argument('--output-dir', type=Path, required=True)
     p.add_argument('--model-size', choices=['small','base'], default='base')
-    p.add_argument('--objective', choices=['future','joint'], default='future')
+    p.add_argument('--objective', choices=['mvm','future','joint'], default='future')
     p.add_argument('--runtime', type=Path, required=True)
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--warmup', type=int, default=6)
@@ -38,7 +38,7 @@ def main():
     p.add_argument('--trace', action='store_true')
     args = p.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=False)
-    sources = [Path(__file__), ROOT/'src/emma_gpm/ssl_runtime.py']
+    sources = [Path(__file__), *(ROOT/name for name in source_hashes())]
     source_sha256 = {str(f.relative_to(ROOT)):digest(f) for f in sources}
     for f in sources:
         target=args.output_dir/'source_archive'/f.relative_to(ROOT)
@@ -80,8 +80,10 @@ def main():
         if audit:
             # Deterministic samples spread across every parameter tensor.
             gradients = torch.cat([p.grad.flatten()[::max(1,p.numel()//128)].float() for p in model.parameters() if p.grad is not None])
-            initial = dict(loss=loss.detach().cpu(), prediction=output['prediction'][:2].detach().float().cpu(),
+            initial = dict(loss=loss.detach().cpu(),
                            gradient_sample=gradients.detach().cpu(), gradient_norm=norm.detach().cpu())
+            if 'prediction' in output:
+                initial['prediction']=output['prediction'][:2].detach().float().cpu()
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         values = {name:float(v.detach()) for name,v in terms.items()}

@@ -151,7 +151,7 @@ class SeviriFrameCacheReader(SeviriZarrClipReader):
             if not (np.all(np.diff(x) > 0) or np.all(np.diff(x) < 0)):
                 raise IncompleteSeviriClipError("Non-monotonic x coordinates")
             selection = slice(indices[0], indices[-1] + 1) if np.all(np.diff(indices) == 1) else indices
-            piece = ds.seviri.data[selection, :, y0:y1, x0:x1]
+            piece = self._native_piece(self._path_for_time(pd.Timestamp(day)), ds, selection, y0, y1, x0, x1)
             if y[0] < y[-1]:
                 piece = piece[..., ::-1, :]
             if x[0] > x[-1]:
@@ -167,6 +167,9 @@ class SeviriFrameCacheReader(SeviriZarrClipReader):
     def load_native(self, start_time, *, origin_y, origin_x):
         out = np.empty((self.num_frames, len(self.channels), self.crop_size, self.crop_size), dtype=np.float16)
         return self.load_native_into(start_time, origin_y=origin_y, origin_x=origin_x, out=out)
+
+    def _native_piece(self, path, ds, selection, y0, y1, x0, x1):
+        return ds.seviri.data[selection, :, y0:y1, x0:x1]
 
     def _open_store(self, path):
         path = Path(path)

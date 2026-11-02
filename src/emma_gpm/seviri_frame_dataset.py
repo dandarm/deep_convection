@@ -1,9 +1,11 @@
 """Ordered clip access to verified daily arrays for the pinned batch loader."""
 from pathlib import Path
+import json
 
 import pandas as pd
 
 from .seviri_frame_cache import SeviriFrameCacheReader, file_digest, manifest_days
+from .seviri_tiled_cache import TiledFrameCacheReader, LAYOUT as TILED_LAYOUT
 
 
 class FrameFileDataset:
@@ -17,7 +19,9 @@ class FrameFileDataset:
         self.root = Path(root)
         self.manifest = pd.read_csv(manifest)
         self.metadata_sha256 = file_digest(self.root/'metadata.json')
-        self._reader = SeviriFrameCacheReader(zarr_root, self.root, require_finite=False)
+        metadata=json.loads((self.root/'metadata.json').read_text())
+        reader=TiledFrameCacheReader if metadata.get('layout')==TILED_LAYOUT else SeviriFrameCacheReader
+        self._reader = reader(zarr_root, self.root, require_finite=False)
         self.records = list(self.manifest.itertuples(index=False))
         self._files = {}
         for day in manifest_days(self.manifest):

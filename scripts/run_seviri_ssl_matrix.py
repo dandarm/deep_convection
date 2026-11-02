@@ -89,6 +89,7 @@ def make_plans(output, config):
         'scripts/run_seviri_ssl_scaling.py', 'scripts/run_seviri_ssl_comparison.py',
         'scripts/build_seviri_ssl_new_dates.py', 'scripts/build_seviri_ssl_extension.py',
         'scripts/build_seviri_ssl_random_dataset.py', 'src/emma_gpm/ssl_random_sampling.py',
+        'scripts/build_seviri_tiled_cache.py',
         'scripts/build_seviri_ssl_scaling_dataset.py', 'scripts/build_seviri_ssl_pilot_dataset.py',
         'scripts/extend_seviri_frame_cache.py', 'src/emma_gpm/ssl_scaling.py',
         'src/emma_gpm/ssl_dataset.py', 'src/emma_gpm/ssl_sampling.py',
