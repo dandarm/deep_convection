@@ -13,7 +13,10 @@ from .videomae_v2 import fixed_running_cell_mask
 @torch.no_grad()
 def evaluate_ssl(model, loader, window, device, mean_k, std_k, *, mask_ratio=.9,
                  mask_strategy="tube", seed=314159, precision="fp32", max_shift=12,
-                 ablation="chronological", variability_edges=None, example_path=None):
+                 ablation="chronological", variability_edges=None, example_path=None,
+                 sample_days=None, progress_callback=None):
+    if sample_days is not None and len(sample_days) != len(loader.dataset):
+        raise ValueError('One ordered UTC day per validation sample required')
     mode = model.training
     model.eval()
     names = ["persistence", "advection"] + ([] if model.head is None else ["neural"])
@@ -21,11 +24,15 @@ def evaluate_ssl(model, loader, window, device, mean_k, std_k, *, mask_ratio=.9,
     stratified = {level: {name: ForecastMetrics(window.horizons_minutes, std_k) for name in names}
                   for level in ("low", "medium", "high")} if variability_edges is not None else {}
     mvm_sum, count = 0., 0
+    daily = {}
     variability = []
     try:
         for batch in loader:
             clip = batch["pixel_values"].to(device, non_blocking=loader.pin_memory)
             original_history, target = window.split(clip)
+            batch_days = sample_days[count:count+len(clip)] if sample_days is not None else []
+            if model.mae is not None and len(set(batch_days)) > 1:
+                raise ValueError('Per-day MVM metrics require batches contained within a UTC day')
             indices = range(count, count + len(clip))
             history = temporal_ablation(original_history, ablation, seed=seed, indices=indices)
             # Baselines are fixed on real chronological history, even when the
@@ -52,14 +59,33 @@ def evaluate_ssl(model, loader, window, device, mean_k, std_k, *, mask_ratio=.9,
                         selected = level == index
                         if selected.any():
                             stratified[label][name].update(prediction[selected], target[selected], support[selected])
+            for day in sorted(set(batch_days)):
+                if day not in daily:
+                    daily[day] = dict(scores={name:ForecastMetrics(window.horizons_minutes, std_k) for name in names},
+                                      mvm_sum=0., samples=0)
+                selected = torch.tensor([value == day for value in batch_days], device=device, dtype=torch.bool)
+                size = batch_days.count(day)
+                for name, prediction in predictions.items():
+                    daily[day]['scores'][name].update(prediction[selected], target[selected], support[selected])
+                daily[day]['samples'] += size
+                if 'mvm_loss' in output:
+                    daily[day]['mvm_sum'] += float(output['mvm_loss']) * size
             if count == 0 and example_path is not None:
                 plot_forecasts(original_history[0], target[0], {name: values[0] for name, values in predictions.items()},
                                window, mean_k, std_k, example_path)
             count += len(clip)
+            if progress_callback is not None:
+                progress_callback(count)
         report = {name: metric.report() for name, metric in scores.items()}
         report["mvm_mse"] = mvm_sum / count if model.mae is not None and count else None
         report["ablation"] = ablation
         report["historical_ir108_mean_abs_change_k"] = variability
+        if sample_days is not None:
+            report['by_day'] = {day:dict(
+                samples=values['samples'],
+                mvm_mse=values['mvm_sum']/values['samples'] if model.mae is not None else None,
+                **{name:metric.report() for name,metric in values['scores'].items()})
+                for day,values in sorted(daily.items())}
         if stratified:
             report["variability_edges_k"] = list(variability_edges)
             report["by_historical_variability"] = {

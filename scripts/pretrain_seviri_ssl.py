@@ -138,6 +138,11 @@ def validate_manifests(training, validation, reserved_days=()):
         if frame.duplicated(["start_time", "origin_y", "origin_x"]).any():
             raise ValueError("Duplicate clips in a manifest")
     assert_temporal_holdout(training, validation, embargo_hours=24)
+    from emma_gpm.ssl_validation_set import assert_day_separation
+    registered_holdout = ROOT / 'configs/ssl_validation_extended.json'
+    if registered_holdout.exists():
+        reservation = json.loads(registered_holdout.read_text())
+        assert_day_separation(training, reservation['days'], reservation['temporal_separation_hours'])
     # These dates are already used by the historical embedding study. Never
     # silently reuse them when its unversioned reservation JSON is absent.
     days = set(pd.date_range("2020-03-03", "2020-03-09", tz="UTC"))
@@ -211,7 +216,10 @@ def source_hashes():
     files += [ROOT / "src/emma_gpm" / name for name in (
         "forecasting.py", "advection.py", "ssl_model.py", "ssl_masking.py", "ssl_evaluation.py",
         "forecast_metrics.py", "videomae.py", "videomae_v2.py", "seviri_clips.py", "training_checkpoint.py",
-        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_tiled_cache.py", "seviri_frame_dataset.py", "storage_roots.py", "ssl_execution.py", "ssl_runtime.py")]
+        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_tiled_cache.py", "seviri_frame_dataset.py", "storage_roots.py", "ssl_execution.py", "ssl_runtime.py", "ssl_validation_set.py")]
+    reservation = ROOT / 'configs/ssl_validation_extended.json'
+    if reservation.exists():
+        files.append(reservation)
     return {str(path.relative_to(ROOT)): digest(path) for path in files}
 
 

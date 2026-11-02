@@ -23,6 +23,68 @@ osservazioni comuni a più clip occupano un solo file giornaliero. Il
 trasferimento preserva valori, ordine dei sette canali, orientamento,
 campionamento, dominio e statistiche globali del protocollo locale.
 
+### Validation storica e validation estesa
+
+La validation da 512 clip usata fino ai dataset da 65k rimane il riferimento
+per confrontare quei training. Il dataset da 131.072 clip usa altri 512 crop
+della stessa giornata, 17 settembre 2020: il ricampionamento ha modificato
+posizioni e finestre temporali. La preparazione della validation estesa conserva
+copie identiche di entrambi i manifest, chiamate `legacy_512.csv` e
+`current_128k_512.csv`. Per confrontare direttamente tutti i checkpoint sul
+riferimento storico serve valutarli sulle medesime clip `legacy_512`.
+
+`configs/ssl_validation_extended.json` definisce un secondo insieme di
+10.240 clip: 20 giornate fra il 5 gennaio e il 15 giugno 2022, con 512 clip
+per giornata e 128 per fascia UTC di sei ore. Le giornate sono distribuite
+lungo il periodo coperto dalle osservazioni già caricate. Le origini spaziali
+sono campionate alla risoluzione di un pixel; ogni pixel del crop appartiene
+al dominio 20°W–40°E, 30–70°N. La selezione richiede tutti i sette canali,
+16 frame a cadenza regolare, valori finiti e temperature fra 100 e 400 K.
+Il campionamento uniforme delle proposte valide in ciascuna fascia mantiene
+lo stesso peso per le giornate e per gli intervalli della giornata.
+
+La valutazione estesa misura il trasferimento alle condizioni osservate nel
+primo semestre 2022. Le finestre spaziali e temporali possono sovrapporsi
+entro una giornata; i report per giornata permettono di osservare quanto
+l'errore dipenda dalle diverse situazioni meteorologiche. Il numero di clip
+descrive il numero di finestre valutate. La copertura di giornate, stagioni
+ed eventi determina quali condizioni atmosferiche entrano nel confronto.
+
+Il controllo dei manifest riserva queste giornate e una separazione minima
+di 24 ore dalle osservazioni di training, considerando anche l'ultimo frame
+di ciascuna clip. La riserva è inclusa fra i sorgenti congelati dei nuovi
+esperimenti. Ogni checkpoint viene valutato usando la propria media e
+deviazione standard globali, calcolate sul rispettivo training.
+
+La cadenza proposta è: validation piccola a ogni epoca, validation estesa
+ogni dieci epoche e sul checkpoint migliore selezionato dalla validation
+piccola. Gli esperimenti HPC già preparati conservano il protocollo congelato;
+il comando seguente esegue la valutazione aggiuntiva separatamente e salva
+metriche globali e per giornata. La cadenza periodica resta da collegare alla
+prossima configurazione di training, dopo il trasferimento del nuovo dataset.
+
+```bash
+python scripts/evaluate_seviri_ssl_validation.py \
+  --dataset results/ssl_validation_10k_20261102 \
+  --run-dir results/ssl_factorial_20261028/small_n65536/future \
+  --checkpoint best \
+  --output-dir results/validation_extended/small_65536_future \
+  --batch-size 32 --precision bf16
+```
+
+Il parametro `--smoke-samples 32` esegue una verifica tecnica parziale,
+identificata da `scope: smoke` nel risultato. La valutazione completa produce
+`scope: full_validation`. Per MVM e Joint, i batch rispettano i confini delle
+giornate per attribuire correttamente anche la loss di ricostruzione.
+
+La preparazione locale si trova in `results/ssl_validation_10k_20261102/`;
+le copie congelate delle sorgenti e i frame sono sotto
+`/data1/deep_convection_data/ssl_validation_10240_20261102/`.
+`progress.json` descrive lo stato di preparazione, mentre
+`dataset_ready.json` viene pubblicato dopo le verifiche finali. Il dataset
+esteso richiede un trasferimento separato sul cluster; `$WORK` è la
+destinazione prevista, dato lo spazio residuo nella quota `$FAST`.
+
 `SEVIRI_STORAGE_ROOTS` indica un JSON con le nuove posizioni fisiche delle
 due radici. I percorsi canonici conservati nei manifest, nei metadati e nel
 checkpoint mantengono il loro significato di provenienza. Il lettore continua

@@ -77,6 +77,10 @@ def prepare(dataset, seed, output):
     for directory in ("src", "scripts"):
         shutil.copytree(ROOT / directory, archive / directory,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    reservation = ROOT / 'configs/ssl_validation_extended.json'
+    if reservation.exists():
+        (archive / 'configs').mkdir(exist_ok=True)
+        shutil.copy2(reservation, archive / 'configs' / reservation.name)
     sources = source_hashes()
     for name, expected in sources.items():
         if digest(archive / name) != expected:
