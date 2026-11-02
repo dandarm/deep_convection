@@ -704,14 +704,132 @@ def native_loss_history(study, run):
     return history
 
 
-def objective_learning_figures(study):
-    """One objective per figure; colour encodes sample count, style architecture."""
-    objectives = ('mvm', 'future', 'joint', 'residual')
+def _size_colors(sizes):
     canonical_colors = {4096: '#0072B2', 8192: '#E69F00', 16384: '#009E73',
                         32768: '#CC79A7', 65536: '#D55E00'}
-    sizes = sorted({data['train_samples'] for data in study['cases'].values()})
     palette = plt.get_cmap('tab10')
-    colors = {size: canonical_colors.get(size, palette(i % 10)) for i, size in enumerate(sizes)}
+    return {size: canonical_colors.get(size, palette(i % 10)) for i, size in enumerate(sorted(set(sizes)))}
+
+
+def _validation_trajectory(study, run):
+    history = native_loss_history(study, run)[['epoch', 'optimizer_steps', 'validation_objective_k2']].copy()
+    if (not np.isfinite(history.to_numpy()).all() or (history.optimizer_steps <= 0).any()
+            or (history.optimizer_steps.diff().dropna() <= 0).any()):
+        raise ValueError('Validation trajectories require finite values and strictly increasing positive updates')
+    history['best_validation_k2'] = history.validation_objective_k2.cummin()
+    return history
+
+
+def objective_minima(study):
+    """Minimum of the native validation objective over every committed history."""
+    records = []
+    for run in study['runs'].values():
+        if run['stage']['kind'] != 'pretraining' or not run['epochs']:
+            continue
+        history = _validation_trajectory(study, run)
+        best = history.loc[history.validation_objective_k2.idxmin()]
+        case = study['cases'][run['case']]
+        records.append({'Objective': LABELS[run['name']], 'Encoder': case.get('encoder', 'Small'),
+                        'Training clips': case['train_samples'],
+                        'Minimum validation loss (K²)': best.validation_objective_k2,
+                        'Epoch of minimum': int(best.epoch), 'Updates at minimum': int(best.optimizer_steps),
+                        'Last saved updates': int(history.optimizer_steps.iloc[-1]), 'Complete': run['complete']})
+    return pd.DataFrame(records)
+
+
+def learning_differences(study, comparison, family='pretraining', reference_sizes=None):
+    """Candidate minus reference at exact shared updates; cumulative minima use full past histories."""
+    if comparison not in ('architecture', 'dataset'):
+        raise ValueError('Choose an architecture or dataset comparison')
+    names = ('mvm', 'future', 'joint', 'residual') if family == 'pretraining' else FAMILIES[family]
+    references = {'Small': 4096, 'Base': 16384} if reference_sizes is None else reference_sizes
+    runs = {}
+    for run in study['runs'].values():
+        if run['name'] not in names or not run['epochs']:
+            continue
+        data = study['cases'][run['case']]
+        key = (data.get('encoder', 'Small'), data['train_samples'], run['name'])
+        if key in runs:
+            raise ValueError('Select one run per architecture, dataset size and objective')
+        runs[key] = run
+    frames = []
+    histories = {}
+    for (encoder, size, name), candidate in runs.items():
+        if comparison == 'architecture':
+            if encoder != 'Base':
+                continue
+            reference_key = ('Small', size, name)
+        else:
+            if encoder not in references or size <= references[encoder]:
+                continue
+            reference_key = (encoder, references[encoder], name)
+        reference = runs.get(reference_key)
+        if reference is None:
+            continue
+        if candidate.get('loss_weights', {}) != reference.get('loss_weights', {}):
+            raise ValueError('Paired runs require the same objective weights')
+        pair = []
+        for run in (candidate, reference):
+            key = (run['case'], name)
+            if key not in histories:
+                histories[key] = _validation_trajectory(study, run)
+            pair.append(histories[key])
+        joined = pair[0].merge(pair[1], on='optimizer_steps', how='inner',
+                              suffixes=('_candidate', '_reference'), validate='one_to_one')
+        if joined.empty:
+            continue
+        joined['validation_difference_k2'] = joined.validation_objective_k2_candidate - joined.validation_objective_k2_reference
+        joined['best_difference_k2'] = joined.best_validation_k2_candidate - joined.best_validation_k2_reference
+        joined['objective'], joined['comparison'] = name, comparison
+        joined['encoder'], joined['training_clips'] = encoder, size
+        joined['reference_encoder'], joined['reference_clips'] = reference_key[:2]
+        joined['candidate_case'], joined['reference_case'] = candidate['case'], reference['case']
+        frames.append(joined)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def learning_difference_figures(differences):
+    """Signed instantaneous and best-so-far validation differences, separated by objective."""
+    if differences.empty:
+        return {}
+    if differences.comparison.nunique() != 1:
+        raise ValueError('Plot one comparison type at a time')
+    comparison = differences.comparison.iloc[0]
+    colors = _size_colors(differences.training_clips)
+    figures = {}
+    for name, objective in differences.groupby('objective', sort=False):
+        encoders = sorted(objective.encoder.unique(), key=lambda name: (name != 'Small', name))
+        fig, axes = plt.subplots(len(encoders), 2, figsize=(14, 4.2*len(encoders)),
+                                 squeeze=False, layout='constrained')
+        handles = {}
+        for i, encoder in enumerate(encoders):
+            rows = objective[objective.encoder == encoder]
+            for (size, reference_size), curve in rows.groupby(['training_clips', 'reference_clips'], sort=True):
+                curve = curve.sort_values('optimizer_steps')
+                label = f'{size:,} clips' if comparison == 'architecture' else f'{size:,} − {reference_size:,} clips'
+                for j, column in enumerate(('validation_difference_k2', 'best_difference_k2')):
+                    line, = axes[i, j].plot(curve.optimizer_steps, curve[column], color=colors[size],
+                                          marker='.', markersize=3, linewidth=1.4, label=label)
+                    handles[label] = line
+            for j, title in enumerate(('Current validation', 'Best validation reached so far')):
+                axis = axes[i, j]
+                contrast = 'Base − Small' if comparison == 'architecture' else encoder
+                axis.axhline(0, color='black', linewidth=1)
+                axis.set(title=f'{LABELS[name]} · {contrast} · {title}', xlabel='Optimizer updates',
+                         ylabel='Validation loss difference (K²)', xscale='log')
+                axis.xaxis.set_major_locator(LogLocator(base=10))
+                axis.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}'))
+                axis.grid(alpha=.2, which='both')
+        fig.legend(handles=list(handles.values()), loc='outside lower center',
+                   ncol=min(3, len(handles)), fontsize=10)
+        figures[name] = fig
+    return figures
+
+
+def objective_learning_figures(study):
+    """One objective per figure, updates only; colour encodes size, style architecture."""
+    objectives = ('mvm', 'future', 'joint', 'residual')
+    colors = _size_colors(data['train_samples'] for data in study['cases'].values())
     styles = {'Small': '-', 'Base': '--'}
     figures = {}
     for name in objectives:
@@ -721,7 +839,7 @@ def objective_learning_figures(study):
             continue
         runs.sort(key=lambda run: (study['cases'][run['case']]['train_samples'],
                                   study['cases'][run['case']].get('encoder', 'Small')))
-        figure, axes = plt.subplots(2, 2, figsize=(14, 8), sharey=True, layout='constrained')
+        figure, axes = plt.subplots(1, 2, figsize=(14, 4.5), sharey=True, layout='constrained')
         plotted_sizes, architectures, unfinished = set(), set(), False
         for run in runs:
             data = study['cases'][run['case']]
@@ -735,24 +853,27 @@ def objective_learning_figures(study):
             ongoing = not run['complete']
             unfinished |= ongoing
             for i, split in enumerate(('train', 'validation')):
-                for j, budget in enumerate(('epoch', 'optimizer_steps')):
-                    axes[i, j].plot(history[budget], history[f'{split}_objective_k2'],
-                        color=colors[size], linestyle=styles[encoder], linewidth=1.6,
-                        marker='o' if ongoing else None, markevery=[len(history)-1],
-                        markerfacecolor='white', markersize=6,
-                        label=f'{encoder} · {size:,} clips')
+                axes[i].plot(history.optimizer_steps, history[f'{split}_objective_k2'],
+                    color=colors[size], linestyle=styles[encoder], linewidth=1.6,
+                    marker='o' if ongoing else None, markevery=[len(history)-1],
+                    markerfacecolor='white', markersize=6,
+                    label=f'{encoder} · {size:,} clips')
+            best = history.loc[history.validation_objective_k2.idxmin()]
+            axes[1].scatter(best.optimizer_steps, best.validation_objective_k2,
+                            marker='*', s=95, color=colors[size], edgecolors='black', linewidths=.5, zorder=5)
         for i, split in enumerate(('Training', 'Validation')):
-            for j, budget in enumerate(('Epoch', 'Optimizer updates')):
-                axis = axes[i, j]
-                axis.set(title=f'{LABELS[name]} · {split} · {budget.lower()}', xlabel=budget,
-                         ylabel='Objective loss (K²)', yscale='log', xscale='log')
-                axis.xaxis.set_major_locator(LogLocator(base=10))
-                axis.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}' if v >= 1 else f'{v:g}'))
-                axis.grid(alpha=.2, which='both')
+            axis = axes[i]
+            axis.set(title=f'{LABELS[name]} · {split}', xlabel='Optimizer updates',
+                     ylabel='Objective loss (K²)', yscale='log', xscale='log')
+            axis.xaxis.set_major_locator(LogLocator(base=10))
+            axis.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}' if v >= 1 else f'{v:g}'))
+            axis.grid(alpha=.2, which='both')
         handles = [Line2D([], [], color=colors[size], linewidth=2, label=f'{size:,} clips')
                    for size in sorted(plotted_sizes)]
         handles += [Line2D([], [], color='black', linestyle=styles[encoder], label=encoder)
                     for encoder in styles if encoder in architectures]
+        handles.append(Line2D([], [], color='black', linestyle='', marker='*', markersize=10,
+                              label='Minimum saved validation loss'))
         if unfinished:
             handles.append(Line2D([], [], color='black', linestyle='', marker='o',
                                   markerfacecolor='white', label='Latest saved epoch · in progress'))
@@ -770,7 +891,7 @@ def learning_figure(study, family='pretraining'):
     styles = (':', '--', '-.', '-')
     if len(cases) > len(styles):
         raise ValueError('Select at most four dataset sizes for the combined learning curves')
-    figure, axes = plt.subplots(2, 2, figsize=(15, 9), sharey=True, layout='constrained')
+    figure, axes = plt.subplots(1, 2, figsize=(15, 4.5), sharey=True, layout='constrained')
     present = set()
     for case, style in zip(cases, styles):
         for name in names:
@@ -780,20 +901,18 @@ def learning_figure(study, family='pretraining'):
             present.add(name)
             history = native_loss_history(study, run)
             for i, split in enumerate(('train', 'validation')):
-                for j, budget in enumerate(('epoch', 'optimizer_steps')):
-                    if (history[budget] <= 0).any():
-                        raise ValueError('Logarithmic training axes require positive recorded budgets')
-                    axes[i, j].plot(history[budget], history[f'{split}_objective_k2'],
-                        color=COLORS[name], linestyle=style, linewidth=1.3,
-                        label=f"{LABELS[name]} · {study['cases'][case]['train_samples']:,}")
+                if (history.optimizer_steps <= 0).any():
+                    raise ValueError('Logarithmic training axes require positive recorded budgets')
+                axes[i].plot(history.optimizer_steps, history[f'{split}_objective_k2'],
+                    color=COLORS[name], linestyle=style, linewidth=1.3,
+                    label=f"{LABELS[name]} · {study['cases'][case]['train_samples']:,}")
     for i, split in enumerate(('Training', 'Validation')):
-        for j, budget in enumerate(('Epoch', 'Optimizer updates')):
-            axis = axes[i, j]
-            axis.set(title=f'{split} · {budget.lower()}', xlabel=budget,
-                     ylabel='Objective loss (K²)', yscale='log', xscale='log')
-            axis.xaxis.set_major_locator(LogLocator(base=10))
-            axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:,.0f}' if value >= 1 else f'{value:g}'))
-            axis.grid(alpha=.2, which='both')
+        axis = axes[i]
+        axis.set(title=split, xlabel='Optimizer updates',
+                 ylabel='Objective loss (K²)', yscale='log', xscale='log')
+        axis.xaxis.set_major_locator(LogLocator(base=10))
+        axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:,.0f}' if value >= 1 else f'{value:g}'))
+        axis.grid(alpha=.2, which='both')
     handles = [Line2D([], [], color=COLORS[name], label=LABELS[name]) for name in names if name in present]
     handles += [Line2D([], [], color='black', linestyle=style,
                 label=f"{study['cases'][case].get('encoder', 'Small')} · {study['cases'][case]['train_samples']:,} clips")

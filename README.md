@@ -191,16 +191,18 @@ MVM, Future, Joint, Residual e cinque probe su 4.096 e 8.192 clip Small;
 Future e Joint su 16.384 clip Small e 32.768 clip Base. La validation comune
 contiene 512 clip del 17 settembre. Le dimensioni del dataset compaiono negli
 stessi confronti, con architettura indicata nelle legende e nei titoli.
-Le curve mostrano un grafico per obiettivo rispetto a epoche e aggiornamenti,
+Le curve mostrano un grafico per obiettivo rispetto agli aggiornamenti,
 includendo la matrice Small/Base fino a 65.536 clip. Il colore indica il numero
 di clip; la linea continua identifica Small e quella tratteggiata Base. Joint
-compare con la somma delle sue loss. Il confronto a budget comune include tutte
-le dimensioni, con barre verticali rispetto a un riferimento fisso per architettura:
-4.096 clip per Small e 16.384 per Base. Un budget unico di epoche e uno di
-aggiornamenti sono condivisi da tutti i run visualizzati; ogni barra conserva
-gli errori assoluti e le epoche selezionate nel CSV. Un grafico a punti collegati
-spiega il cambio di ordinamento dei guadagni Future/Joint nel confronto
-4.096 → 8.192, mantenendo espliciti i checkpoint dei due criteri.
+compare con la somma delle sue loss. Una stella identifica il minimo di
+validation di ogni run e il relativo numero di aggiornamenti. Le curve
+differenziali confrontano Base − Small sullo stesso dataset e dataset maggiore
+meno riferimento sulla stessa architettura: 4.096 clip per Small e 16.384 per
+Base. Ogni coppia usa tutti gli aggiornamenti salvati in comune, con differenze
+della loss corrente e del minimo raggiunto fino a quell'update. Valori negativi
+favoriscono Base o il dataset maggiore. I minimi progressivi comprendono tutte
+le valutazioni precedenti di ciascun run; le curve terminano all'ultima
+osservazione condivisa dalla coppia. Minimi e differenze sono esportati in CSV.
 L'overview e le diagnostiche per canale conservano le serie di riferimento
 elencate sopra. Le sezioni successive
 confrontano errori per canale/orizzonte e variabilità, gradienti, ricostruzioni
@@ -212,11 +214,12 @@ e 3,70 K per Joint; il confronto a pari aggiornamenti distingue il budget
 comune dal risultato dell'intero training.
 Il testo chiarisce il riferimento deterministico Advection, i dati e la testa
 convoluzionale dei probe, le regressioni ridge e l'interpretazione dei grafici.
-La visualizzazione corrente usa assi logaritmici per loss, epoche e aggiornamenti,
-barre per canale con tutti i training affiancati e grafici delle variazioni
-di RMSE a budget uguale. Le tabelle sono opzionali (`SHOW_TABLES = True`);
+La visualizzazione corrente usa assi logaritmici per loss e aggiornamenti;
+le differenze hanno asse verticale lineare con zero esplicito. I confronti
+per canale conservano le barre con i training affiancati.
+Le tabelle sono opzionali (`SHOW_TABLES = True`);
 valori completi, figure e copia eseguita sono in
-`results/dataset_budgets_20261102/`. Le revisioni precedenti rimangono nelle
+`results/learning_differences_20261102/`. Le revisioni precedenti rimangono nelle
 rispettive directory locali dei risultati.
 Le valutazioni sono lette dai report delle epoche completate; copertura dei
 confronti e analisi ancora attese sono esplicite. Le conclusioni si aggiornano

@@ -227,7 +227,7 @@ def test_joint_curves_use_weighted_total_including_reconstruction(series):
             assert labels.count('Joint · 2') == 1
             assert labels.count('Joint · 4') == 1
             assert len(labels) == 8
-        joint = next(line for line in fig.axes[2].lines if line.get_label() == 'Joint · 2')
+        joint = next(line for line in fig.axes[1].lines if line.get_label() == 'Joint · 2')
         np.testing.assert_allclose(joint.get_ydata(), [48.])
     finally:
         plt.close(fig)
@@ -340,7 +340,7 @@ def test_objective_panels_preserve_architecture_size_and_partial_history(series)
     assert set(figures)=={'future','joint'}
     try:
         for objective,fig in figures.items():
-            assert len(fig.axes)==4
+            assert len(fig.axes)==2
             for axis in fig.axes:
                 assert len(axis.lines)==10
                 assert axis.get_xscale()==axis.get_yscale()=='log'
@@ -349,11 +349,11 @@ def test_objective_panels_preserve_architecture_size_and_partial_history(series)
                 small,large=lines[f'Small · {size:,} clips'],lines[f'Base · {size:,} clips']
                 assert small.get_color()==large.get_color()
                 assert small.get_linestyle()=='-' and large.get_linestyle()=='--'
-            val=next(line for line in fig.axes[2].lines
+            val=next(line for line in fig.axes[1].lines
                      if line.get_label()=='Base · 65,536 clips')
             np.testing.assert_allclose(val.get_ydata(),[36. if objective=='joint' else 16.])
             assert val.get_marker()==('o' if objective=='joint' else 'None')
-            assert val.get_xdata().tolist()==[1]
+            assert val.get_xdata().tolist()==[65536//32]
     finally:
         for fig in figures.values():plt.close(fig)
 
@@ -398,3 +398,64 @@ def test_dataset_budgets_require_exact_common_saved_reports(series):
     snapshot['reports'].clear()
     with pytest.raises(FileNotFoundError):
         study.dataset_budget_comparison(snapshot)
+
+
+def test_differences_align_exact_updates_and_use_all_past_minima(series):
+    snapshot = study.load_study(series)
+    snapshot['runs'] = {key: run for key, run in snapshot['runs'].items() if key[1] == 'future'}
+    snapshot['cases']['n4']['stats'] = {'global_std_k': 3.}
+    for case, updates, values in [('n2', [1, 2, 3, 4, 5], [10., 8., 1., 9., .01]),
+                                  ('n4', [2, 4, 6], [2., 3., 1.])]:
+        run = snapshot['runs'][case, 'future']
+        run['epochs'] = [dict(epoch=i+1, optimizer_steps=u, train_future=v, validation_future=v)
+                         for i, (u, v) in enumerate(zip(updates, values))]
+    frame = study.learning_differences(snapshot, 'dataset', reference_sizes={'Small': 2})
+    assert frame.optimizer_steps.tolist() == [2, 4]
+    assert frame.epoch_candidate.tolist() == [1, 2]
+    assert frame.epoch_reference.tolist() == [2, 4]
+    np.testing.assert_allclose(frame.validation_difference_k2, [-14., -9.])
+    # The reference minimum at update 3 contributes at update 4, before alignment.
+    # Its still lower loss at update 5 cannot affect either earlier comparison.
+    np.testing.assert_allclose(frame.best_difference_k2, [-14., 14.])
+    figures = study.learning_difference_figures(frame)
+    try:
+        assert len(figures['future'].axes) == 2
+        for axis in figures['future'].axes:
+            curve = next(line for line in axis.lines if line.get_label() == '4 − 2 clips')
+            assert curve.get_xdata().tolist() == [2, 4]
+            assert axis.get_xscale() == 'log' and axis.get_yscale() == 'linear'
+        figures['future'].canvas.draw()
+    finally:
+        for fig in figures.values(): plt.close(fig)
+
+
+def test_architecture_differences_hold_dataset_and_objective_fixed(series):
+    snapshot = study.load_study(series)
+    snapshot['cases']['base_n2'] = {**snapshot['cases']['n2'], 'encoder': 'Base'}
+    source = snapshot['runs']['n2', 'future']
+    snapshot['runs']['base_n2', 'future'] = {**source, 'case': 'base_n2',
+        'epochs': [{**row, 'validation_future': row['validation_future']*.5} for row in source['epochs']]}
+    frame = study.learning_differences(snapshot, 'architecture')
+    assert set(frame.objective) == {'future'}
+    assert set(frame.training_clips) == set(frame.reference_clips) == {2}
+    assert set(frame.encoder) == {'Base'} and set(frame.reference_encoder) == {'Small'}
+    assert (frame.validation_difference_k2 < 0).all()
+    datasets = study.learning_differences(snapshot, 'dataset', reference_sizes={'Small': 2, 'Base': 2})
+    assert (datasets.encoder == datasets.reference_encoder).all()
+    assert set(datasets.encoder) == {'Small'}
+    snapshot['runs']['base_n2', 'future']['loss_weights'] = {'mvm': 1., 'future': 2.}
+    with pytest.raises(ValueError, match='same objective weights'):
+        study.learning_differences(snapshot, 'architecture')
+
+
+def test_validation_minimum_uses_joint_objective_and_earliest_tie(series):
+    snapshot = study.load_study(series)
+    run = snapshot['runs']['n2', 'joint']
+    run['epochs'] = [dict(epoch=i+1, optimizer_steps=i+1, train_mvm=m, train_future=f,
+                         validation_mvm=m, validation_future=f)
+                     for i, (m, f) in enumerate([(1., 10.), (10., 2.), (1., 10.)])]
+    snapshot['runs'] = {('n2', 'joint'): run}
+    minima = study.objective_minima(snapshot).iloc[0]
+    assert minima['Minimum validation loss (K²)'] == 44.
+    assert minima['Updates at minimum'] == minima['Epoch of minimum'] == 1
+    assert minima['Last saved updates'] == 3
