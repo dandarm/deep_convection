@@ -8,10 +8,13 @@ diversa a ogni epoca e assegna ciascuna clip a un solo processo. Ogni processo
 contribuisce alla media dei gradienti. Il batch globale è il prodotto del
 batch per GPU e del numero di GPU; l'accumulo è uno in queste prove.
 
-La prima coppia di esperimenti usa Base/Future, 131.072 clip, cinque epoche,
+Le prime tre prove usano Base/Future, 131.072 clip, cinque epoche,
 seed 20261024, learning rate 0,00015 e weight decay 0,05. Il riferimento usa
-32 clip globali, otto per GPU. Il secondo usa la massima batch per GPU verificata
+32 clip globali, otto per GPU. La seconda prova usa 32 clip per GPU,
+128 globali. La terza usa la massima batch per GPU verificata
 con granularità di otto clip e un limite del 92% della memoria disponibile.
+Se la capacità misurata coincide con uno dei batch precedenti, una sola
+esecuzione fornisce entrambi i confronti; `pilots_plan.json` registra questa scelta.
 Una ricerca preliminare include optimizer, backward e comunicazione DDP;
 la rifinitura usa la stessa compilazione del training. Numero di aggiornamenti,
 clip al secondo, secondi per aggiornamento e memoria di ciascuna GPU vengono

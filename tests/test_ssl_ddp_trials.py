@@ -1,6 +1,18 @@
 import json
+import pytest
 
 from scripts import run_seviri_ssl_ddp_trials as trials
+
+
+def test_pilot_batches_preserve_global_and_per_gpu_comparisons():
+    plan=trials.pilot_batches(32,104)
+    assert [row['global_batch'] for row in plan]==[32,128,416]
+    assert [row['batch_per_gpu'] for row in plan]==[8,32,104]
+    shared=trials.pilot_batches(32,32)
+    assert len(shared)==2
+    assert shared[1]['comparisons']==['per_gpu_reference','large']
+    with pytest.raises(ValueError,match='capacity'):
+        trials.pilot_batches(32,24)
 
 
 def test_capacity_refines_compiled_memory_and_keeps_headroom(tmp_path,monkeypatch):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Run a bounded four-GPU capacity search, then two matched five-epoch trials."""
+"""Measure four-GPU capacity, then compare three batch sizes over five epochs."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,20 @@ import time
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'src'),str(ROOT)]
-from scripts.pretrain_seviri_ssl import digest,write_json
+
+
+def digest(path):
+    result=hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda:stream.read(1024*1024),b''):result.update(block)
+    return result.hexdigest()
+
+
+def write_json(path,value):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    temporary=path.with_suffix(path.suffix+'.part')
+    temporary.write_text(json.dumps(value,indent=2,allow_nan=False)+'\n')
+    temporary.replace(path)
 
 
 def launch(root,name,options,allow_oom=False):
@@ -87,11 +101,27 @@ def capacity(root):
     write_json(root/'controller.json',dict(status='capacity_completed',updated_unix=time.time()))
 
 
+def pilot_batches(baseline_global_batch,large_batch_per_gpu):
+    if baseline_global_batch<4 or baseline_global_batch%4:
+        raise ValueError('A positive global batch divisible by four is required')
+    if large_batch_per_gpu<max(32,baseline_global_batch//4):
+        raise ValueError('Measured capacity does not cover the requested 32 clips per GPU')
+    plan=[]
+    for label,batch in [('reference',baseline_global_batch//4),('per_gpu_reference',32),
+                        ('large',large_batch_per_gpu)]:
+        existing=next((row for row in plan if row['batch_per_gpu']==batch),None)
+        if existing is not None:
+            existing['comparisons'].append(label)
+        else:
+            plan.append(dict(label=label,batch_per_gpu=batch,global_batch=batch*4,comparisons=[label]))
+    return plan
+
+
 def pilots(root,baseline_global_batch):
     settings=json.loads((root/'data_locations.json').read_text())
     choice=json.loads((root/'batch_choice.json').read_text())
-    if choice['status']!='completed' or baseline_global_batch%4:
-        raise ValueError('Completed capacity search and global batch divisible by four required')
+    if choice['status']!='completed':raise ValueError('Completed capacity search required')
+    plan=pilot_batches(baseline_global_batch,choice['large_batch_per_gpu'])
     for name in ('training','extended'):
         directory=Path(settings[name]);verification=json.loads((directory/'verification.json').read_text())
         if verification['status']!='verified' or verification['transfer_plan_sha256']!=digest(directory/'transfer_plan.json'):
@@ -101,7 +131,9 @@ def pilots(root,baseline_global_batch):
         '--zarr-root',settings['canonical_zarr_root'],'--frame-cache',settings['canonical_frame_root'],
         '--extended-dataset',str(Path(settings['extended'])/'dataset'),
         '--model-size','base','--objective','future','--epochs','5','--extended-every','10','--compile-mode','default']
-    for label,batch in [('reference',baseline_global_batch//4),('large',choice['large_batch_per_gpu'])]:
+    write_json(root/'pilots_plan.json',dict(world_size=4,epochs=5,model_size='base',objective='future',trials=plan))
+    for trial in plan:
+        label,batch=trial['label'],trial['batch_per_gpu']
         path=root/'pilots'/label
         progress=json.loads((path/'progress.json').read_text()) if (path/'progress.json').exists() else {}
         if progress.get('status')=='completed':continue
