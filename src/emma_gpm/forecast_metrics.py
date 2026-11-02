@@ -70,6 +70,18 @@ equals frame error divided by the horizon, so it is not independent evidence.
             values = values[..., None, None]
             self._add(name, values, torch.ones_like(values, dtype=torch.bool))
 
+    def merge(self, other):
+        """Combine sufficient statistics before computing nonlinear RMSEs."""
+        if self.horizons != other.horizons or self.std != other.std:
+            raise ValueError('Metric horizons and normalization must match')
+        for name,value in other.sums.items():
+            self.sums[name] = self.sums.get(name, 0) + value
+            self.counts[name] = self.counts.get(name, 0) + other.counts[name]
+        self.samples += other.samples
+        self.support_count += other.support_count
+        self.total_count += other.total_count
+        return self
+
     def report(self):
         if not self.samples:
             raise ValueError("Cannot report an empty validation split")

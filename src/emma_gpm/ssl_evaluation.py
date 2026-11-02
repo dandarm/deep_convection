@@ -14,7 +14,7 @@ from .videomae_v2 import fixed_running_cell_mask
 def evaluate_ssl(model, loader, window, device, mean_k, std_k, *, mask_ratio=.9,
                  mask_strategy="tube", seed=314159, precision="fp32", max_shift=12,
                  ablation="chronological", variability_edges=None, example_path=None,
-                 sample_days=None, progress_callback=None):
+                 sample_days=None, progress_callback=None, distributed=False):
     if sample_days is not None and len(sample_days) != len(loader.dataset):
         raise ValueError('One ordered UTC day per validation sample required')
     mode = model.training
@@ -30,10 +30,10 @@ def evaluate_ssl(model, loader, window, device, mean_k, std_k, *, mask_ratio=.9,
         for batch in loader:
             clip = batch["pixel_values"].to(device, non_blocking=loader.pin_memory)
             original_history, target = window.split(clip)
-            batch_days = sample_days[count:count+len(clip)] if sample_days is not None else []
+            indices = batch.get('sample_indices', list(range(count, count + len(clip))))
+            batch_days = [sample_days[i] for i in indices] if sample_days is not None else []
             if model.mae is not None and len(set(batch_days)) > 1:
                 raise ValueError('Per-day MVM metrics require batches contained within a UTC day')
-            indices = range(count, count + len(clip))
             history = temporal_ablation(original_history, ablation, seed=seed, indices=indices)
             # Baselines are fixed on real chronological history, even when the
             # encoder is ablated. Residual decomposition uses this same baseline.
@@ -76,6 +76,30 @@ def evaluate_ssl(model, loader, window, device, mean_k, std_k, *, mask_ratio=.9,
             count += len(clip)
             if progress_callback is not None:
                 progress_callback(count)
+        if distributed:
+            import torch.distributed as dist
+            payload = dict(scores=scores, stratified=stratified, daily=daily, count=count,
+                           mvm_sum=mvm_sum, variability=variability)
+            parts = [None] * dist.get_world_size()
+            dist.all_gather_object(parts, payload)
+            combined = parts[0]
+            for other in parts[1:]:
+                for name,metric in other['scores'].items():combined['scores'][name].merge(metric)
+                for level,methods in other['stratified'].items():
+                    for name,metric in methods.items():combined['stratified'][level][name].merge(metric)
+                for day,values in other['daily'].items():
+                    if day not in combined['daily']:
+                        combined['daily'][day] = values
+                    else:
+                        target_day = combined['daily'][day]
+                        for name,metric in values['scores'].items():target_day['scores'][name].merge(metric)
+                        target_day['samples'] += values['samples']
+                        target_day['mvm_sum'] += values['mvm_sum']
+                combined['count'] += other['count']
+                combined['mvm_sum'] += other['mvm_sum']
+                combined['variability'].extend(other['variability'])
+            scores, stratified, daily = (combined[k] for k in ('scores','stratified','daily'))
+            count, mvm_sum, variability = (combined[k] for k in ('count','mvm_sum','variability'))
         report = {name: metric.report() for name, metric in scores.items()}
         report["mvm_mse"] = mvm_sum / count if model.mae is not None and count else None
         report["ablation"] = ablation

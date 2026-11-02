@@ -1,5 +1,53 @@
 # Ripresa dello studio SSL su Leonardo
 
+## Prove distribuite su un nodo con quattro GPU
+
+`pretrain_seviri_ssl_ddp.py` distribuisce un singolo modello sulle quattro
+GPU mediante PyTorch DDP. Il campionatore costruisce una permutazione globale
+diversa a ogni epoca e assegna ciascuna clip a un solo processo. Ogni processo
+contribuisce alla media dei gradienti. Il batch globale è il prodotto del
+batch per GPU e del numero di GPU; l'accumulo è uno in queste prove.
+
+La prima coppia di esperimenti usa Base/Future, 131.072 clip, cinque epoche,
+seed 20261024, learning rate 0,00015 e weight decay 0,05. Il riferimento usa
+32 clip globali, otto per GPU. Il secondo usa la massima batch per GPU verificata
+con granularità di otto clip e un limite del 92% della memoria disponibile.
+Una ricerca preliminare include optimizer, backward e comunicazione DDP;
+la rifinitura usa la stessa compilazione del training. Numero di aggiornamenti,
+clip al secondo, secondi per aggiornamento e memoria di ciascuna GPU vengono
+registrati separatamente. A parità di epoche, aumentare il batch riduce il
+numero di aggiornamenti dell'optimizer: le curve vanno interpretate anche
+rispetto a questo conteggio.
+
+La validation da 512 clip viene eseguita a ogni epoca; quella da 10.240 clip
+ogni dieci epoche e all'ultima epoca, quindi alla quinta in queste prove.
+Entrambe sono distribuite con indici globali delle maschere invariati.
+Le metriche combinano somme degli errori e conteggi dei pixel prima di
+calcolare gli RMSE. La selezione del checkpoint migliore usa la validation
+da 512 clip. I checkpoint conservano lo stato casuale di ciascun processo
+e verificano la stessa topologia alla ripresa.
+
+Lo script `scripts/hpc/seviri_ssl_ddp.sbatch` richiede un nodo, quattro A100,
+32 CPU e 480 GiB di RAM. I frame di training e validation occupano insieme
+circa 172 GiB; la memoria restante ospita processi, cache e buffer pinned.
+Un solo processo Slurm avvia `torchrun` con quattro processi, uno per GPU.
+Le impostazioni DDP riprendono `Demetra/moduli/videomae/utils.py`: grafo
+statico, gradienti nelle viste dei buffer di comunicazione e bucket da 64 MiB.
+La telemetria `gpu_JOBID.csv` registra utilizzo, memoria e potenza delle quattro
+GPU ogni due secondi.
+
+La procedura `run_seviri_ssl_ddp_trials.py` esegue prima la fase `capacity`,
+poi `pilots` sullo stesso tipo di nodo. I file `runtime_files.json` e
+`source_archive/` congelano il codice. La fase dei training controlla che
+entrambi i trasferimenti siano verificati prima di accedere ai dati.
+La validation estesa risiede in
+`$WORK/deep_convection_datasets/seviri_validation_10240_20261102`, mentre
+il training conserva la posizione `$FAST` descritta sotto. La mappatura delle
+sorgenti include entrambi gli archivi e le rispettive impronte temporali.
+
+Riferimenti: [PyTorch DDP](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html)
+e [configurazione Booster](https://docs.hpc.cineca.it/_downloads/d2425378307005ba649bfd226ce266b1/Leonardo_Booster_EF.pdf).
+
 Lo studio da 131.072 clip comprende Small e Base per MVM, Future e Joint,
 150 epoche per esperimento. Small–MVM è sospeso dopo tre epoche complete e
 12.288 aggiornamenti. Il checkpoint conserva pesi, optimizer, scheduler e

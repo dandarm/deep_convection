@@ -83,7 +83,7 @@ class ClipBatchLoader:
     checked on every read. The trainer and evaluator validate every normalized
     pixel with ForecastWindow.split before using any observation in a model.
     """
-    def __init__(self,dataset,*,batch_size,workers,prefetch,mean,std,device,seed,shuffle):
+    def __init__(self,dataset,*,batch_size,workers,prefetch,mean,std,device,seed,shuffle,batch_sampler=None):
         import torch
         from torch.utils.data import RandomSampler, SequentialSampler
         if batch_size<1 or workers<1 or prefetch<1:
@@ -97,9 +97,11 @@ class ClipBatchLoader:
         sampler_generator=torch.Generator().manual_seed(seed)
         torch.empty((),dtype=torch.int64).random_(generator=sampler_generator)
         self.sampler=(RandomSampler(dataset,generator=sampler_generator) if shuffle else SequentialSampler(dataset))
+        self.batch_sampler=batch_sampler
         self._initialized=False
 
     def __len__(self):
+        if self.batch_sampler is not None:return len(self.batch_sampler)
         return (len(self.dataset)+self.batch_size-1)//self.batch_size
 
     def __iter__(self):
@@ -107,14 +109,17 @@ class ClipBatchLoader:
         if not self._initialized:
             torch.empty((),dtype=torch.int64).random_(generator=self.generator)
             self._initialized=True
-        order=list(self.sampler)
-        groups=iter(order[start:start+self.batch_size] for start in range(0,len(order),self.batch_size))
+        if self.batch_sampler is None:
+            order=list(self.sampler)
+            groups=iter(order[start:start+self.batch_size] for start in range(0,len(order),self.batch_size))
+        else:
+            groups=iter(self.batch_sampler)
         def prepare(indices):
             pixels=torch.empty((len(indices),*SHAPE),dtype=torch.float16,pin_memory=self.pin_memory)
             values=pixels.numpy()
             for slot,index in enumerate(indices):
                 self.dataset.decode_into(index,values[slot])
-            return pixels
+            return pixels,indices
         pool=ThreadPoolExecutor(max_workers=self.workers)
         pending=deque()
         try:
@@ -123,10 +128,10 @@ class ClipBatchLoader:
                 if group is None:break
                 pending.append(pool.submit(prepare,group))
             while pending:
-                pixels=pending.popleft().result()
+                pixels,indices=pending.popleft().result()
                 group=next(groups,None)
                 if group is not None:pending.append(pool.submit(prepare,group))
                 normalized=(pixels.to(self.device,non_blocking=self.pin_memory).float()-self.mean)/self.std
-                yield {'pixel_values':normalized}
+                yield {'pixel_values':normalized, **({'sample_indices':indices} if self.batch_sampler is not None else {})}
         finally:
             pool.shutdown(wait=True,cancel_futures=True)

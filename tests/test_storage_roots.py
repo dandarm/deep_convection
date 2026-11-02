@@ -49,6 +49,25 @@ def test_storage_mapping_rejects_relative_paths(tmp_path, monkeypatch):
         storage_root('/original')
 
 
+def test_two_provenance_roots_and_ambiguous_registration(tmp_path,monkeypatch):
+    from emma_gpm.storage_roots import source_provenance
+    records=[]
+    for name in ('training','validation'):
+        root=tmp_path/name;root.mkdir()
+        snapshot=root/'snapshot.json';snapshot.write_text('{}')
+        times=root/'times.json';times.write_text('{}')
+        records.append(dict(root=str(root),snapshot=str(snapshot),timestamps=str(times),
+            snapshot_sha256=hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+            timestamps_sha256=hashlib.sha256(times.read_bytes()).hexdigest()))
+    mapping=tmp_path/'mapping.json'
+    def write():mapping.write_text(json.dumps(dict(version=1,roots={},source_provenance=records)))
+    write();monkeypatch.setenv('SEVIRI_STORAGE_ROOTS',str(mapping))
+    for name in ('training','validation'):
+        assert source_provenance(tmp_path/name/'day')[0]==tmp_path/name
+    records.append(records[0]);write()
+    with pytest.raises(ValueError,match='Ambiguous'):source_provenance(tmp_path/'training/day')
+
+
 def test_coarse_timestamps_require_exact_source_content(tmp_path, monkeypatch):
     root=tmp_path/'sources'; store=root/'2020/20200912.zarr';store.mkdir(parents=True)
     chunk=store/'chunk';chunk.write_bytes(b'original')

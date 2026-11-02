@@ -47,9 +47,19 @@ def source_provenance(path):
     if not filename:
         return None
     document = json.loads(Path(filename).read_text())
-    spec = document.get("source_provenance")
-    if spec is None:
+    specs = document.get("source_provenance")
+    if specs is None:
         return None
+    specs = specs if isinstance(specs, list) else [specs]
+    fields={"root", "snapshot", "snapshot_sha256", "timestamps", "timestamps_sha256"}
+    if any(not isinstance(spec,dict) or set(spec)!=fields for spec in specs):
+        raise ValueError('Invalid source provenance mapping')
+    matches = [spec for spec in specs if Path(path).resolve().is_relative_to(Path(spec['root']).resolve())]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError('Ambiguous source provenance roots')
+    spec = matches[0]
     if set(spec) != {"root", "snapshot", "snapshot_sha256", "timestamps", "timestamps_sha256"}:
         raise ValueError("Invalid source provenance mapping")
     root = Path(spec["root"]).resolve()
