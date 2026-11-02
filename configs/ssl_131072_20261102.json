@@ -1,0 +1,27 @@
+{
+  "epochs": 150,
+  "batch_size": 32,
+  "workers": 4,
+  "seed": 20261024,
+  "objectives": ["mvm", "future", "joint"],
+  "historical_dataset_relation": "fully resampled crops with a strict geographic constraint and a new validation manifest",
+  "variability_reference_manifest": "results/ssl_131072_20261102/data_preparation_random/n131072/dataset/train.csv",
+  "cases": [
+    {
+      "name": "small_n131072",
+      "model_size": "small",
+      "train_samples": 131072,
+      "dataset": "results/ssl_131072_20261102/data_preparation_random/n131072/dataset",
+      "zarr_root": "/data1/deep_convection_data/ssl_sources_20261102_n131072",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261102_n131072"
+    },
+    {
+      "name": "base_n131072",
+      "model_size": "base",
+      "train_samples": 131072,
+      "dataset": "results/ssl_131072_20261102/data_preparation_random/n131072/dataset",
+      "zarr_root": "/data1/deep_convection_data/ssl_sources_20261102_n131072",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261102_n131072"
+    }
+  ]
+}

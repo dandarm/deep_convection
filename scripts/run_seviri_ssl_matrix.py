@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a frozen matrix of encoder sizes and datasets with Future and Joint."""
+"""Run a frozen matrix of encoder sizes, datasets and selected SSL objectives."""
 import argparse
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -72,10 +72,11 @@ def make_plans(output, config):
         arguments = argparse.Namespace(**{k:config[k] for k in ('epochs','batch_size','workers','seed')},
             zarr_root=raw_root, frame_cache=Path(case['frame_cache']), clip_root=None, model_size=model,
             gradient_accumulation=1, reference_series=output,
-            variability_reference_manifest=Path(config['variability_reference_manifest']).resolve())
+            variability_reference_manifest=Path(config['variability_reference_manifest']).resolve(),
+            objectives=config.get('objectives',('future','joint')))
         local = dict(stages=selected_stages(arguments, dataset, output/name), dataset=files,
             sources=source_hashes(), seed=config['seed'], model_size=model,
-            interpretation='Fresh initialization; Future and Joint; common validation; encoder and dataset size recorded separately')
+            interpretation='Fresh initialization; selected SSL objectives; common validation; encoder and dataset size recorded separately')
         local_plans[name] = local
         cases.append(case)
     if len(validation_hashes) != 1:
@@ -87,6 +88,7 @@ def make_plans(output, config):
         'scripts/run_seviri_ssl_matrix.py', 'scripts/run_seviri_ssl_selected.py',
         'scripts/run_seviri_ssl_scaling.py', 'scripts/run_seviri_ssl_comparison.py',
         'scripts/build_seviri_ssl_new_dates.py', 'scripts/build_seviri_ssl_extension.py',
+        'scripts/build_seviri_ssl_random_dataset.py', 'src/emma_gpm/ssl_random_sampling.py',
         'scripts/build_seviri_ssl_scaling_dataset.py', 'scripts/build_seviri_ssl_pilot_dataset.py',
         'scripts/extend_seviri_frame_cache.py', 'src/emma_gpm/ssl_scaling.py',
         'src/emma_gpm/ssl_dataset.py', 'src/emma_gpm/ssl_sampling.py',
@@ -100,6 +102,7 @@ def make_plans(output, config):
         variability_reference_sha256=digest(Path(config['variability_reference_manifest'])),
         comparison='Same optimizer settings and validation; compare both equal epochs and equal optimizer updates',
         initialization='Random weights from the same seed within each encoder architecture',
+        historical_dataset_relation=config.get('historical_dataset_relation','nested'),
         strict_nesting=True, validation_identical=True)
     return plan, local_plans
 
@@ -174,7 +177,8 @@ def run(args):
             if not stage_completed(queue, stage):
                 raise RuntimeError('Trainer exited before completing the requested epochs')
             if all(stage_completed(queue, s) for s in plans[item['case']]['stages']):
-                write_json(queue/'queue_status.json', dict(status='completed', training_completed=True, stages=2))
+                write_json(queue/'queue_status.json', dict(status='completed', training_completed=True,
+                    stages=len(plans[item['case']]['stages'])))
         verify(args.output_dir, plan, source_data=True)
         publish_summary(args.output_dir)
         write_json(args.output_dir/'queue_status.json', dict(status='completed', training_completed=True,

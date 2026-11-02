@@ -23,7 +23,12 @@ from scripts.run_seviri_ssl_scaling import immutable_json, execute, stage_comman
 def selected_stages(args, dataset, queue):
     local=argparse.Namespace(dataset=dataset,output_dir=queue,zarr_root=args.zarr_root,
         epochs=args.epochs,probe_epochs=args.epochs,batch_size=args.batch_size,workers=args.workers,seed=args.seed)
-    selected=[s for s in stages(local) if s['name'] in ('future','joint')]
+    objectives=getattr(args,'objectives',('future','joint'))
+    if (not objectives or len(set(objectives))!=len(objectives)
+            or not set(objectives)<= {'mvm','future','joint','residual'}):
+        raise ValueError('Select unique supported SSL objectives')
+    available={stage['name']:stage for stage in stages(local)}
+    selected=[available[name] for name in objectives]
     runtime={'--gradient-accumulation':getattr(args,'gradient_accumulation',1),'--loader-batch-size':args.batch_size,'--prefetch-factor':4}
     for stage in selected:
         for name,value in runtime.items():

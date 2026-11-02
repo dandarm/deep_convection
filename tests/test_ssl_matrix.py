@@ -51,6 +51,28 @@ def test_matrix_preserves_architectures_common_data_and_all_eight_fresh_runs(tmp
     assert make_plans(tmp_path/'series', config) == (plan, local)
 
 
+def test_matrix_includes_requested_mvm_with_fresh_shared_encoder_inputs(tmp_path):
+    config=matrix_config(tmp_path)
+    config['cases']=[case for case in config['cases'] if case['train_samples']==32]
+    config['objectives']=['mvm','future','joint']
+    plan,local=make_plans(tmp_path/'series',config)
+    assert len(plan['order'])==6
+    for case in plan['cases']:
+        stages=local[case['name']]['stages']
+        assert [stage['name'] for stage in stages]==config['objectives']
+        for stage in stages:
+            assert stage['kind']=='pretraining' and stage['epochs']==150
+            flags=stage['flags']
+            assert flags[flags.index('--objective')+1]==stage['name']
+            assert flags[flags.index('--model-size')+1]==case['model_size']
+            assert '--freeze-encoder' not in flags and '--encoder-from' not in flags
+            assert flags[flags.index('--mask-ratio')+1]=='0.9'
+    assert len({case['files']['channel_stats.json'] for case in plan['cases']})==1
+    config['objectives']=['mvm','mvm']
+    with pytest.raises(ValueError,match='unique supported SSL objectives'):
+        make_plans(tmp_path/'invalid',config)
+
+
 def test_matrix_rejects_changed_holdout_and_non_nested_data(tmp_path):
     config = matrix_config(tmp_path)
     val = tmp_path/'dataset_32/validation.csv'

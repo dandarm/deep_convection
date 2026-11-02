@@ -126,7 +126,8 @@ def run(args):
             execute(args,stage_command(queue,revised),item['case'],stage['name'],queue/(stage['name']+'.log'))
             if not stage_completed(queue,stage): raise RuntimeError('Requested epochs remain incomplete')
             if all(stage_completed(queue,s) for s in plans[item['case']]['stages']):
-                write_json(queue/'queue_status.json',dict(status='completed',training_completed=True,stages=2))
+                write_json(queue/'queue_status.json',dict(status='completed',training_completed=True,
+                    stages=len(plans[item['case']]['stages'])))
         verify_revision(args,plan,revision,source_data=True)
         publish_summary(args.output_dir)
         write_json(args.output_dir/'queue_status.json',dict(status='completed',training_completed=True,
