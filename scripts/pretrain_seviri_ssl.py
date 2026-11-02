@@ -35,6 +35,7 @@ from emma_gpm.ssl_evaluation import evaluate_ssl
 from emma_gpm.ssl_masking import make_ssl_mask
 from emma_gpm.ssl_model import SeviriSSL, encoder_source_config, history_config, load_encoder_weights, ssl_loss
 from emma_gpm.training_checkpoint import save_checkpoint
+from emma_gpm.storage_roots import storage_mapping_digest
 from emma_gpm.videomae_v2 import running_cell_mask
 from scripts.pretrain_videomae import (build_loader, choose_device, estimate_global_stats,
     initialize_loader_worker, iter_training_batches, load_training_stats, seed_everything)
@@ -55,6 +56,8 @@ def parse_args(argv=None):
     parser.add_argument("--execution-revision", type=Path, help="Explicit checksum-bound runtime migration")
     parser.add_argument("--cuda-runtime", type=Path, help="JSON with explicit CUDA execution settings")
     parser.add_argument("--profile-epoch", type=int, help="Capture this full training epoch with Nsight")
+    parser.add_argument("--stop-after-epoch-file", type=Path,
+                        help="Finish and checkpoint the current epoch when this file exists")
     parser.add_argument("--variability-reference-manifest", type=Path,
                         help="Training subset defining common variability groups across dataset sizes")
     parser.add_argument("--reserved-days", type=Path, help="JSON with additional reserved UTC days under 'days'")
@@ -98,7 +101,7 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     # JSON defaults can also supply path fields, without depending on argparse's
     # treatment of non-string defaults.
-    for name in ("manifest", "validation_manifest", "zarr_root", "output_dir", "global_stats", "reserved_days", "encoder_from", "resume", "variability_reference_manifest", "clip_root", "frame_cache", "execution_revision", "cuda_runtime"):
+    for name in ("manifest", "validation_manifest", "zarr_root", "output_dir", "global_stats", "reserved_days", "encoder_from", "resume", "variability_reference_manifest", "clip_root", "frame_cache", "execution_revision", "cuda_runtime", "stop_after_epoch_file"):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, Path(value))
@@ -208,7 +211,7 @@ def source_hashes():
     files += [ROOT / "src/emma_gpm" / name for name in (
         "forecasting.py", "advection.py", "ssl_model.py", "ssl_masking.py", "ssl_evaluation.py",
         "forecast_metrics.py", "videomae.py", "videomae_v2.py", "seviri_clips.py", "training_checkpoint.py",
-        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_tiled_cache.py", "seviri_frame_dataset.py", "ssl_execution.py", "ssl_runtime.py")]
+        "seviri_clip_files.py", "seviri_frame_cache.py", "seviri_tiled_cache.py", "seviri_frame_dataset.py", "storage_roots.py", "ssl_execution.py", "ssl_runtime.py")]
     return {str(path.relative_to(ROOT)): digest(path) for path in files}
 
 
@@ -312,6 +315,8 @@ def run(args):
         identity['input_pipeline'] = dict(backend='lossless_native_frame_files',
             root=str(args.frame_cache.resolve()), metadata_sha256=training.metadata_sha256,
             normalization_device=device.type, prefetch=args.prefetch_factor)
+        if storage_mapping_digest() is not None:
+            identity['input_pipeline']['storage_mapping_sha256'] = storage_mapping_digest()
     generators = dict(loader=loader.generator, sampler=loader.sampler.generator, validation=validation_generator,
                       mask=torch.Generator().manual_seed(args.seed + 1))
     progress = dict(completed_epochs=0, optimizer_steps=0, best_score=None, epochs=[], variability_edges_k=None)
@@ -462,6 +467,14 @@ def run(args):
             checkpoint_and_logs_seconds=time.perf_counter()-saving_started,
             epoch_wall_seconds=time.perf_counter()-started))
         print(json.dumps(metrics), flush=True)
+        if args.stop_after_epoch_file and args.stop_after_epoch_file.exists() and epoch + 1 < args.epochs:
+            write_json(args.output_dir / "progress.json", dict(status="paused", **progress))
+            for dataset in (training, validation):
+                if hasattr(dataset, "reader"):
+                    dataset.reader.close()
+                elif hasattr(dataset, "close"):
+                    dataset.close()
+            return progress
     model.encoder.save_pretrained(args.output_dir / "encoder")
     write_json(args.output_dir / "progress.json", dict(status="completed", **progress))
     for dataset in (training, validation):

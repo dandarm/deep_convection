@@ -8,6 +8,7 @@ import pandas as pd
 import xarray as xr
 
 from .seviri_frame_cache import SeviriFrameCacheReader, file_digest, source_stamp
+from .storage_roots import storage_root
 from .seviri_clips import (SeviriZarrClipReader, VIDEO_MAE_CHANNELS,
     IncompleteSeviriClipError, normalize_seviri_clip)
 
@@ -85,11 +86,11 @@ class TiledFrameCacheReader(SeviriFrameCacheReader):
     """Use the native reader's checks and orientation with tiled pixel access."""
     def __init__(self,root,cache_root,**kwargs):
         SeviriZarrClipReader.__init__(self,root,**kwargs)
-        self.cache_root=Path(cache_root)
+        self.cache_root=storage_root(cache_root)
         metadata=json.loads((self.cache_root/'metadata.json').read_text())
         if (metadata.get('version')!=1 or metadata.get('units')!='K'
                 or metadata.get('layout')!=LAYOUT or metadata.get('lossless') is not True
-                or Path(metadata['zarr_root']).resolve()!=self.root.resolve()):
+                or storage_root(metadata['zarr_root'])!=self.root.resolve()):
             raise ValueError('Unexpected tiled-frame cache metadata')
         self.tile=metadata['tile_size'];self.entries=metadata['stores'];self._tiles={}
         if type(self.tile) is not int or self.tile<1:raise ValueError('Invalid tile size')

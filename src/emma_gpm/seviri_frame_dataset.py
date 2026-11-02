@@ -6,6 +6,7 @@ import pandas as pd
 
 from .seviri_frame_cache import SeviriFrameCacheReader, file_digest, manifest_days
 from .seviri_tiled_cache import TiledFrameCacheReader, LAYOUT as TILED_LAYOUT
+from .storage_roots import storage_root
 
 
 class FrameFileDataset:
@@ -16,7 +17,7 @@ class FrameFileDataset:
     ForecastWindow.split validates every pixel on the GPU before model use.
     """
     def __init__(self, root, manifest, *, zarr_root):
-        self.root = Path(root)
+        self.root = storage_root(root)
         self.manifest = pd.read_csv(manifest)
         self.metadata_sha256 = file_digest(self.root/'metadata.json')
         metadata=json.loads((self.root/'metadata.json').read_text())

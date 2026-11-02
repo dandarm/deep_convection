@@ -17,6 +17,7 @@ import pandas as pd
 import xarray as xr
 
 from .seviri_clips import SeviriZarrClipReader, VIDEO_MAE_CHANNELS, IncompleteSeviriClipError
+from .storage_roots import storage_root
 
 
 def file_digest(path):
@@ -108,12 +109,12 @@ class SeviriFrameCacheReader(SeviriZarrClipReader):
 
     def __init__(self, root, cache_root, **kwargs):
         super().__init__(root, **kwargs)
-        self.cache_root = Path(cache_root)
+        self.cache_root = storage_root(cache_root)
         metadata = json.loads((self.cache_root / "metadata.json").read_text())
         if (metadata.get("version") != 1 or metadata.get("units") != "K"
                 or metadata.get("layout") != "native time,channel,y,x" or metadata.get("lossless") is not True):
             raise ValueError("Unexpected native-frame cache metadata")
-        if Path(metadata["zarr_root"]).resolve() != self.root.resolve():
+        if storage_root(metadata["zarr_root"]) != self.root.resolve():
             raise ValueError("Frame cache belongs to another Zarr root")
         self.entries = metadata["stores"]
 

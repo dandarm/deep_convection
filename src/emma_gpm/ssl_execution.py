@@ -41,6 +41,8 @@ def validate_migration(parent, current, checkpoint_digest, revision):
     pipeline = current.get('input_pipeline', {})
     if pipeline.get('metadata_sha256') != revision['clip_metadata_sha256']:
         raise ValueError('Execution revision belongs to another clip-file collection')
+    if pipeline.get('storage_mapping_sha256') != revision.get('storage_mapping_sha256'):
+        raise ValueError('Storage locations differ from the explicit execution revision')
 
 
 def restore_with_revision(path, model, optimizer, scheduler, generators, identity, revision_path):

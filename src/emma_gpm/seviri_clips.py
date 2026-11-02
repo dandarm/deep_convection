@@ -19,6 +19,7 @@ import pandas as pd
 import xarray as xr
 
 from .seviri import THERMAL_CHANNELS
+from .storage_roots import storage_root
 
 
 VIDEO_MAE_CHANNELS = THERMAL_CHANNELS
@@ -77,7 +78,7 @@ class SeviriZarrClipReader:
         channels: Sequence[str] = VIDEO_MAE_CHANNELS,
         require_finite: bool = True,
     ) -> None:
-        self.root = Path(root)
+        self.root = storage_root(root)
         self.num_frames = int(num_frames)
         self.cadence_minutes = int(cadence_minutes)
         self.crop_size = int(crop_size)
