@@ -1250,7 +1250,7 @@ separato. Un confronto degli errori tra i protocolli richiede una valutazione
 dei checkpoint sullo stesso insieme di clip. Entro la nuova serie, Small e
 Base condividono esattamente dati, normalizzazione, validation e budget.
 
-La configurazione `configs/ssl_131072_tiled_20261102.json` include MVM, Future e Joint
+La configurazione `configs/ssl_131072_20261102.json` include MVM, Future e Joint
 per Small, seguiti dagli stessi tre obiettivi per Base. Ogni run parte da pesi
 casuali, usa 150 epoche, batch effettivo 32, seed 20261024, AdamW con learning
 rate 0,00015 e weight decay 0,05. Il budget è 4.096 aggiornamenti per epoca,
@@ -1290,8 +1290,8 @@ Dopo la preparazione del dataset, i piani dei sei esperimenti si congelano con:
 ```bash
 cd /home/isac/deep_convection
 .venv/bin/python scripts/run_seviri_ssl_matrix.py \
-  --output-dir results/ssl_131072_tiled_20261102 \
-  --config configs/ssl_131072_tiled_20261102.json --prepare-only
+  --output-dir results/ssl_131072_verified_20261102 \
+  --config configs/ssl_131072_20261102.json --prepare-only
 ```
 
 Il supervisore con runtime ottimizzato si avvia o riprende mediante:
@@ -1299,8 +1299,8 @@ Il supervisore con runtime ottimizzato si avvia o riprende mediante:
 ```bash
 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 TORCHINDUCTOR_COMPILE_THREADS=4 \
 .venv/bin/python -u scripts/run_seviri_ssl_runtime_revision.py \
-  --output-dir results/ssl_131072_tiled_20261102 \
-  --revision-dir results/ssl_131072_tiled_20261102/runtime_revision_20261102 \
+  --output-dir results/ssl_131072_verified_20261102 \
+  --revision-dir results/ssl_131072_verified_20261102/runtime_revision_20261102 \
   --cuda-runtime configs/ssl_cuda_h200_mig.json
 ```
 
@@ -1355,6 +1355,22 @@ e quelli a blocchi su `/data1`; il confronto misura queste due configurazioni
 effettive, con la cache del filesystem gestita normalmente dal sistema operativo.
 Gli artefatti si trovano sotto
 `results/ssl_131072_tiled_20261102/benchmark_mvm_small_{native,tiled}`.
-La nuova serie usa piani distinti per registrare la revisione del reader;
-manifest, normalizzazione e parametri scientifici coincidono con il dataset
-ricampionato già verificato.
+La configurazione `configs/ssl_131072_tiled_20261102.json` conserva il percorso
+per ripetere la prova del formato a blocchi. La serie scientifica seleziona
+il formato nativo in `results/ssl_131072_verified_20261102`, con nuovi piani
+che registrano i sorgenti verificati e il riavvio da pesi casuali. Manifest,
+normalizzazione e parametri scientifici coincidono con il dataset ricampionato
+già verificato.
+
+
+La misura termina con 208 aggiornamenti finiti per formato. I tre intervalli
+sugli array nativi richiedono rispettivamente **1,08, 0,69 e 0,67 s/update**;
+quelli sul formato a blocchi richiedono **2,64, 1,30 e 1,01 s/update**.
+L'ultimo intervallo nativo raggiunge circa **48 clip/s**. Per la nuova serie
+viene mantenuto il formato nativo, più veloce negli intervalli osservati.
+Il tempo iniziale dipende fortemente dal popolamento della cache in RAM.
+La durata dell'epoca completa sarà misurata durante il run; moltiplicare
+l'ultimo intervallo Small/MVM per 4.096 aggiornamenti dà una proiezione di
+circa 46 minuti, che esclude validation e checkpoint. Questi tempi descrivono
+questa macchina e questi percorsi di archiviazione.
+Il confronto completo è in `backend_comparison.json` nella directory dei benchmark.

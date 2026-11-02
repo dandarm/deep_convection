@@ -245,7 +245,7 @@ permette di selezionare esplicitamente una serie storica. `--watch 15` aggiorna 
 e i metadati dei processi e può essere chiuso indipendentemente dal training.
 Gli esempi per PowerShell e bridge SSH sono in `SSL_SEVIRI.md`.
 
-La configurazione `configs/ssl_131072_tiled_20261102.json` prepara sei training da
+La configurazione `configs/ssl_131072_20261102.json` prepara sei training da
 150 epoche: Small e Base per MVM, Future e Joint. Il nuovo protocollo ricampiona
 tutte le 131.072 clip a risoluzione spaziale di un pixel e richiede che ogni
 pixel del crop rientri nel dominio 20°W–40°E, 30–70°N. Anche le 512 clip di
