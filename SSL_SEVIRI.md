@@ -1250,7 +1250,7 @@ separato. Un confronto degli errori tra i protocolli richiede una valutazione
 dei checkpoint sullo stesso insieme di clip. Entro la nuova serie, Small e
 Base condividono esattamente dati, normalizzazione, validation e budget.
 
-La configurazione `configs/ssl_131072_20261102.json` include MVM, Future e Joint
+La configurazione `configs/ssl_131072_tiled_20261102.json` include MVM, Future e Joint
 per Small, seguiti dagli stessi tre obiettivi per Base. Ogni run parte da pesi
 casuali, usa 150 epoche, batch effettivo 32, seed 20261024, AdamW con learning
 rate 0,00015 e weight decay 0,05. Il budget è 4.096 aggiornamenti per epoca,
@@ -1259,8 +1259,8 @@ AdamW fuso, compilazione delle regioni dense, posizioni statiche e
 scelta automatica dei kernel SDPA. Il masking MVM resta tube masking al 90%.
 
 Le sorgenti congelate sono sotto
-`/data1/deep_convection_data/ssl_sources_20261102_n131072`; la cache lossless
-usa `/home/isac/deep_convection_data/cache_native_seviri_20261102_n131072`.
+`/data1/deep_convection_data/ssl_sources_20261102_n131072`; la cache nativa
+per la preparazione è `/home/isac/deep_convection_data/cache_native_seviri_20261102_n131072`.
 Le date già disponibili condividono i file nativi con la cache precedente
 tramite hard link; le sei nuove date aggiungono circa 30 GiB. Le clip casuali
 sono lette ritagliando questi array, conservando i valori originali float16.
@@ -1290,8 +1290,8 @@ Dopo la preparazione del dataset, i piani dei sei esperimenti si congelano con:
 ```bash
 cd /home/isac/deep_convection
 .venv/bin/python scripts/run_seviri_ssl_matrix.py \
-  --output-dir results/ssl_131072_20261102 \
-  --config configs/ssl_131072_20261102.json --prepare-only
+  --output-dir results/ssl_131072_tiled_20261102 \
+  --config configs/ssl_131072_tiled_20261102.json --prepare-only
 ```
 
 Il supervisore con runtime ottimizzato si avvia o riprende mediante:
@@ -1299,8 +1299,8 @@ Il supervisore con runtime ottimizzato si avvia o riprende mediante:
 ```bash
 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 TORCHINDUCTOR_COMPILE_THREADS=4 \
 .venv/bin/python -u scripts/run_seviri_ssl_runtime_revision.py \
-  --output-dir results/ssl_131072_20261102 \
-  --revision-dir results/ssl_131072_20261102/runtime_revision_20261102 \
+  --output-dir results/ssl_131072_tiled_20261102 \
+  --revision-dir results/ssl_131072_tiled_20261102/runtime_revision_20261102 \
   --cuda-runtime configs/ssl_cuda_h200_mig.json
 ```
 
@@ -1314,7 +1314,47 @@ di training, accettandone 195.678. La selezione contiene 131.072 clip con
 validation hanno 512 origini distinte. La media globale è 254,9 K e la
 deviazione standard 20,1 K. Un controllo indipendente ricalcola le statistiche
 e verifica il vincolo geografico per tutti i crop selezionati. La suite finale
-supera 350 test, con un test escluso perché richiede una GPU durante la suite.
+supera 355 test, con un test escluso perché richiede una GPU durante la suite.
 Le copie eseguite del notebook restano locali; le versioni Git contengono le
 celle sorgenti. I nuovi esperimenti sono registrati separatamente anche nel
 riepilogo di avanzamento del notebook.
+
+
+### Accesso alle origini casuali mediante blocchi spaziali
+
+La prima esecuzione su array nativi è stata interrotta prima del completamento
+della prima epoca per esaminare il costo delle letture. Le pagine di memoria
+richieste dai crop casuali sulle tredici giornate superavano la RAM disponibile.
+Il piano e i log di quella prova restano in `results/ssl_131072_20261102`.
+Il dataset verificato, le statistiche e i manifest rimangono nello stesso percorso.
+
+`scripts/build_seviri_tiled_cache.py` riordina gli array in blocchi spaziali
+16×16, conservando tutti i bit dei valori float16 originali. La nuova cache è
+`/data1/deep_convection_data/cache_tiled_seviri_20261102_n131072` e il layout è
+`time, yblock, xblock, channel, y, x`. I blocchi servono all'accesso ai file:
+le origini ammesse dei crop mantengono la risoluzione di un pixel. Il reader
+ricompone esattamente la finestra richiesta e applica gli stessi controlli
+sui frame, sui canali, sui limiti nativi e sull'orientamento degli assi.
+Le eventuali celle aggiunte ai bordi degli array per completare l'ultimo blocco
+rimangono esterne ai limiti nativi e vengono escluse dalla lettura delle clip.
+
+La conversione verifica tutti i bit delle quattordici giornate e registra
+checksum, provenienza e copia del codice. Un secondo confronto copre 28 clip
+reali, due per giornata, ottenendo identità bit per bit fra i due reader.
+I test includono origini arbitrarie, quattro orientamenti degli assi,
+normalizzazione globale, finestre attraverso mezzanotte, file corrotti,
+frame mancanti e valori non finiti. Ogni training verifica i checksum degli
+array all'avvio e i metadati dei file durante l'uso.
+
+Il confronto di esecuzione usa Small/MVM con batch 32, lo stesso ordine delle
+clip, le stesse maschere casuali e lo stesso runtime CUDA nei due formati.
+Ogni prova comprende 16 aggiornamenti iniziali e tre intervalli misurati da
+64 aggiornamenti. Il tempo per aggiornamento esclude la verifica iniziale
+dei file e la compilazione. Gli array nativi risiedono sul filesystem di sistema
+e quelli a blocchi su `/data1`; il confronto misura queste due configurazioni
+effettive, con la cache del filesystem gestita normalmente dal sistema operativo.
+Gli artefatti si trovano sotto
+`results/ssl_131072_tiled_20261102/benchmark_mvm_small_{native,tiled}`.
+La nuova serie usa piani distinti per registrare la revisione del reader;
+manifest, normalizzazione e parametri scientifici coincidono con il dataset
+ricampionato già verificato.
