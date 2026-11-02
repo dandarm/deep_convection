@@ -28,6 +28,13 @@ from scripts.pretrain_seviri_ssl import validate_manifests, write_json
 from scripts.run_seviri_ssl_scaling import immutable_json
 
 
+def assert_final_frame_hashes(entries, cache, hashes):
+    for entry in entries.values():
+        path = str(cache/entry['file'])
+        if hashes.get(path) != entry['sha256']:
+            raise ValueError(f'Frame array changed after its radiometric checks: {path}')
+
+
 def check_clip(reader, row):
     try:
         raw = reader.load(row['start_time'], origin_y=row['origin_y'], origin_x=row['origin_x'])
@@ -152,6 +159,7 @@ def build(args):
                                    'source_snapshot.json','inventory.json','protocol.json','preparation_plan.json')]
     paths += [args.frame_cache/'metadata.json', *[args.frame_cache/e['file'] for e in entries.values()]]
     files = {str(p):file_digest(p) for p in paths}
+    assert_final_frame_hashes(entries, args.frame_cache, files)
     write_json(out/'dataset_ready.json', dict(status='completed', samples=len(validation), days=len(days), files=files))
     write_json(out/'progress.json', dict(status='completed', samples=len(validation), days=len(days)))
     print(f'Frozen validation ready: {len(validation)} clips across {len(days)} days', flush=True)

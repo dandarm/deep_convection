@@ -45,6 +45,14 @@ def test_relocated_validation_inventory_requires_unique_filenames():
         expected_digest(ready, 'validation.csv')
 
 
+def test_final_frame_hashes_must_match_the_validated_observations(tmp_path):
+    from scripts.build_seviri_ssl_validation import assert_final_frame_hashes
+    entries = {'day':dict(file='day.npy',sha256='validated')}
+    assert_final_frame_hashes(entries, tmp_path, {str(tmp_path/'day.npy'):'validated'})
+    with pytest.raises(ValueError, match='changed after'):
+        assert_final_frame_hashes(entries, tmp_path, {str(tmp_path/'day.npy'):'changed'})
+
+
 @pytest.mark.parametrize('objective', ['future','mvm','joint'])
 def test_daily_reports_preserve_global_metrics_and_mask_indices(objective):
     import torch
