@@ -194,8 +194,15 @@ stessi confronti, con architettura indicata nelle legende e nei titoli.
 Le curve mostrano un grafico per obiettivo rispetto a epoche e aggiornamenti,
 includendo la matrice Small/Base fino a 65.536 clip. Il colore indica il numero
 di clip; la linea continua identifica Small e quella tratteggiata Base. Joint
-compare con la somma delle sue loss. I confronti degli errori di previsione
-conservano le serie di riferimento elencate sopra. Le sezioni successive
+compare con la somma delle sue loss. Il confronto a budget comune include tutte
+le dimensioni, con barre verticali rispetto a un riferimento fisso per architettura:
+4.096 clip per Small e 16.384 per Base. Un budget unico di epoche e uno di
+aggiornamenti sono condivisi da tutti i run visualizzati; ogni barra conserva
+gli errori assoluti e le epoche selezionate nel CSV. Un grafico a punti collegati
+spiega il cambio di ordinamento dei guadagni Future/Joint nel confronto
+4.096 → 8.192, mantenendo espliciti i checkpoint dei due criteri.
+L'overview e le diagnostiche per canale conservano le serie di riferimento
+elencate sopra. Le sezioni successive
 confrontano errori per canale/orizzonte e variabilità, gradienti, ricostruzioni
 storiche, previsioni salvate e rappresentazioni congelate.
 A 38.400 aggiornamenti, da 8.192 a 16.384 clip Future passa da 3,77 a 3,67 K
@@ -209,8 +216,8 @@ La visualizzazione corrente usa assi logaritmici per loss, epoche e aggiornament
 barre per canale con tutti i training affiancati e grafici delle variazioni
 di RMSE a budget uguale. Le tabelle sono opzionali (`SHOW_TABLES = True`);
 valori completi, figure e copia eseguita sono in
-`results/notebook_revision_20261028_plots/`. La revisione precedente rimane
-in `results/notebook_revision_20261028/`.
+`results/dataset_budgets_20261102/`. Le revisioni precedenti rimangono nelle
+rispettive directory locali dei risultati.
 Le valutazioni sono lette dai report delle epoche completate; copertura dei
 confronti e analisi ancora attese sono esplicite. Le conclusioni si aggiornano
 dai risultati disponibili. Il kernel è `Python (deep_convection)`.

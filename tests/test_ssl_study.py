@@ -356,3 +356,45 @@ def test_objective_panels_preserve_architecture_size_and_partial_history(series)
             assert val.get_xdata().tolist()==[1]
     finally:
         for fig in figures.values():plt.close(fig)
+
+
+def test_global_dataset_budgets_use_fixed_references_and_actual_saved_epochs(series):
+    snapshot = study.load_study(series)
+    for encoder, size in [('Small', 8), ('Base', 4), ('Base', 8)]:
+        case = f'{encoder}_{size}'
+        snapshot['cases'][case] = {**snapshot['cases']['n4'], 'encoder': encoder, 'train_samples': size}
+        for model in ('future', 'joint'):
+            source = snapshot['runs']['n4', model]
+            snapshot['runs'][case, model] = {**source, 'case': case, 'completed_epochs': 2,
+                'epochs': [{**row, 'optimizer_steps': row['epoch']*size//2} for row in source['epochs'][:2]]}
+    frame = study.dataset_budget_comparison(snapshot)
+    assert len(frame) == 24
+    epochs = frame[frame['Matched budget'] == 'Epochs']
+    updates = frame[frame['Matched budget'] == 'Optimizer updates']
+    assert set(epochs.Budget) == {2} and set(epochs.Epoch) == {2}
+    assert set(updates.Budget) == {4} and set(updates['Clip presentations']) == {8}
+    assert set(updates.loc[updates['Training clips'] == 8, 'Epoch']) == {1}
+    assert set(frame.loc[frame.Encoder == 'Small', 'Reference clips']) == {2}
+    assert set(frame.loc[frame.Encoder == 'Base', 'Reference clips']) == {4}
+    small = updates[(updates.Encoder == 'Small') & (updates['Training clips'] == 8)]
+    np.testing.assert_allclose(small['RMSE reduction (K)'], 3*np.sqrt(5))
+    base = updates[(updates.Encoder == 'Base') & (updates['Training clips'] == 8)]
+    np.testing.assert_allclose(base['RMSE reduction (K)'], np.sqrt(5))
+    assert not ((frame['Training clips'] == 8) & (frame.Model == 'Residual')).any()
+    reference = frame[frame['Training clips'] == frame['Reference clips']]
+    assert (reference['RMSE reduction (K)'] == 0).all()
+
+
+def test_dataset_budgets_require_exact_common_saved_reports(series):
+    snapshot = study.load_study(series)
+    for (case, _), run in snapshot['runs'].items():
+        if case == 'n2':
+            run['epochs'] = [row for row in run['epochs'] if row['optimizer_steps'] % 2 == 1]
+    frame = study.dataset_budget_comparison(snapshot)
+    assert set(frame['Matched budget']) == {'Epochs'}
+    assert set(frame.Budget) == {3}
+    # A common saved history entry still requires its committed validation report.
+    (series/'n2/future/validation_epochs/epoch_003.json').unlink()
+    snapshot['reports'].clear()
+    with pytest.raises(FileNotFoundError):
+        study.dataset_budget_comparison(snapshot)

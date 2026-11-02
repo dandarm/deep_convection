@@ -309,6 +309,124 @@ def _pair_size_comparison(study, family):
     return records
 
 
+def dataset_budget_comparison(study, family='pretraining'):
+    """All sizes at a global common budget, relative to each architecture's smallest set."""
+    if family == 'reconstruction':
+        raise ValueError('Dataset budget comparison requires a common forecast target')
+    records = []
+    for budget in ('epoch', 'optimizer_steps'):
+        selection, _ = select_budget(study, family, budget, across_sizes=True)
+        selected = {}
+        for (case, name), epoch in selection.items():
+            data = study['cases'][case]
+            history = next(row for row in study['runs'][case, name]['epochs'] if row['epoch'] == epoch)
+            report = epoch_report(study, case, name, epoch)
+            selected[case, name] = {'Encoder': data.get('encoder', 'Small'),
+                'Training clips': data['train_samples'], 'Model': LABELS[name],
+                'Matched budget': 'Epochs' if budget == 'epoch' else 'Optimizer updates',
+                'Budget': history[budget], 'Epoch': epoch,
+                'Optimizer updates': history['optimizer_steps'],
+                'Clip presentations': epoch*data['train_samples'],
+                'RMSE (K)': report['neural']['rmse_k']}
+        reference_cases = {}
+        for case, data in study['cases'].items():
+            encoder = data.get('encoder', 'Small')
+            previous = reference_cases.get(encoder)
+            if previous is None or data['train_samples'] < study['cases'][previous]['train_samples']:
+                reference_cases[encoder] = case
+        for (case, name), row in selected.items():
+            reference = selected.get((reference_cases[row['Encoder']], name))
+            if reference is None:
+                raise ValueError('Each objective requires a saved run at the architecture reference size')
+            records.append({**row, 'Reference clips': reference['Training clips'],
+                'Reference epoch': reference['Epoch'], 'Reference updates': reference['Optimizer updates'],
+                'Reference RMSE (K)': reference['RMSE (K)'],
+                'RMSE reduction (K)': reference['RMSE (K)']-row['RMSE (K)']})
+    return pd.DataFrame(records)
+
+
+def dataset_budget_figure(comparison):
+    """Vertical bars for every available size; one reference per architecture."""
+    if comparison.empty:
+        return None
+    from matplotlib.patches import Patch
+    encoders = sorted(comparison.Encoder.unique(), key=lambda name: (name != 'Small', name))
+    inverse = {value: key for key, value in LABELS.items()}
+    methods = list(comparison.Model.unique())
+    fig, axes = plt.subplots(len(encoders), 2, figsize=(15, 4*len(encoders)),
+                             sharey=True, squeeze=False, layout='constrained')
+    low, high = min(0., comparison['RMSE reduction (K)'].min()), max(0., comparison['RMSE reduction (K)'].max())
+    padding = max((high-low)*.12, .02)
+    for i, encoder in enumerate(encoders):
+        for j, budget in enumerate(('Epochs', 'Optimizer updates')):
+            axis = axes[i, j]
+            rows = comparison[(comparison.Encoder == encoder) & (comparison['Matched budget'] == budget)]
+            if rows.empty:
+                axis.set_visible(False)
+                continue
+            if rows.Budget.nunique() != 1 or rows['Reference clips'].nunique() != 1:
+                raise ValueError('Each panel requires one common budget and reference dataset')
+            sizes = sorted(rows['Training clips'].unique())
+            panel_methods = [model for model in methods if model in set(rows.Model)]
+            width = .8/len(panel_methods)
+            for k, model in enumerate(panel_methods):
+                for _, row in rows[rows.Model == model].iterrows():
+                    bars = axis.bar(sizes.index(row['Training clips'])+(k-(len(panel_methods)-1)/2)*width,
+                                    row['RMSE reduction (K)'], width=width, color=COLORS[inverse[model]])
+                    if row['Training clips'] != row['Reference clips']:
+                        axis.bar_label(bars, labels=[f'{row["RMSE reduction (K)"]:.2f}'], padding=3, fontsize=9)
+            other = 'Optimizer updates' if budget == 'Epochs' else 'Epoch'
+            ticks = []
+            for size in sizes:
+                values = rows.loc[rows['Training clips'] == size, other].unique()
+                if len(values) != 1:
+                    raise ValueError('Objectives at the same size must share the displayed budget')
+                ticks.append(f'{size:,}\n{int(values[0]):,}')
+            axis.axhline(0, color='black', linewidth=1)
+            axis.set(title=f'{encoder} · {int(rows.Budget.iloc[0]):,} {budget.lower()}\n'
+                           f'Reference: {int(rows["Reference clips"].iloc[0]):,} clips',
+                     ylabel='Forecast RMSE reduction (K)', xticks=range(len(sizes)), xticklabels=ticks,
+                     xlabel=f'Training clips / {other.lower()}', ylim=(low-padding, high+padding))
+            axis.tick_params(axis='y', labelleft=True)
+            axis.grid(axis='y', alpha=.2)
+    fig.legend(handles=[Patch(color=COLORS[inverse[model]], label=model) for model in methods],
+               loc='outside upper center', ncol=len(methods))
+    return fig
+
+
+def budget_reversal_figure(pair_comparison):
+    """Join the gains from two explicit budget criteria for a single dataset pair."""
+    if pair_comparison.empty:
+        return None
+    pairs = pair_comparison[['Smaller training clips', 'Larger training clips', 'Encoder comparison']].drop_duplicates()
+    if len(pairs) != 1:
+        raise ValueError('Select exactly one dataset pair for the budget transition')
+    small, large, encoders = pairs.iloc[0]
+    budgets = ('Epochs', 'Optimizer updates')
+    inverse = {value: key for key, value in LABELS.items()}
+    fig, axis = plt.subplots(figsize=(8, 4.5), layout='constrained')
+    for model, rows in pair_comparison.groupby('Model', sort=False):
+        indexed = rows.set_index('Matched budget')
+        if not all(b in indexed.index for b in budgets):
+            continue
+        values = indexed.loc[list(budgets), 'RMSE reduction with more data (K)']
+        axis.plot([0, 1], values, marker='o', linewidth=2, color=COLORS[inverse[model]], label=model)
+    ticks = []
+    for budget in budgets:
+        rows = pair_comparison[pair_comparison['Matched budget'] == budget]
+        if len(rows[['Budget', 'Small-set epoch', 'Large-set epoch']].drop_duplicates()) != 1:
+            raise ValueError('Each transition endpoint requires one shared budget')
+        row = rows.iloc[0]
+        ticks.append(f'{int(row.Budget):,} {budget.lower()}\n'
+                     f'Epochs: {int(row["Small-set epoch"])} / {int(row["Large-set epoch"])}')
+    axis.set(title=f'{encoders} · {small:,} → {large:,} clips',
+             xticks=[0, 1], xticklabels=ticks, xlim=(-.2, 1.2),
+             ylabel='Forecast RMSE reduction (K)')
+    axis.grid(axis='y', alpha=.2)
+    axis.legend(loc='best')
+    return fig
+
+
 def trajectory_summary(study):
     records = []
     for run in study['runs'].values():
