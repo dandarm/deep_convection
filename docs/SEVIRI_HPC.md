@@ -16,7 +16,7 @@ Il clone Git è in `$HOME/deep_convection`. I dati risiedono in
 - `sources/`: circa 24 GiB di Zarr originali congelati, utilizzati dai
   controlli di provenienza del lettore;
 - `transfer_plan.json` e `verification.json`: identità e verifica SHA256
-  dell'intero trasferimento, inclusi i timestamp originali al nanosecondo.
+  dell'intero trasferimento; i timestamp originali sono registrati a parte.
 
 Le clip sono definite da timestamp e origine spaziale nei manifest. Le
 osservazioni comuni a più clip occupano un solo file giornaliero. Il
@@ -29,11 +29,14 @@ checkpoint mantengono il loro significato di provenienza. Il lettore continua
 a verificare checksum, dimensioni, timestamp, sequenze temporali e canali;
 l'hash della mappatura entra nella revisione esplicita di esecuzione.
 
-Il ricevitore rsync 3.1.3 osservato sul cluster arrotonda i timestamp ai
-secondi. `transport_times.json` conserva dimensioni e tempi originali: dopo
-aver verificato il SHA256 di ciascun file, il verificatore ripristina il suo
-timestamp con precisione al nanosecondo e ricontrolla l'impronta delle sorgenti.
-Questo passaggio conserva i controlli di provenienza del lettore.
+Il filesystem di destinazione osservato sul cluster arrotonda i timestamp ai
+secondi, anche quando si richiede esplicitamente precisione maggiore.
+`transport_times.json` conserva dimensioni e tempi originali ed è vincolato
+tramite SHA256 alla mappatura. Per le sorgenti trasferite, il lettore verifica
+il contenuto SHA256 di ogni file prima di usare il tempo canonico per
+ricostruire l'impronta originale. Un cambiamento dei byte viene rifiutato
+anche a dimensioni e timestamp fisici invariati. Questo controllo aggiunge
+una lettura iniziale delle sorgenti, mentre i batch usano i frame NumPy.
 
 Il trasferimento diretto avviato il 2 novembre 2026 è controllabile sulla
 macchina di origine tramite
@@ -50,9 +53,10 @@ PyTorch 2.14.1 e Transformers 5.20.2. Usare un ambiente separato in `$WORK`:
 
 ```bash
 module load python/3.11.7
+unset PYTHONPATH
 python3 -m venv "$WORK/deep_convection/venv"
 source "$WORK/deep_convection/venv/bin/activate"
-python -m pip install --upgrade pip
+python -m pip install --upgrade pip setuptools
 python -m pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu126
 python -m pip install -r "$HOME/deep_convection/requirements-hpc.txt"
 python -m pip check
@@ -62,6 +66,12 @@ La build CUDA 12.6 va verificata sul nodo GPU con il driver installato.
 Una ripresa su A100 conserva lo stato dell'ottimizzazione; operazioni CUDA
 e compilazione possono introdurre differenze di arrotondamento rispetto a H200.
 Registrare le versioni e misurare tempi, loss finite e memoria prima del run lungo.
+
+`scripts/hpc/seviri_ssl_smoke.sbatch` esegue un test CUDA sintetico breve per
+MVM, Future e Joint con bf16, AdamW fused e compilazione. Verifica lo stack
+software su una GPU allocata tramite Slurm; usa clip e modelli piccoli.
+Il successivo benchmark sui dati reali deve misurare Small e Base con batch 32
+prima di avviare l'intero array scientifico.
 
 ## Preparazione dei sei esperimenti
 

@@ -17,7 +17,7 @@ import pandas as pd
 import xarray as xr
 
 from .seviri_clips import SeviriZarrClipReader, VIDEO_MAE_CHANNELS, IncompleteSeviriClipError
-from .storage_roots import storage_root
+from .storage_roots import storage_root, source_provenance
 
 
 def file_digest(path):
@@ -31,10 +31,20 @@ def file_digest(path):
 def source_stamp(path):
     """Seal the list, sizes and modification times of published source files."""
     records = []
+    provenance = source_provenance(path)
     for file in sorted(Path(path).rglob("*")):
         if file.is_file() and ".rsync-partial" not in file.parts and not file.name.endswith(".part"):
             info = file.stat()
-            records.append((str(file.relative_to(path)), info.st_size, info.st_mtime_ns))
+            timestamp = info.st_mtime_ns
+            if provenance is not None:
+                root, snapshot, times = provenance
+                name = str(file.relative_to(root))
+                expected = times.get("sources/" + name)
+                if (expected is None or info.st_size != expected[0]
+                        or file_digest(file) != snapshot.get(name)):
+                    raise ValueError(f"Relocated source content differs: {file}")
+                timestamp = expected[1]
+            records.append((str(file.relative_to(path)), info.st_size, timestamp))
     if not records:
         raise IncompleteSeviriClipError(f"Empty or missing source store: {path}")
     return hashlib.sha256(json.dumps(records, separators=(",", ":")).encode()).hexdigest()

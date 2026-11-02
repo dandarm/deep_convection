@@ -68,7 +68,11 @@ def prepare(dataset, seed, output):
     write_json(mapping, dict(version=1, roots={
         transfer["canonical_frame_root"]: str(dataset / "frames"),
         transfer["canonical_zarr_root"]: str(dataset / "sources"),
-    }))
+    }, source_provenance=dict(root=str(dataset / "sources"),
+        snapshot=str(dataset / "dataset/source_snapshot.json"),
+        snapshot_sha256=digest(dataset / "dataset/source_snapshot.json"),
+        timestamps=str(dataset / "transport_times.json"),
+        timestamps_sha256=digest(dataset / "transport_times.json"))))
     archive = output / "source_archive"
     for directory in ("src", "scripts"):
         shutil.copytree(ROOT / directory, archive / directory,

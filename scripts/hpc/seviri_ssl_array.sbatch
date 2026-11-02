@@ -17,6 +17,8 @@
 
 set -euo pipefail
 module load python/3.11.7
+# The Python module exports a shared pip PYTHONPATH; isolate this venv.
+unset PYTHONPATH
 SEVIRI_HPC_ROOT=${SEVIRI_HPC_ROOT:-"$WORK/deep_convection/ssl_131072_20261102"}
 SEVIRI_VENV=${SEVIRI_VENV:-"$WORK/deep_convection/venv"}
 source "$SEVIRI_VENV/bin/activate"
