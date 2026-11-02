@@ -1307,3 +1307,14 @@ OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 TORCHINDUCTOR_COMPILE_THREADS=4 \
 Dalla sessione SSH, `python3 scripts/status_seviri_ssl.py --watch 15` segue
 la serie indicata in `results/ssl_active_series.json`. Il puntatore viene
 aggiornato dopo la verifica dell'avvio del nuovo supervisore.
+
+La preparazione del 2 novembre ha completato 196.608 controlli sulle proposte
+di training, accettandone 195.678. La selezione contiene 131.072 clip con
+115.278 coppie distinte di coordinate native dell'origine. Le 512 clip di
+validation hanno 512 origini distinte. La media globale è 254,9 K e la
+deviazione standard 20,1 K. Un controllo indipendente ricalcola le statistiche
+e verifica il vincolo geografico per tutti i crop selezionati. La suite finale
+supera 350 test, con un test escluso perché richiede una GPU durante la suite.
+Le copie eseguite del notebook restano locali; le versioni Git contengono le
+celle sorgenti. I nuovi esperimenti sono registrati separatamente anche nel
+riepilogo di avanzamento del notebook.

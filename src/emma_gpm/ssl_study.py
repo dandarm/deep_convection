@@ -706,7 +706,7 @@ def native_loss_history(study, run):
 
 def _size_colors(sizes):
     canonical_colors = {4096: '#0072B2', 8192: '#E69F00', 16384: '#009E73',
-                        32768: '#CC79A7', 65536: '#D55E00'}
+                        32768: '#CC79A7', 65536: '#D55E00', 131072: '#9467BD'}
     palette = plt.get_cmap('tab10')
     return {size: canonical_colors.get(size, palette(i % 10)) for i, size in enumerate(sorted(set(sizes)))}
 

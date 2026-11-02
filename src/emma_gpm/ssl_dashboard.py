@@ -141,6 +141,8 @@ def dataset_overview(queue, show_tables=True):
     all_points=pd.concat(origins.values(),ignore_index=True)
     extent=[min(-20,all_points.longitude.min()-2),max(40,all_points.longitude.max()+2),
             min(30,all_points.latitude.min()-2),max(70,all_points.latitude.max()+2)]
+    if protocol.get('geographic_check_passed'):
+        extent=protocol['domain_lonlat']
     fig=plt.figure(figsize=(14,8),layout='constrained')
     grid=fig.add_gridspec(2,2,height_ratios=[2,1])
     axes=np.array([[fig.add_subplot(grid[0,j],projection=ccrs.PlateCarree()) for j in range(2)],
@@ -155,8 +157,9 @@ def dataset_overview(queue, show_tables=True):
         axes[0,column].add_feature(cfeature.NaturalEarthFeature('physical','land','10m'),
                                    facecolor='#f1f1f1',edgecolor='#777777',linewidth=.4)
         image=axes[0,column].scatter(points.longitude,points.latitude,transform=ccrs.PlateCarree(),
-            c=points.clip_fraction_percent,s=max(.6,min(30,4500/len(points))),
-            cmap='viridis',vmin=0,vmax=maximum,zorder=3,rasterized=True)
+            c=points.clip_fraction_percent,s=max(.3,min(30,4500/len(points))),
+            cmap='viridis',vmin=0,vmax=maximum,zorder=3,rasterized=True,
+            linewidths=0,alpha=.6 if len(points)>2000 else 1.)
         axes[0,column].set(title=f'{name.capitalize()} crop origins · {len(frame):,} clips',
             xlabel='Longitude',ylabel='Latitude')
         lines=axes[0,column].gridlines(draw_labels=True,linewidth=.5,alpha=.3)
