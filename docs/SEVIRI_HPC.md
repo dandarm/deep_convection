@@ -29,6 +29,26 @@ i risultati riportano il numero effettivo di epoche e aggiornamenti di ogni run.
 La validation da 512 clip resta a ogni epoca; quella da 10.240 clip viene
 calcolata al termine delle cinque epoche.
 
+Il diagnostico Leonardo `63394589` ha verificato la pipeline su quattro
+A100 da 64 GiB, con la revisione congelata `0d28a74`. Il riferimento precedente
+su Lustre misurava circa 2,3 s per aggiornamento con batch globale 32, circa
+14 clip/s. I benchmark con frame in RAM hanno misurato:
+
+| Clip per GPU | Batch globale | Secondi per aggiornamento | Clip/s | VRAM massima osservata per GPU |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 32 | 0,059 | 540 | 6 GiB |
+| 32 | 128 | 0,17 | 740 | 14 GiB |
+| 144 | 576 | 0,70 | 830 | 55 GiB |
+
+Sono misure su 32 aggiornamenti dopo quattro di riscaldamento. Tutti i processi
+hanno registrato zero byte di letture a blocchi durante la finestra misurata.
+Con 144 clip per GPU, la telemetria ha rilevato un utilizzo medio tra il 98%
+e il 100% sulle quattro GPU e una potenza media tra 370 e 400 W. L'avvio,
+la copia verificata in RAM e le validation sono misurati separatamente.
+I tempi dell'intera epoca serviranno a confermare il throughput sul training
+completo. I report locali sono in `results/ssl_hpc_ram_20261103/`; quelli HPC
+in `$WORK/deep_convection/ddp_ram_20261103/`.
+
 ## Prove distribuite su un nodo con quattro GPU
 
 `pretrain_seviri_ssl_ddp.py` distribuisce un singolo modello sulle quattro
