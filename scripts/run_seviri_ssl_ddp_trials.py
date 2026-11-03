@@ -179,6 +179,9 @@ def ram_pilots(root):
     while not benchmark(batch):
         batch-=8
         if batch<32:raise ValueError('The real pipeline does not fit the requested per-GPU reference batch')
+    while benchmark(batch+8):
+        batch+=8
+        if batch>=2048:raise ValueError('Real pipeline capacity search exceeded its bounded range')
     plan=[row for row in pilot_batches(32,batch) if row['label']!='reference']
     plan.sort(key=lambda row:row['batch_per_gpu'],reverse=True)
     write_json(root/'pilots_plan.json',dict(world_size=4,epochs=5,model_size='base',objective='future',

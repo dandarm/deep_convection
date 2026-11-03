@@ -19,7 +19,8 @@ forward, backward con DDP e optimizer. Registra anche throughput, letture dal
 filesystem e picchi di memoria su ciascuna GPU. I tempi includono sincronizzazioni
 di misura; quelli delle epoche successive descrivono la pipeline ordinaria.
 La scelta del batch richiede che la memoria misurata rimanga entro il 92%
-della VRAM disponibile, riducendo il valore in passi di otto clip se necessario.
+della VRAM disponibile. La ricerca parte da 144 clip per GPU e verifica valori
+adiacenti in passi di otto clip, usando la pipeline reale per affinare il limite.
 
 La prova con il batch massimo viene eseguita per prima, seguita dal batch
 di 32 clip per GPU. Entrambe usano Base/Future e cinque epoche. Il riferimento
