@@ -41,17 +41,35 @@ def test_metric_merge_weights_pixels_before_computing_rmse():
         assert a==pytest.approx(b)
 
 
-def launch(out,objective='future',epochs=1,resume=False):
+def launch(out,objective='future',epochs=1,resume=False,benchmark=False):
     cmd=[sys.executable,'-m','torch.distributed.run','--standalone','--nproc_per_node=2',
          'scripts/pretrain_seviri_ssl_ddp.py','--synthetic-smoke','--device','cpu',
          '--precision','fp32','--compile-mode','off','--cpu-threads','1','--objective',objective,
          '--batch-size-per-gpu','2','--validation-batch-size','2','--epochs',str(epochs),'--output-dir',str(out)]
     if resume:cmd+=['--resume',str(out/'checkpoint_latest.pt')]
+    if benchmark:cmd+=['--pipeline-benchmark-steps','2','--benchmark-warmup','1']
     env=dict(os.environ,OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1')
     result=subprocess.run(cmd,cwd=Path(__file__).resolve().parents[1],env=env,text=True,
                           stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=150)
     assert result.returncode==0,result.stdout[-8000:]
+    if benchmark:return json.loads((out/'pipeline_benchmark.json').read_text())
     return torch.load(out/'checkpoint_latest.pt',weights_only=False,map_location='cpu')
+
+
+def test_distributed_pipeline_benchmark_records_each_rank_and_separates_phases(tmp_path):
+    report=launch(tmp_path/'benchmark',benchmark=True)
+    assert report['scope']=='synthetic_pipeline_smoke'
+    assert report['global_batch']==4
+    assert report['measured_steps']==2
+    assert {row['rank'] for row in report['ranks']}=={0,1}
+    assert report['clips_per_second']>0
+    for rank in report['ranks']:
+        assert len(rank['timings'])==2
+        for row in rank['timings']:
+            parts=[row[key] for key in ('data_and_transfer_seconds','forward_seconds','backward_and_ddp_seconds','optimizer_seconds')]
+            assert all(value>=0 for value in parts)
+            assert sum(parts)==pytest.approx(row['total_seconds'])
+    assert not (tmp_path/'benchmark/checkpoint_latest.pt').exists()
 
 
 @pytest.mark.parametrize('objective',['mvm','future','joint'])

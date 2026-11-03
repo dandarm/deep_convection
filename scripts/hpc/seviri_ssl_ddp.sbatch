@@ -38,7 +38,14 @@ trap 'touch "$SEVIRI_DDP_ROOT/stop_after_epoch"' USR1
 nvidia-smi --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw \
     --format=csv -l 2 > "$SEVIRI_DDP_ROOT/gpu_${SLURM_JOB_ID}.csv" &
 monitor=$!
-trap 'kill "$monitor" 2>/dev/null || true' EXIT
+cleanup() {
+    kill "$monitor" 2>/dev/null || true
+    if [[ "$SEVIRI_DDP_STAGE" == ram-pilots ]]; then
+        python "$SEVIRI_DDP_ROOT/source_archive/scripts/stage_seviri_ssl_ram.py" \
+            --root "$SEVIRI_DDP_ROOT" --cleanup
+    fi
+}
+trap cleanup EXIT
 srun --ntasks=1 --cpus-per-task=32 --cpu-bind=none python -u \
     "$SEVIRI_DDP_ROOT/source_archive/scripts/run_seviri_ssl_ddp_trials.py" \
     --root "$SEVIRI_DDP_ROOT" --stage "$SEVIRI_DDP_STAGE" \

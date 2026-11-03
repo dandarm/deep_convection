@@ -1,5 +1,33 @@
 # Ripresa dello studio SSL su Leonardo
 
+## Training con frame condivisi nella RAM del nodo
+
+La revisione del 3 novembre 2026 aggiunge `--stage ram-pilots` al controller.
+La prima prova con batch globale 32 ha misurato circa 2,3 secondi per
+aggiornamento sui frame mappati da Lustre, con numerose riletture e molta RAM
+disponibile. La revisione copia una volta i circa 172 GiB di frame di training
+e validation in `/dev/shm`, condivisi dai quattro processi. I file temporanei
+sono verificati con SHA256 prima della pubblicazione; i metadati, i valori
+float16, i manifest e i controlli sulle sorgenti conservano la stessa identità.
+Il percorso RAM è stabile per esperimento e viene ricreato e verificato alla
+ripresa su un nodo diverso. L'uscita del job rimuove la propria copia temporanea.
+
+Prima del training vengono misurati batch di 8, 32 e 144 clip per GPU,
+con quattro aggiornamenti di riscaldamento e 32 aggiornamenti cronometrati
+per batch. Il benchmark legge clip reali e separa preparazione/trasferimento,
+forward, backward con DDP e optimizer. Registra anche throughput, letture dal
+filesystem e picchi di memoria su ciascuna GPU. I tempi includono sincronizzazioni
+di misura; quelli delle epoche successive descrivono la pipeline ordinaria.
+La scelta del batch richiede che la memoria misurata rimanga entro il 92%
+della VRAM disponibile, riducendo il valore in passi di otto clip se necessario.
+
+La prova con il batch massimo viene eseguita per prima, seguita dal batch
+di 32 clip per GPU. Entrambe usano Base/Future e cinque epoche. Il riferimento
+precedente con batch globale 32 conserva il checkpoint alla quarta epoca;
+i risultati riportano il numero effettivo di epoche e aggiornamenti di ogni run.
+La validation da 512 clip resta a ogni epoca; quella da 10.240 clip viene
+calcolata al termine delle cinque epoche.
+
 ## Prove distribuite su un nodo con quattro GPU
 
 `pretrain_seviri_ssl_ddp.py` distribuisce un singolo modello sulle quattro

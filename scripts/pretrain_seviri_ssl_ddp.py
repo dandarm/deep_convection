@@ -59,6 +59,8 @@ def args_from_cli():
     p.add_argument('--synthetic-smoke',action='store_true')
     p.add_argument('--capacity-probe',action='store_true')
     p.add_argument('--probe-steps',type=int,default=8)
+    p.add_argument('--pipeline-benchmark-steps',type=int,default=0)
+    p.add_argument('--benchmark-warmup',type=int,default=4)
     p.add_argument('--log-every',type=int,default=16)
     if initial.config:
         defaults=json.loads(initial.config.read_text());valid={a.dest for a in p._actions}
@@ -73,6 +75,8 @@ def args_from_cli():
            args.cpu_threads,args.extended_every,args.log_every)<1:p.error('Positive counts required')
     if args.learning_rate<=0 or args.weight_decay<0 or args.probe_steps<4:p.error('Invalid optimization/probe parameters')
     if args.synthetic_smoke and args.capacity_probe:p.error('Select one engineering mode')
+    if args.pipeline_benchmark_steps<0 or args.benchmark_warmup<1:p.error('Invalid benchmark counts')
+    if args.pipeline_benchmark_steps and (args.capacity_probe or args.resume):p.error('Pipeline benchmarks start from fresh weights')
     return args
 
 
@@ -133,6 +137,57 @@ def capacity_probe(args,model,wrapped,optimizer,device,rank,world,window):
     if rank==0:write_json(args.output_dir/'capacity.json',dict(status='completed',scope='synthetic_full_model_capacity',
                     model_size=args.model_size,objective=args.objective,compile_mode=args.compile_mode,gpus=reports))
     del clips,raw_buffer
+
+
+def pipeline_benchmark(args,model,wrapped,optimizer,loader,device,rank,world,window):
+    """Measure real loading, forward, DDP backward and optimizer after warmup."""
+    count=args.benchmark_warmup+args.pipeline_benchmark_steps
+    if count>len(loader):raise ValueError('Benchmark exceeds one dataset traversal')
+    def synchronize():
+        if device.type=='cuda':torch.cuda.synchronize(device)
+    def io_bytes():
+        path=Path('/proc/self/io')
+        return {k:int(v) for k,v in (line.split(':') for line in path.read_text().splitlines())} if path.exists() else {}
+    iterator=iter(loader);wrapped.train();rows=[];elapsed=None;before_io={}
+    try:
+        for step in range(count):
+            if step==args.benchmark_warmup:
+                synchronize();dist.barrier();synchronize()
+                if device.type=='cuda':torch.cuda.reset_peak_memory_stats(device)
+                before_io=io_bytes();started=time.perf_counter()
+            begin=time.perf_counter();batch=next(iterator)
+            clip=batch['pixel_values'].to(device,non_blocking=loader.pin_memory)
+            synchronize();loaded=time.perf_counter()
+            loss,_=step_loss(wrapped,model,clip,batch['sample_indices'],0,len(loader.dataset),window,args,device)
+            synchronize();forward=time.perf_counter()
+            loss.backward();synchronize();backward=time.perf_counter()
+            torch.nn.utils.clip_grad_norm_(model.parameters(),float('inf'),error_if_nonfinite=True)
+            optimizer.step();optimizer.zero_grad(set_to_none=True);synchronize();end=time.perf_counter()
+            if step>=args.benchmark_warmup:
+                rows.append(dict(data_and_transfer_seconds=loaded-begin,forward_seconds=forward-loaded,
+                    backward_and_ddp_seconds=backward-forward,optimizer_seconds=end-backward,total_seconds=end-begin))
+            if rank==0:write_json(args.output_dir/'progress.json',dict(status='benchmarking',
+                current_step=step+1,total_steps=count,global_batch=args.batch_size_per_gpu*world,updated_unix=time.time()))
+        elapsed=time.perf_counter()-started
+        after_io=io_bytes()
+    finally:
+        if hasattr(iterator,'close'):iterator.close()
+    report=dict(rank=rank,seconds_per_update=elapsed/len(rows),timings=rows,
+                mean_seconds={name:float(np.mean([row[name] for row in rows])) for name in rows[0]},
+                read_bytes=after_io.get('read_bytes',0)-before_io.get('read_bytes',0))
+    if device.type=='cuda':
+        free,total=torch.cuda.mem_get_info(device)
+        report.update(total_gib=total/2**30,peak_allocated_gib=torch.cuda.max_memory_allocated(device)/2**30,
+            peak_reserved_gib=torch.cuda.max_memory_reserved(device)/2**30,process_device_used_gib=(total-free)/2**30)
+    reports=[None]*world;dist.all_gather_object(reports,report)
+    if rank==0:
+        seconds=max(row['seconds_per_update'] for row in reports)
+        write_json(args.output_dir/'pipeline_benchmark.json',dict(status='completed',
+            scope='synthetic_pipeline_smoke' if args.synthetic_smoke else 'real_data_pipeline_benchmark',
+            batch_per_gpu=args.batch_size_per_gpu,global_batch=args.batch_size_per_gpu*world,
+            measured_steps=len(rows),warmup_steps=args.benchmark_warmup,seconds_per_update=seconds,
+            clips_per_second=args.batch_size_per_gpu*world/seconds,ranks=reports))
+        write_json(args.output_dir/'progress.json',dict(status='completed',scope='pipeline_benchmark',updated_unix=time.time()))
 
 
 def run(args,rank,world,device):
@@ -213,6 +268,11 @@ def run(args,rank,world,device):
             identity=identity,initial_encoder_sha256=initial_encoder_sha256,compiled_regions=compiled,
             torch_version=torch.__version__,data_kind='synthetic engineering' if args.synthetic_smoke else 'SEVIRI SSL'))
         write_json(args.output_dir/'channel_stats.json',stats)
+    if args.pipeline_benchmark_steps:
+        pipeline_benchmark(args,model,wrapped,optimizer,loader,device,rank,world,window)
+        for data in (training,validation):
+            if hasattr(data,'close'):data.close()
+        dist.barrier();return
     for epoch in range(progress['completed_epochs'],args.epochs):
         sampler.epoch=epoch;wrapped.train();dist.barrier()
         if device.type=='cuda':torch.cuda.synchronize(device);torch.cuda.reset_peak_memory_stats(device)

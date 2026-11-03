@@ -147,10 +147,61 @@ def pilots(root,baseline_global_batch):
     return 0
 
 
+def ram_pilots(root):
+    from scripts.stage_seviri_ssl_ram import stage
+    write_json(root/'controller.json',dict(status='staging_ram',updated_unix=time.time()))
+    stage(root)
+    os.environ['SEVIRI_STORAGE_ROOTS']=str(root/'ram_storage_roots.json')
+    settings=json.loads((root/'data_locations.json').read_text())
+    choice=json.loads((root/'batch_choice.json').read_text())
+    common=['--dataset',str(Path(settings['training'])/'dataset'),
+        '--zarr-root',settings['canonical_zarr_root'],'--frame-cache',settings['canonical_frame_root'],
+        '--model-size','base','--objective','future','--epochs','5','--compile-mode','default']
+    reports={}
+    def benchmark(batch):
+        name=f'benchmarks/ram_b{batch}';path=root/name
+        if not (path/'pipeline_benchmark.json').exists():
+            if path.exists():
+                suffix='.incomplete_'+str(time.time_ns())
+                path.rename(path.with_name(path.name+suffix))
+                log=root/(name.replace('/','_')+'.log')
+                if log.exists():log.rename(log.with_name(log.name+suffix))
+            result=launch(root,name,[*common,'--batch-size-per-gpu',str(batch),
+                '--pipeline-benchmark-steps','32','--benchmark-warmup','4'],allow_oom=True)
+            if result is None:return False
+        report=json.loads((path/'pipeline_benchmark.json').read_text())
+        reports[str(batch)]=report
+        write_json(root/'pipeline_comparison.json',reports)
+        return max(max(g['peak_reserved_gib'],g['process_device_used_gib'])/g['total_gib'] for g in report['ranks'])<=.92
+    for batch in (8,32):
+        if not benchmark(batch):raise ValueError('Reference batch exceeded the memory margin')
+    batch=choice['large_batch_per_gpu']
+    while not benchmark(batch):
+        batch-=8
+        if batch<32:raise ValueError('The real pipeline does not fit the requested per-GPU reference batch')
+    plan=[row for row in pilot_batches(32,batch) if row['label']!='reference']
+    plan.sort(key=lambda row:row['batch_per_gpu'],reverse=True)
+    write_json(root/'pilots_plan.json',dict(world_size=4,epochs=5,model_size='base',objective='future',
+        trials=plan,storage='verified shared RAM frames',previous_reference=settings.get('previous_reference'),
+        large_batch_selection='largest measured pipeline batch below 92 percent VRAM'))
+    common+=['--extended-dataset',str(Path(settings['extended'])/'dataset'),'--extended-every','10']
+    for trial in plan:
+        label,batch=trial['label'],trial['batch_per_gpu'];path=root/'pilots'/label
+        progress=json.loads((path/'progress.json').read_text()) if (path/'progress.json').exists() else {}
+        if progress.get('status')=='completed':continue
+        options=[*common,'--batch-size-per-gpu',str(batch),'--stop-after-epoch-file',str(root/'stop_after_epoch')]
+        if (path/'checkpoint_latest.pt').exists():options+=['--resume',str(path/'checkpoint_latest.pt')]
+        launch(root,'pilots/'+label,options)
+        progress=json.loads((path/'progress.json').read_text())
+        if progress['status']=='paused':
+            write_json(root/'controller.json',dict(status='paused',current=label,updated_unix=time.time()));return 75
+    write_json(root/'controller.json',dict(status='completed',updated_unix=time.time()));return 0
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root',type=Path,required=True)
-    p.add_argument('--stage',choices=['capacity','pilots'],required=True)
+    p.add_argument('--stage',choices=['capacity','pilots','ram-pilots'],required=True)
     p.add_argument('--baseline-global-batch',type=int,default=32)
     args=p.parse_args();args.root.mkdir(parents=True,exist_ok=True)
     plan=json.loads((args.root/'runtime_files.json').read_text())
@@ -158,6 +209,7 @@ def main():
         if digest(ROOT/name)!=expected:raise ValueError('Frozen runtime source changed: '+name)
     try:
         if args.stage=='capacity':capacity(args.root);return 0
+        if args.stage=='ram-pilots':return ram_pilots(args.root)
         return pilots(args.root,args.baseline_global_batch)
     except BaseException as exc:
         write_json(args.root/'controller.json',dict(status='failed',error=str(exc),updated_unix=time.time()));raise
