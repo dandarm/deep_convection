@@ -1,0 +1,8 @@
+{
+  "tf32": true,
+  "cudnn_benchmark": true,
+  "fused_adamw": true,
+  "static_positions": true,
+  "compile_mode": "default",
+  "sdpa_kernel": "auto"
+}

@@ -90,6 +90,35 @@ def test_matrix_rejects_changed_holdout_and_non_nested_data(tmp_path):
         make_plans(tmp_path/'bad_nesting', config)
 
 
+def test_matrix_fills_only_requested_gaps_and_freezes_runtime(tmp_path):
+    config = matrix_config(tmp_path)
+    runtime = tmp_path/'runtime.json'
+    runtime.write_text(json.dumps({'fused_adamw': True, 'compile_mode': 'default'}))
+    config['cuda_runtime'] = str(runtime)
+    for case in config['cases']:
+        case['objectives'] = ['mvm'] if case['model_size'] == 'small' else ['mvm', 'residual']
+    config['order'] = [dict(case=c['name'], stage=s) for c in reversed(config['cases'])
+                       for s in c['objectives']]
+    output = tmp_path/'series'
+    plan, local = make_plans(output, config)
+    assert plan['order'] == config['order'] and len(plan['order']) == 6
+    assert plan['cuda_runtime_sha256'] == digest(output/'cuda_runtime.json')
+    assert json.loads((output/'cuda_runtime.json').read_text()) == json.loads(runtime.read_text())
+    for case in config['cases']:
+        stages = local[case['name']]['stages']
+        assert [s['name'] for s in stages] == case['objectives']
+        for stage in stages:
+            flags = stage['flags']
+            assert flags[flags.index('--cuda-runtime')+1] == str(output/'cuda_runtime.json')
+    runtime.write_text('{}')
+    with pytest.raises(ValueError, match='Frozen plan changed'):
+        make_plans(output, config)
+    runtime.write_text(json.dumps({'fused_adamw': True, 'compile_mode': 'default'}))
+    config['order'][-1] = config['order'][0]
+    with pytest.raises(ValueError, match='exactly once'):
+        make_plans(tmp_path/'duplicate_order', config)
+
+
 def test_matrix_rejects_changed_frozen_copy(tmp_path):
     config = matrix_config(tmp_path)
     output = tmp_path/'series'

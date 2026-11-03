@@ -28,6 +28,10 @@ DATA_FILES = ('train.csv', 'validation.csv', 'channel_stats.json', 'source_snaps
 
 def make_plans(output, config):
     cases, local_plans, sets, validation_hashes = [], {}, {}, set()
+    runtime = None
+    if config.get('cuda_runtime'):
+        runtime = output / 'cuda_runtime.json'
+        immutable_json(runtime, json.loads(Path(config['cuda_runtime']).read_text()))
     for entry in config['cases']:
         name, model = entry['name'], entry['model_size']
         if Path(name).name != name or model not in ('small', 'base') or name in local_plans:
@@ -73,11 +77,14 @@ def make_plans(output, config):
             zarr_root=raw_root, frame_cache=Path(case['frame_cache']), clip_root=None, model_size=model,
             gradient_accumulation=1, reference_series=output,
             variability_reference_manifest=Path(config['variability_reference_manifest']).resolve(),
-            objectives=config.get('objectives',('future','joint')))
+            objectives=entry.get('objectives', config.get('objectives',('future','joint'))))
         local = dict(stages=selected_stages(arguments, dataset, output/name), dataset=files,
             sources=source_hashes(), seed=config['seed'], model_size=model,
             interpretation='Fresh initialization; selected SSL objectives; common validation; encoder and dataset size recorded separately')
         local_plans[name] = local
+        if runtime:
+            for stage in local['stages']:
+                stage['flags'] += ['--cuda-runtime', str(runtime)]
         cases.append(case)
     if len(validation_hashes) != 1:
         raise ValueError('Every experiment must use the identical validation manifest')
@@ -105,10 +112,21 @@ def make_plans(output, config):
         initialization='Random weights from the same seed within each encoder architecture',
         historical_dataset_relation=config.get('historical_dataset_relation','nested'),
         strict_nesting=True, validation_identical=True)
+    if 'order' in config:
+        expected = {(item['case'], item['stage']) for item in plan['order']}
+        requested = [(item['case'], item['stage']) for item in config['order']]
+        if len(requested) != len(expected) or set(requested) != expected:
+            raise ValueError('Execution order must contain every selected experiment exactly once')
+        plan['order'] = config['order']
+    if runtime:
+        plan['cuda_runtime'] = str(runtime)
+        plan['cuda_runtime_sha256'] = digest(runtime)
     return plan, local_plans
 
 
 def verify(output, plan, *, source_data=False):
+    if plan.get('cuda_runtime') and digest(Path(plan['cuda_runtime'])) != plan['cuda_runtime_sha256']:
+        raise ValueError('Frozen CUDA runtime changed')
     for filename, expected in plan['sources'].items():
         if digest(ROOT/filename) != expected:
             raise ValueError(f'Frozen execution source changed: {filename}')
@@ -148,10 +166,15 @@ def run(args):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT/filename, target)
     verify(args.output_dir, plan, source_data=True)
-    # Full array digests, source stamps and manifest coverage are also checked by
-    # every trainer. Here each distinct cache/manifest pair is checked pre-launch.
+    # Full array digests, source stamps and coverage are also checked by every
+    # trainer. Nested manifests let preflight check the largest case per cache.
     checked = set()
+    largest = {}
     for case in plan['cases']:
+        key = (case['frame_cache'], case['zarr_root'])
+        if key not in largest or case['train_samples'] > largest[key]['train_samples']:
+            largest[key] = case
+    for case in largest.values():
         for manifest in ('train.csv', 'validation.csv'):
             key = (case['frame_cache'], case['files'][manifest])
             if key not in checked:

@@ -1,0 +1,192 @@
+{
+  "epochs": 150,
+  "batch_size": 32,
+  "workers": 4,
+  "seed": 20261024,
+  "cuda_runtime": "/home/isac/deep_convection/configs/ssl_local_optimized_runtime.json",
+  "variability_reference_manifest": "/home/isac/deep_convection/results/ssl_scaling_20261025/n4096/dataset/train.csv",
+  "cases": [
+    {
+      "name": "base_n4096",
+      "model_size": "base",
+      "train_samples": 4096,
+      "dataset": "/home/isac/deep_convection/results/ssl_scaling_20261025/n4096/dataset",
+      "zarr_root": "/home/isac/deep_convection_data/MSG-SEVIRI",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261026_n32768",
+      "objectives": [
+        "mvm",
+        "future",
+        "joint",
+        "residual"
+      ]
+    },
+    {
+      "name": "base_n8192",
+      "model_size": "base",
+      "train_samples": 8192,
+      "dataset": "/home/isac/deep_convection/results/ssl_scaling_20261025/n8192/dataset",
+      "zarr_root": "/home/isac/deep_convection_data/MSG-SEVIRI",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261026_n32768",
+      "objectives": [
+        "mvm",
+        "future",
+        "joint",
+        "residual"
+      ]
+    },
+    {
+      "name": "small_n16384",
+      "model_size": "small",
+      "train_samples": 16384,
+      "dataset": "/home/isac/deep_convection/results/ssl_extension_20261026/n16384/dataset",
+      "zarr_root": "/home/isac/deep_convection_data/MSG-SEVIRI",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261026_n32768",
+      "objectives": [
+        "mvm",
+        "residual"
+      ]
+    },
+    {
+      "name": "base_n16384",
+      "model_size": "base",
+      "train_samples": 16384,
+      "dataset": "/home/isac/deep_convection/results/ssl_extension_20261026/n16384/dataset",
+      "zarr_root": "/home/isac/deep_convection_data/MSG-SEVIRI",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261026_n32768",
+      "objectives": [
+        "mvm",
+        "residual"
+      ]
+    },
+    {
+      "name": "small_n32768",
+      "model_size": "small",
+      "train_samples": 32768,
+      "dataset": "/home/isac/deep_convection/results/ssl_base_32768_20261026/n32768/dataset",
+      "zarr_root": "/home/isac/deep_convection_data/MSG-SEVIRI",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261026_n32768",
+      "objectives": [
+        "mvm",
+        "residual"
+      ]
+    },
+    {
+      "name": "base_n32768",
+      "model_size": "base",
+      "train_samples": 32768,
+      "dataset": "/home/isac/deep_convection/results/ssl_base_32768_20261026/n32768/dataset",
+      "zarr_root": "/home/isac/deep_convection_data/MSG-SEVIRI",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261026_n32768",
+      "objectives": [
+        "mvm",
+        "residual"
+      ]
+    },
+    {
+      "name": "small_n65536",
+      "model_size": "small",
+      "train_samples": 65536,
+      "dataset": "/home/isac/deep_convection/results/ssl_factorial_20261028/data_preparation/n65536/dataset",
+      "zarr_root": "/data1/deep_convection_data/ssl_sources_20261028_n65536",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261028_n65536",
+      "objectives": [
+        "mvm",
+        "residual"
+      ]
+    },
+    {
+      "name": "base_n65536",
+      "model_size": "base",
+      "train_samples": 65536,
+      "dataset": "/home/isac/deep_convection/results/ssl_factorial_20261028/data_preparation/n65536/dataset",
+      "zarr_root": "/data1/deep_convection_data/ssl_sources_20261028_n65536",
+      "frame_cache": "/home/isac/deep_convection_data/cache_native_seviri_20261028_n65536",
+      "objectives": [
+        "mvm",
+        "residual"
+      ]
+    }
+  ],
+  "order": [
+    {
+      "case": "base_n4096",
+      "stage": "mvm"
+    },
+    {
+      "case": "base_n4096",
+      "stage": "future"
+    },
+    {
+      "case": "base_n4096",
+      "stage": "joint"
+    },
+    {
+      "case": "base_n4096",
+      "stage": "residual"
+    },
+    {
+      "case": "base_n8192",
+      "stage": "mvm"
+    },
+    {
+      "case": "base_n8192",
+      "stage": "future"
+    },
+    {
+      "case": "base_n8192",
+      "stage": "joint"
+    },
+    {
+      "case": "base_n8192",
+      "stage": "residual"
+    },
+    {
+      "case": "small_n16384",
+      "stage": "mvm"
+    },
+    {
+      "case": "base_n16384",
+      "stage": "mvm"
+    },
+    {
+      "case": "small_n16384",
+      "stage": "residual"
+    },
+    {
+      "case": "base_n16384",
+      "stage": "residual"
+    },
+    {
+      "case": "small_n32768",
+      "stage": "mvm"
+    },
+    {
+      "case": "base_n32768",
+      "stage": "mvm"
+    },
+    {
+      "case": "small_n32768",
+      "stage": "residual"
+    },
+    {
+      "case": "base_n32768",
+      "stage": "residual"
+    },
+    {
+      "case": "small_n65536",
+      "stage": "mvm"
+    },
+    {
+      "case": "base_n65536",
+      "stage": "mvm"
+    },
+    {
+      "case": "small_n65536",
+      "stage": "residual"
+    },
+    {
+      "case": "base_n65536",
+      "stage": "residual"
+    }
+  ]
+}
