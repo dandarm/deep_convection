@@ -39,7 +39,7 @@ def args_from_cli():
     early=argparse.ArgumentParser(add_help=False);early.add_argument('--config',type=Path)
     initial,_=early.parse_known_args()
     p=argparse.ArgumentParser(description=__doc__,parents=[early])
-    for name in ('dataset','zarr-root','frame-cache','extended-dataset','output-dir','resume','stop-after-epoch-file'):
+    for name in ('dataset','zarr-root','frame-cache','extended-dataset','output-dir','resume','stop-after-epoch-file','execution-revision'):
         p.add_argument('--'+name,type=Path)
     p.add_argument('--model-size',choices=['small','base'],default='base')
     p.add_argument('--objective',choices=['mvm','future','joint','residual'],default='future')
@@ -67,7 +67,7 @@ def args_from_cli():
         if set(defaults)-valid:p.error('Unknown configuration keys: '+str(set(defaults)-valid))
         p.set_defaults(**defaults)
     args=p.parse_args()
-    for name in ('config','dataset','zarr_root','frame_cache','extended_dataset','output_dir','resume','stop_after_epoch_file'):
+    for name in ('config','dataset','zarr_root','frame_cache','extended_dataset','output_dir','resume','stop_after_epoch_file','execution_revision'):
         value=getattr(args,name)
         if value is not None:setattr(args,name,Path(value).resolve())
     if args.output_dir is None:p.error('--output-dir is required')
@@ -230,7 +230,7 @@ def run(args,rank,world,device):
         validate_manifests(train_frame,val_frame)
         stats=load_training_stats(args.dataset/'channel_stats.json',args.dataset/'train.csv',args.zarr_root)
         if stats['samples']!=len(train_frame):raise ValueError('Training statistics sample count differs')
-        if rank==0:write_json(args.output_dir/'progress.json',dict(status='preparing',phase='verifying_training_frames',updated_unix=time.time()))
+        if rank==0:write_json(args.output_dir/'progress.json',dict(status='preparing',phase='opening_training_frames',updated_unix=time.time()))
         training=FrameFileDataset(args.frame_cache,args.dataset/'train.csv',zarr_root=args.zarr_root)
         validation=FrameFileDataset(args.frame_cache,args.dataset/'validation.csv',zarr_root=args.zarr_root)
         train_hash,val_hash=(digest(args.dataset/name) for name in ('train.csv','validation.csv'))
@@ -260,7 +260,7 @@ def run(args,rank,world,device):
         identity['extended_validation']=dict(manifest_sha256=digest(args.extended_dataset/'validation.csv'),
             protocol_sha256=digest(args.extended_dataset/'protocol.json'),every=args.extended_every)
     progress=dict(completed_epochs=0,optimizer_steps=0,best_score=None,epochs=[])
-    if args.resume:progress=restore_distributed(args.resume,model,optimizer,identity,device)
+    if args.resume:progress=restore_distributed(args.resume,model,optimizer,identity,device,args.execution_revision)
     if args.epochs<progress['completed_epochs']:raise ValueError('Requested epochs precede the checkpoint')
     apply_optimizer_runtime(optimizer,runtime)
     if rank==0:
@@ -273,6 +273,26 @@ def run(args,rank,world,device):
         for data in (training,validation):
             if hasattr(data,'close'):data.close()
         dist.barrier();return
+    def evaluate_extended(epoch_number):
+        nonlocal extended
+        started=time.perf_counter()
+        if extended is None:
+            if rank==0:write_json(args.output_dir/'progress.json',dict(status='preparing',validation_set='extended',
+                phase='opening_extended_frames',updated_unix=time.time(),**progress))
+            extended=FrameFileDataset(extended_config['frame_cache'],args.extended_dataset/'validation.csv',
+                                      zarr_root=extended_config['zarr_root'])
+        dist.barrier();prepared=time.perf_counter()
+        ext_sampler=GlobalBatchSampler(len(extended),args.validation_batch_size,rank,world,314159,False)
+        ext_loader=indexed_loader(extended,ext_sampler,args,device,stats,args.validation_batch_size)
+        def extended_heartbeat(samples):
+            if rank==0:write_json(args.output_dir/'progress.json',dict(status='validating',validation_set='extended',
+                current_epoch=epoch_number,validation_samples_on_rank=samples,updated_unix=time.time(),**progress))
+        ext_report=evaluate_ssl(model,ext_loader,window,device,stats['global_mean_k'],stats['global_std_k'],
+            precision=args.precision,distributed=True,sample_days=extended.manifest.day.tolist(),progress_callback=extended_heartbeat)
+        if rank==0:
+            write_json(args.output_dir/f'validation_extended/epoch_{epoch_number:03d}.json',ext_report)
+            write_json(args.output_dir/f'validation_extended/timing_{epoch_number:03d}.json',
+                dict(preparation_seconds=prepared-started,evaluation_seconds=time.perf_counter()-prepared))
     for epoch in range(progress['completed_epochs'],args.epochs):
         sampler.epoch=epoch;wrapped.train();dist.barrier()
         if device.type=='cuda':torch.cuda.synchronize(device);torch.cuda.reset_peak_memory_stats(device)
@@ -336,18 +356,13 @@ def run(args,rank,world,device):
             if rank==0:write_json(args.output_dir/'progress.json',dict(status='paused',updated_unix=time.time(),**progress))
             break
         if extended_config and ((epoch+1)%args.extended_every==0 or epoch+1==args.epochs):
-            if extended is None:
-                if rank==0:write_json(args.output_dir/'progress.json',dict(status='validating',validation_set='extended',
-                    phase='verifying_extended_frames',updated_unix=time.time(),**progress))
-                extended=FrameFileDataset(extended_config['frame_cache'],args.extended_dataset/'validation.csv',
-                                          zarr_root=extended_config['zarr_root'])
-                ext_sampler=GlobalBatchSampler(len(extended),args.validation_batch_size,rank,world,314159,False)
-                ext_loader=indexed_loader(extended,ext_sampler,args,device,stats,args.validation_batch_size)
-            ext_report=evaluate_ssl(model,ext_loader,window,device,stats['global_mean_k'],stats['global_std_k'],
-                precision=args.precision,distributed=True,sample_days=extended.manifest.day.tolist(),progress_callback=heartbeat)
-            if rank==0:write_json(args.output_dir/f'validation_extended/epoch_{epoch+1:03d}.json',ext_report)
+            evaluate_extended(epoch+1)
         if rank==0:write_json(args.output_dir/'progress.json',dict(status='running',updated_unix=time.time(),**progress))
     else:
+        missing=torch.tensor(int(bool(rank==0 and extended_config and not
+            (args.output_dir/f'validation_extended/epoch_{args.epochs:03d}.json').exists())),device=device)
+        dist.broadcast(missing,src=0)
+        if missing.item():evaluate_extended(args.epochs)
         if rank==0:
             model.encoder.save_pretrained(args.output_dir/'encoder')
             write_json(args.output_dir/'progress.json',dict(status='completed',updated_unix=time.time(),**progress))

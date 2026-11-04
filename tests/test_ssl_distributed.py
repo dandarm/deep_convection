@@ -41,12 +41,13 @@ def test_metric_merge_weights_pixels_before_computing_rmse():
         assert a==pytest.approx(b)
 
 
-def launch(out,objective='future',epochs=1,resume=False,benchmark=False):
+def launch(out,objective='future',epochs=1,resume=False,benchmark=False,execution_revision=None):
     cmd=[sys.executable,'-m','torch.distributed.run','--standalone','--nproc_per_node=2',
          'scripts/pretrain_seviri_ssl_ddp.py','--synthetic-smoke','--device','cpu',
          '--precision','fp32','--compile-mode','off','--cpu-threads','1','--objective',objective,
          '--batch-size-per-gpu','2','--validation-batch-size','2','--epochs',str(epochs),'--output-dir',str(out)]
     if resume:cmd+=['--resume',str(out/'checkpoint_latest.pt')]
+    if execution_revision:cmd+=['--execution-revision',str(execution_revision)]
     if benchmark:cmd+=['--pipeline-benchmark-steps','2','--benchmark-warmup','1']
     env=dict(os.environ,OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1')
     result=subprocess.run(cmd,cwd=Path(__file__).resolve().parents[1],env=env,text=True,
@@ -103,3 +104,33 @@ def test_distributed_epoch_resume_preserves_parameters(tmp_path):
     assert continuous['progress']['optimizer_steps']==resumed['progress']['optimizer_steps']==8
     for name,value in continuous['model'].items():
         assert torch.equal(value,resumed['model'][name]),name
+
+
+def test_audited_runtime_resume_preserves_weights_optimizer_and_rng(tmp_path):
+    import hashlib
+    from emma_gpm.ssl_distributed import identity_digest,validate_runtime_revision
+    continuous=launch(tmp_path/'continuous',epochs=2)
+    parent=launch(tmp_path/'resumed',epochs=1)
+    current=json.loads(json.dumps(parent['identity']))
+    parent['identity']['sources']['src/emma_gpm/seviri_frame_dataset.py']='old-reader-revision'
+    checkpoint=tmp_path/'resumed/checkpoint_latest.pt'
+    torch.save(parent,checkpoint)
+    revision=dict(version=1,parent_identity_sha256=identity_digest(parent['identity']),sources=current['sources'],
+        parent_storage_mapping_sha256=None,storage_mapping_sha256=None,
+        parent_checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest())
+    validate_runtime_revision(checkpoint,parent['identity'],current,revision)
+    changed={**current,'learning_rate':.01}
+    with pytest.raises(ValueError,match='scientific settings'):
+        validate_runtime_revision(checkpoint,parent['identity'],changed,revision)
+    changed={**current,'sources':{**current['sources'],'src/emma_gpm/ssl_model.py':'changed-model'}}
+    with pytest.raises(ValueError,match='scientific implementation'):
+        validate_runtime_revision(checkpoint,parent['identity'],changed,{**revision,'sources':changed['sources']})
+    path=tmp_path/'revision.json';path.write_text(json.dumps(revision))
+    resumed=launch(tmp_path/'resumed',epochs=2,resume=True,execution_revision=path)
+    for name,value in continuous['model'].items():
+        assert torch.equal(value,resumed['model'][name]),name
+    assert continuous['optimizer']['param_groups']==resumed['optimizer']['param_groups']
+    for key,state in continuous['optimizer']['state'].items():
+        for name,value in state.items():assert torch.equal(value,resumed['optimizer']['state'][key][name])
+    for a,b in zip(continuous['rank_rng'],resumed['rank_rng']):
+        assert torch.equal(a['torch'],b['torch'])

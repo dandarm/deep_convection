@@ -201,10 +201,55 @@ def ram_pilots(root):
     write_json(root/'controller.json',dict(status='completed',updated_unix=time.time()));return 0
 
 
+def full_training(root):
+    from scripts.stage_seviri_ssl_ram import stage
+    stage(root)
+    os.environ['SEVIRI_STORAGE_ROOTS']=str(root/'ram_storage_roots.json')
+    locations=json.loads((root/'data_locations.json').read_text())
+    plan=json.loads((root/'full_training.json').read_text())
+    dataset=Path(locations['training'])/'dataset'
+    extended=Path(locations['extended'])/'dataset'
+    reference=root/'reference_validation'
+    status=json.loads((reference/'progress.json').read_text()) if (reference/'progress.json').exists() else {}
+    if status.get('status')!='completed':
+        if reference.exists():reference.rename(reference.with_name('reference_validation.incomplete_'+str(time.time_ns())))
+        command=[sys.executable,'-m','torch.distributed.run','--standalone','--nproc_per_node=4',
+            str(ROOT/'scripts/evaluate_seviri_ssl_checkpoint_ddp.py'),
+            '--checkpoint',plan['reference_checkpoint'],'--dataset',str(dataset),
+            '--extended-dataset',str(extended),'--frame-cache',locations['canonical_frame_root'],
+            '--zarr-root',locations['canonical_zarr_root'],'--output-dir',str(reference)]
+        write_json(root/'controller.json',dict(status='running',current='reference_validation',updated_unix=time.time()))
+        with (root/'reference_validation.log').open('ab') as log:
+            subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
+    previous=json.loads(Path(plan['reference_report']).read_text())
+    current=json.loads((reference/'validation_legacy.json').read_text())
+    for name in ('neural','persistence','advection'):
+        if (current[name]['samples']!=previous[name]['samples'] or
+                abs(current[name]['rmse_k']-previous[name]['rmse_k'])>1e-4):
+            raise ValueError('Reference evaluation differs after the loading correction: '+name)
+    path=root/'training'
+    progress=json.loads((path/'progress.json').read_text()) if (path/'progress.json').exists() else {}
+    if progress.get('status')=='completed' and progress.get('completed_epochs')==plan['epochs']:return 0
+    resume=path/'checkpoint_latest.pt'
+    options=['--dataset',str(dataset),'--zarr-root',locations['canonical_zarr_root'],
+        '--frame-cache',locations['canonical_frame_root'],'--extended-dataset',str(extended),
+        '--model-size',plan['model_size'],'--objective',plan['objective'],
+        '--epochs',str(plan['epochs']),'--batch-size-per-gpu',str(plan['batch_size_per_gpu']),
+        '--extended-every','10','--compile-mode','default',
+        '--stop-after-epoch-file',str(root/'stop_after_epoch'),
+        '--resume',str(resume if resume.exists() else plan['parent_checkpoint'])]
+    if not resume.exists():options+=['--execution-revision',str(root/'execution_revision.json')]
+    launch(root,'training',options)
+    progress=json.loads((path/'progress.json').read_text())
+    paused=progress['status']=='paused'
+    write_json(root/'controller.json',dict(status='paused' if paused else 'completed',updated_unix=time.time()))
+    return 75 if paused else 0
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root',type=Path,required=True)
-    p.add_argument('--stage',choices=['capacity','pilots','ram-pilots'],required=True)
+    p.add_argument('--stage',choices=['capacity','pilots','ram-pilots','full'],required=True)
     p.add_argument('--baseline-global-batch',type=int,default=32)
     args=p.parse_args();args.root.mkdir(parents=True,exist_ok=True)
     plan=json.loads((args.root/'runtime_files.json').read_text())
@@ -213,6 +258,7 @@ def main():
     try:
         if args.stage=='capacity':capacity(args.root);return 0
         if args.stage=='ram-pilots':return ram_pilots(args.root)
+        if args.stage=='full':return full_training(args.root)
         return pilots(args.root,args.baseline_global_batch)
     except BaseException as exc:
         write_json(args.root/'controller.json',dict(status='failed',error=str(exc),updated_unix=time.time()));raise

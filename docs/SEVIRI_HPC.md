@@ -1,13 +1,62 @@
 # Ripresa dello studio SSL su Leonardo
 
+## Correzione delle verifiche ripetute — 4 novembre 2026
+
+Il job 63393282 ha salvato cinque epoche per Base/Future con batch globale 608
+e cinque con batch globale 128. A regime il training impiega rispettivamente
+159 e 175 secondi per epoca. Queste sono prove di prestazioni e batch size.
+
+Il primo run ha completato anche la validation estesa. La sua preparazione ha
+impiegato circa 51 minuti, con attività GPU concentrata negli ultimi 22 secondi.
+Il costruttore del dataset ripeteva in ciascuno dei quattro processi i checksum
+dei file NPY e degli archivi Zarr originali. Questo era un errore di caricamento.
+Il job è stato fermato dopo il secondo checkpoint alla quinta epoca, durante
+la preparazione della seconda validation estesa; tutti i pesi sono conservati.
+
+I dataset vengono trattati come immutabili dopo la preparazione e il trasferimento
+verificato. Il loader ordinario apre i file NPY senza calcolarne i checksum e
+senza riaprire gli archivi Zarr. Anche la copia da disco a `/dev/shm` usa una
+normale copia locale, senza verifiche aggiuntive dei byte. Restano i controlli
+di forma, canali, orientamento, tempi e valori finiti dei campioni, insieme alle
+identità dei manifest e della normalizzazione necessarie alla riproducibilità.
+Un controllo completo dei file richiede una richiesta esplicita attraverso
+`FrameFileDataset(..., verify_integrity=True)` o `stage_frame_cache(..., verify=True)`.
+
+`evaluate_seviri_ssl_checkpoint_ddp.py` permette di completare la valutazione
+di un checkpoint già salvato senza aggiornamenti dei pesi. Registra separatamente
+il tempo di preparazione e quello di calcolo per ciascun validation set.
+
+## Proseguimento Base/Future a 150 epoche
+
+La fase `full` del controller usa quattro A100, 32 CPU e 480 GiB di RAM.
+Prima completa la validation estesa del checkpoint Base/Future con batch globale
+128 e verifica che l'RMSE sul validation set da 512 clip coincida con quello
+già salvato, entro 0,0001 K. Poi riprende il checkpoint alla quinta epoca del run
+con batch globale 608, ossia 152 clip per GPU, fino a 150 epoche totali.
+I 216 aggiornamenti per epoca portano il totale finale a 32.400 aggiornamenti.
+Il learning rate rimane 0,00015 e il weight decay 0,05.
+
+La ripresa conserva pesi, momenti e contatori AdamW, stati casuali di ogni rank
+e indice dell'epoca. Una revisione esplicita associa il checkpoint precedente
+alle sole modifiche del loader e del codice di ripresa, e alla nuova posizione
+della copia RAM. Modifiche a modello, dati, loss, batch size o iperparametri
+vengono rifiutate. Le riprese successive usano direttamente il checkpoint della
+nuova esecuzione, con la stessa versione del codice.
+
+`full_training.json` contiene il traguardo totale delle epoche. Aumentarlo e
+rilanciare la stessa esecuzione prosegue dal `training/checkpoint_latest.pt`.
+La validation ordinaria viene calcolata a ogni epoca; quella estesa ogni dieci
+epoche e all'ultima. La ripresa completa anche una validation finale interrotta
+dopo il salvataggio dell'ultimo checkpoint.
+
 ## Training con frame condivisi nella RAM del nodo
 
 La revisione del 3 novembre 2026 aggiunge `--stage ram-pilots` al controller.
 La prima prova con batch globale 32 ha misurato circa 2,3 secondi per
 aggiornamento sui frame mappati da Lustre, con numerose riletture e molta RAM
 disponibile. La revisione copia una volta i circa 172 GiB di frame di training
-e validation in `/dev/shm`, condivisi dai quattro processi. I file temporanei
-sono verificati con SHA256 prima della pubblicazione; i metadati, i valori
+e validation in `/dev/shm`, condivisi dai quattro processi. Dal 4 novembre
+questa copia locale usa direttamente i dataset già verificati; i metadati, i valori
 float16, i manifest e i controlli sulle sorgenti conservano la stessa identità.
 Il percorso RAM è stabile per esperimento e viene ricreato e verificato alla
 ripresa su un nodo diverso. L'uscita del job rimuove la propria copia temporanea.

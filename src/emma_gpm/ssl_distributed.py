@@ -4,6 +4,8 @@ DDP options and per-rank RNG capture follow Demetra/moduli/videomae/utils.py.
 Validation combines sufficient statistics and retains global mask indices.
 """
 from datetime import timedelta
+import hashlib
+import json
 import os
 from pathlib import Path
 import random
@@ -69,10 +71,54 @@ def save_distributed(path,model,optimizer,progress,identity,device):
     dist.barrier()
 
 
-def restore_distributed(path,model,optimizer,identity,device):
+RUNTIME_REVISION_SOURCES = {
+    'src/emma_gpm/seviri_frame_cache.py', 'src/emma_gpm/seviri_frame_dataset.py',
+    'src/emma_gpm/seviri_tiled_cache.py', 'src/emma_gpm/ssl_distributed.py',
+    'scripts/pretrain_seviri_ssl_ddp.py',
+}
+
+
+def identity_digest(identity):
+    return hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def validate_runtime_revision(path,previous,current,revision):
+    """Authorize one recorded checkpoint across data-loading/runtime changes."""
+    if revision.get('version')!=1 or identity_digest(previous)!=revision['parent_identity_sha256']:
+        raise ValueError('Runtime revision parent identity differs')
+    if current['sources']!=revision['sources']:
+        raise ValueError('Runtime revision child sources differ')
+    old_sources,new_sources=previous['sources'],current['sources']
+    changed={name for name in old_sources.keys()|new_sources.keys() if old_sources.get(name)!=new_sources.get(name)}
+    if not changed<=RUNTIME_REVISION_SOURCES:
+        raise ValueError('Runtime revision changes scientific implementation')
+    for name in set(previous)|set(current):
+        if name not in ('sources','storage_mapping_sha256') and identity_digest(previous.get(name))!=identity_digest(current.get(name)):
+            raise ValueError('Runtime revision changes scientific settings: '+name)
+    if (previous.get('storage_mapping_sha256')!=revision['parent_storage_mapping_sha256']
+            or current.get('storage_mapping_sha256')!=revision['storage_mapping_sha256']):
+        raise ValueError('Runtime revision storage mapping differs')
+    checksum=hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda:stream.read(8*1024**2),b''):checksum.update(block)
+    if checksum.hexdigest()!=revision['parent_checkpoint_sha256']:
+        raise ValueError('Runtime revision checkpoint differs')
+
+
+def restore_distributed(path,model,optimizer,identity,device,execution_revision=None):
     saved=torch.load(path,map_location='cpu',weights_only=False)
-    if saved['identity']!=identity or len(saved['rank_rng'])!=dist.get_world_size():
+    if len(saved['rank_rng'])!=dist.get_world_size():
         raise ValueError('Distributed checkpoint identity or topology differs')
+    if saved['identity']!=identity:
+        if execution_revision is None:
+            raise ValueError('Distributed checkpoint identity or topology differs')
+        error=[None]
+        if dist.get_rank()==0:
+            try:
+                validate_runtime_revision(path,saved['identity'],identity,json.loads(Path(execution_revision).read_text()))
+            except Exception as exc:error[0]=str(exc)
+        dist.broadcast_object_list(error,src=0)
+        if error[0]:raise ValueError(error[0])
     model.load_state_dict(saved['model'],strict=True);optimizer.load_state_dict(saved['optimizer'])
     restore_rng(saved['rank_rng'][dist.get_rank()],device)
     return saved['progress']

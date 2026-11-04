@@ -58,3 +58,32 @@ def test_ram_trials_measure_the_pipeline_and_prioritize_largest_safe_batch(tmp_p
     assert trials.ram_pilots(tmp_path)==0
     assert launches==[('benchmarks/ram_b8',8),('benchmarks/ram_b32',32),('benchmarks/ram_b144',144),
                       ('benchmarks/ram_b136',136),('pilots/large',136),('pilots/per_gpu_reference',32)]
+
+
+def test_full_run_can_extend_a_completed_budget_from_its_own_checkpoint(tmp_path,monkeypatch):
+    from scripts import stage_seviri_ssl_ram
+    monkeypatch.setattr(stage_seviri_ssl_ram,'stage',lambda root:None)
+    monkeypatch.setenv('SEVIRI_STORAGE_ROOTS','test-placeholder')
+    def write(path,value):path.write_text(json.dumps(value))
+    write(tmp_path/'data_locations.json',dict(training='/training',extended='/extended',
+        canonical_zarr_root='/raw',canonical_frame_root='/frames'))
+    write(tmp_path/'full_training.json',dict(epochs=300,model_size='base',objective='future',batch_size_per_gpu=152,
+        parent_checkpoint='/parent/checkpoint.pt',reference_report=str(tmp_path/'previous.json')))
+    report={name:dict(samples=512,rmse_k=4.) for name in ('neural','persistence','advection')}
+    write(tmp_path/'previous.json',report)
+    reference=tmp_path/'reference_validation';reference.mkdir()
+    write(reference/'progress.json',dict(status='completed'))
+    write(reference/'validation_legacy.json',report)
+    output=tmp_path/'training';output.mkdir()
+    write(output/'progress.json',dict(status='completed',completed_epochs=150))
+    (output/'checkpoint_latest.pt').write_bytes(b'checkpoint fixture')
+    calls=[]
+    def launch(root,name,options):
+        calls.append(options)
+        assert options[options.index('--resume')+1]==str(output/'checkpoint_latest.pt')
+        assert options[options.index('--epochs')+1]=='300'
+        assert '--execution-revision' not in options
+        write(output/'progress.json',dict(status='completed',completed_epochs=300))
+    monkeypatch.setattr(trials,'launch',launch)
+    assert trials.full_training(tmp_path)==0 and len(calls)==1
+    assert trials.full_training(tmp_path)==0 and len(calls)==1

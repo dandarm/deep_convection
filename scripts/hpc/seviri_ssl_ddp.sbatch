@@ -40,7 +40,7 @@ nvidia-smi --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory
 monitor=$!
 cleanup() {
     kill "$monitor" 2>/dev/null || true
-    if [[ "$SEVIRI_DDP_STAGE" == ram-pilots ]]; then
+    if [[ "$SEVIRI_DDP_STAGE" == ram-pilots || "$SEVIRI_DDP_STAGE" == full ]]; then
         python "$SEVIRI_DDP_ROOT/source_archive/scripts/stage_seviri_ssl_ram.py" \
             --root "$SEVIRI_DDP_ROOT" --cleanup
     fi
