@@ -209,24 +209,25 @@ def full_training(root):
     plan=json.loads((root/'full_training.json').read_text())
     dataset=Path(locations['training'])/'dataset'
     extended=Path(locations['extended'])/'dataset'
-    reference=root/'reference_validation'
-    status=json.loads((reference/'progress.json').read_text()) if (reference/'progress.json').exists() else {}
-    if status.get('status')!='completed':
-        if reference.exists():reference.rename(reference.with_name('reference_validation.incomplete_'+str(time.time_ns())))
-        command=[sys.executable,'-m','torch.distributed.run','--standalone','--nproc_per_node=4',
-            str(ROOT/'scripts/evaluate_seviri_ssl_checkpoint_ddp.py'),
-            '--checkpoint',plan['reference_checkpoint'],'--dataset',str(dataset),
-            '--extended-dataset',str(extended),'--frame-cache',locations['canonical_frame_root'],
-            '--zarr-root',locations['canonical_zarr_root'],'--output-dir',str(reference)]
-        write_json(root/'controller.json',dict(status='running',current='reference_validation',updated_unix=time.time()))
-        with (root/'reference_validation.log').open('ab') as log:
-            subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
-    previous=json.loads(Path(plan['reference_report']).read_text())
-    current=json.loads((reference/'validation_legacy.json').read_text())
-    for name in ('neural','persistence','advection'):
-        if (current[name]['samples']!=previous[name]['samples'] or
-                abs(current[name]['rmse_k']-previous[name]['rmse_k'])>1e-4):
-            raise ValueError('Reference evaluation differs after the loading correction: '+name)
+    if plan.get('reference_checkpoint'):
+        reference=root/'reference_validation'
+        status=json.loads((reference/'progress.json').read_text()) if (reference/'progress.json').exists() else {}
+        if status.get('status')!='completed':
+            if reference.exists():reference.rename(reference.with_name('reference_validation.incomplete_'+str(time.time_ns())))
+            command=[sys.executable,'-m','torch.distributed.run','--standalone','--nproc_per_node=4',
+                str(ROOT/'scripts/evaluate_seviri_ssl_checkpoint_ddp.py'),
+                '--checkpoint',plan['reference_checkpoint'],'--dataset',str(dataset),
+                '--extended-dataset',str(extended),'--frame-cache',locations['canonical_frame_root'],
+                '--zarr-root',locations['canonical_zarr_root'],'--output-dir',str(reference)]
+            write_json(root/'controller.json',dict(status='running',current='reference_validation',updated_unix=time.time()))
+            with (root/'reference_validation.log').open('ab') as log:
+                subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
+        previous=json.loads(Path(plan['reference_report']).read_text())
+        current=json.loads((reference/'validation_legacy.json').read_text())
+        for name in ('neural','persistence','advection'):
+            if (current[name]['samples']!=previous[name]['samples'] or
+                    abs(current[name]['rmse_k']-previous[name]['rmse_k'])>1e-4):
+                raise ValueError('Reference evaluation differs after the loading correction: '+name)
     path=root/'training'
     progress=json.loads((path/'progress.json').read_text()) if (path/'progress.json').exists() else {}
     if progress.get('status')=='completed' and progress.get('completed_epochs')==plan['epochs']:return 0
@@ -236,9 +237,10 @@ def full_training(root):
         '--model-size',plan['model_size'],'--objective',plan['objective'],
         '--epochs',str(plan['epochs']),'--batch-size-per-gpu',str(plan['batch_size_per_gpu']),
         '--extended-every','10','--compile-mode','default',
-        '--stop-after-epoch-file',str(root/'stop_after_epoch'),
-        '--resume',str(resume if resume.exists() else plan['parent_checkpoint'])]
-    if not resume.exists():options+=['--execution-revision',str(root/'execution_revision.json')]
+        '--stop-after-epoch-file',str(root/'stop_after_epoch')]
+    if resume.exists():options+=['--resume',str(resume)]
+    elif plan.get('parent_checkpoint'):
+        options+=['--resume',plan['parent_checkpoint'],'--execution-revision',str(root/'execution_revision.json')]
     launch(root,'training',options)
     progress=json.loads((path/'progress.json').read_text())
     paused=progress['status']=='paused'

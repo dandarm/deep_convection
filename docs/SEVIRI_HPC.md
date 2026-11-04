@@ -29,15 +29,16 @@ il tempo di preparazione e quello di calcolo per ciascun validation set.
 ## Proseguimento Base/Future a 150 epoche
 
 La fase `full` del controller usa quattro A100, 32 CPU e 480 GiB di RAM.
-Prima completa la validation estesa del checkpoint Base/Future con batch globale
-128 e verifica che l'RMSE sul validation set da 512 clip coincida con quello
-già salvato, entro 0,0001 K. Poi riprende il checkpoint alla quinta epoca del run
-con batch globale 608, ossia 152 clip per GPU, fino a 150 epoche totali.
+Il nuovo training Base/Future parte da pesi casuali con seed 20261024 e svolge
+150 epoche, con batch globale 608, ossia 152 clip per GPU. Le precedenti prove
+di batch size rimangono nei propri risultati; la nuova esecuzione procede
+direttamente con il training completo.
 I 216 aggiornamenti per epoca portano il totale finale a 32.400 aggiornamenti.
 Il learning rate rimane 0,00015 e il weight decay 0,05.
 
-La ripresa conserva pesi, momenti e contatori AdamW, stati casuali di ogni rank
-e indice dell'epoca. Una revisione esplicita associa il checkpoint precedente
+La ripresa di un checkpoint di questa esecuzione conserva pesi, momenti e contatori
+AdamW, stati casuali di ogni rank e indice dell'epoca. Per eventuali checkpoint
+di una precedente versione, una revisione esplicita associa il checkpoint
 alle sole modifiche del loader e del codice di ripresa, e alla nuova posizione
 della copia RAM. Modifiche a modello, dati, loss, batch size o iperparametri
 vengono rifiutate. Le riprese successive usano direttamente il checkpoint della

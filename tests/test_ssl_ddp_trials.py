@@ -87,3 +87,21 @@ def test_full_run_can_extend_a_completed_budget_from_its_own_checkpoint(tmp_path
     monkeypatch.setattr(trials,'launch',launch)
     assert trials.full_training(tmp_path)==0 and len(calls)==1
     assert trials.full_training(tmp_path)==0 and len(calls)==1
+
+
+def test_full_fresh_run_uses_maximum_selected_batch_without_pilot_weights(tmp_path,monkeypatch):
+    from scripts import stage_seviri_ssl_ram
+    monkeypatch.setattr(stage_seviri_ssl_ram,'stage',lambda root:None)
+    monkeypatch.setenv('SEVIRI_STORAGE_ROOTS','test-placeholder')
+    (tmp_path/'data_locations.json').write_text(json.dumps(dict(training='/training',extended='/extended',
+        canonical_zarr_root='/raw',canonical_frame_root='/frames')))
+    (tmp_path/'full_training.json').write_text(json.dumps(dict(epochs=150,model_size='base',
+        objective='future',batch_size_per_gpu=152)))
+    def launch(root,name,options):
+        assert '--resume' not in options and '--execution-revision' not in options
+        assert options[options.index('--batch-size-per-gpu')+1]=='152'
+        assert options[options.index('--epochs')+1]=='150'
+        output=root/name;output.mkdir()
+        (output/'progress.json').write_text(json.dumps(dict(status='completed',completed_epochs=150)))
+    monkeypatch.setattr(trials,'launch',launch)
+    assert trials.full_training(tmp_path)==0

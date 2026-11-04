@@ -15,6 +15,9 @@
 #SBATCH --error=seviri_ddp_%j.err
 
 set -euo pipefail
+if ! type module >/dev/null 2>&1; then
+    source /etc/profile.d/modules.sh
+fi
 module load python/3.11.7
 unset PYTHONPATH
 source "$WORK/deep_convection/venv/bin/activate"
