@@ -21,15 +21,15 @@ def frame_cache(tmp_path):
 
 def test_staging_preserves_float16_bits_and_metadata_and_rechecks_reuse(frame_cache):
     source,target,checksum=frame_cache
-    report=stage_frame_cache(source,target,checksum,reserve_bytes=0)
+    report=stage_frame_cache(source,target,checksum,reserve_bytes=0,verify=True)
     assert report['status']=='verified'
     assert (source/'metadata.json').read_bytes()==(target/'metadata.json').read_bytes()
     np.testing.assert_array_equal(np.load(source/'20200912.npy').view('u2'),np.load(target/'20200912.npy').view('u2'))
-    assert stage_frame_cache(source,target,checksum,reserve_bytes=0)['copied_bytes']==0
+    assert stage_frame_cache(source,target,checksum,reserve_bytes=0,verify=True)['copied_bytes']==0
     with (target/'20200912.npy').open('r+b') as stream:
         stream.seek(-1,2);stream.write(b'\x00')
     with pytest.raises(ValueError,match='Existing staged file checksum'):
-        stage_frame_cache(source,target,checksum,reserve_bytes=0)
+        stage_frame_cache(source,target,checksum,reserve_bytes=0,verify=True)
 
 
 def test_staging_rejects_source_corruption_before_publishing_metadata(frame_cache):
@@ -37,7 +37,7 @@ def test_staging_rejects_source_corruption_before_publishing_metadata(frame_cach
     with (source/'20200912.npy').open('r+b') as stream:
         stream.seek(-1,2);stream.write(b'\x00')
     with pytest.raises(ValueError,match='Copied frame checksum'):
-        stage_frame_cache(source,target,checksum,reserve_bytes=0)
+        stage_frame_cache(source,target,checksum,reserve_bytes=0,verify=True)
     assert not (target/'metadata.json').exists()
     assert not (target/'20200912.npy').exists()
 
@@ -48,3 +48,15 @@ def test_staging_checks_space_before_copy(frame_cache,monkeypatch):
     with pytest.raises(ValueError,match='Insufficient space'):
         stage_frame_cache(source,target,checksum,reserve_bytes=0)
     assert not (target/'20200912.npy').exists()
+
+
+def test_normal_ram_copy_and_reuse_do_not_compute_checksums(frame_cache,monkeypatch):
+    source,target,checksum=frame_cache
+    def forbidden(*args,**kwargs):
+        raise AssertionError('Repeated copy verification is disabled')
+    monkeypatch.setattr('emma_gpm.ssl_ram.digest',forbidden)
+    monkeypatch.setattr('emma_gpm.ssl_ram.hashlib.sha256',forbidden)
+    report=stage_frame_cache(source,target,checksum,reserve_bytes=0)
+    assert report['status']=='ready' and not report['integrity_audit']
+    np.testing.assert_array_equal(np.load(source/'20200912.npy').view('u2'),np.load(target/'20200912.npy').view('u2'))
+    assert stage_frame_cache(source,target,checksum,reserve_bytes=0)['copied_bytes']==0

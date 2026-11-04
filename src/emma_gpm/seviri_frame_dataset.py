@@ -12,27 +12,30 @@ from .storage_roots import storage_root
 class FrameFileDataset:
     """Share read-only daily arrays across threads; normalize after GPU transfer.
 
-    Every daily file is SHA256-verified on construction. File metadata is checked
-    on each read; temporal, spectral and spatial checks remain in the reader.
+    Training consumes the immutable arrays verified during dataset preparation
+    and transfer. Full file/source audits are available only by explicit request.
+    Temporal, spectral and spatial checks remain in the reader.
     ForecastWindow.split validates every pixel on the GPU before model use.
     """
-    def __init__(self, root, manifest, *, zarr_root):
+    def __init__(self, root, manifest, *, zarr_root, verify_integrity=False):
         self.root = storage_root(root)
         self.manifest = pd.read_csv(manifest)
         self.metadata_sha256 = file_digest(self.root/'metadata.json')
         metadata=json.loads((self.root/'metadata.json').read_text())
         reader=TiledFrameCacheReader if metadata.get('layout')==TILED_LAYOUT else SeviriFrameCacheReader
-        self._reader = reader(zarr_root, self.root, require_finite=False)
+        self.verify_integrity = verify_integrity
+        self._reader = reader(zarr_root, self.root, require_finite=False, verify_sources=verify_integrity)
         self.records = list(self.manifest.itertuples(index=False))
         self._files = {}
         for day in manifest_days(self.manifest):
             path = self._reader._path_for_time(pd.Timestamp(day))
             entry = self._reader.entries[str(path.relative_to(self._reader.root))]
             cached = self.root/entry['file']
-            if file_digest(cached) != entry['sha256']:
+            if verify_integrity and file_digest(cached) != entry['sha256']:
                 raise ValueError(f'Cached frame checksum differs: {cached}')
             self._reader._open_store(path)
-            self._files[day] = (cached, self._stamp(cached))
+            if verify_integrity:
+                self._files[day] = (cached, self._stamp(cached))
 
     @staticmethod
     def _stamp(path):
@@ -44,14 +47,15 @@ class FrameFileDataset:
 
     def decode_into(self, index, out):
         row = self.records[index]
-        start = pd.Timestamp(row.start_time)
-        if start.tzinfo is not None:
-            start = start.tz_convert('UTC').tz_localize(None)
-        end = start + pd.Timedelta(minutes=75)
-        for day in {start.strftime('%Y%m%d'), end.strftime('%Y%m%d')}:
-            path, stamp = self._files[day]
-            if self._stamp(path) != stamp:
-                raise ValueError(f'Cached frame file changed during use: {path}')
+        if self.verify_integrity:
+            start = pd.Timestamp(row.start_time)
+            if start.tzinfo is not None:
+                start = start.tz_convert('UTC').tz_localize(None)
+            end = start + pd.Timedelta(minutes=75)
+            for day in {start.strftime('%Y%m%d'), end.strftime('%Y%m%d')}:
+                path, stamp = self._files[day]
+                if self._stamp(path) != stamp:
+                    raise ValueError(f'Cached frame file changed during use: {path}')
         return self._reader.load_native_into(row.start_time, origin_y=row.origin_y,
                                              origin_x=row.origin_x, out=out)
 

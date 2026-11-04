@@ -54,7 +54,7 @@ def test_tiled_arbitrary_crops_preserve_bits_orientation_and_normalization(tmp_p
     with (tiled/'20200912.npy').open('r+b') as f:
         f.seek(-2,2);f.write(b'xx')
     with pytest.raises(ValueError,match='checksum'):
-        FrameFileDataset(tiled,tmp_path/'manifest.csv',zarr_root=root)
+        FrameFileDataset(tiled,tmp_path/'manifest.csv',zarr_root=root,verify_integrity=True)
 
 
 def test_tiled_reader_preserves_cross_midnight_times(tmp_path):

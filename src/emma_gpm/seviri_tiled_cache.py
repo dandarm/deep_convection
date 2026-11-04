@@ -84,8 +84,9 @@ def build_tiled_cache(source,output,*,tile=16,frames_per_read=8):
 
 class TiledFrameCacheReader(SeviriFrameCacheReader):
     """Use the native reader's checks and orientation with tiled pixel access."""
-    def __init__(self,root,cache_root,**kwargs):
+    def __init__(self,root,cache_root,*,verify_sources=True,**kwargs):
         SeviriZarrClipReader.__init__(self,root,**kwargs)
+        self.verify_sources=verify_sources
         self.cache_root=storage_root(cache_root)
         metadata=json.loads((self.cache_root/'metadata.json').read_text())
         if (metadata.get('version')!=1 or metadata.get('units')!='K'
@@ -102,7 +103,8 @@ class TiledFrameCacheReader(SeviriFrameCacheReader):
             if key not in self.entries:raise IncompleteSeviriClipError(f'Day missing from tiled cache: {key}')
             entry=self.entries[key];cached=self.cache_root/entry['file']
             if (tuple(entry['channel'])!=VIDEO_MAE_CHANNELS or entry['file']!=f'{path.stem}.npy'
-                    or cached.stat().st_size!=entry['bytes'] or source_stamp(path)!=entry['source_stamp']):
+                    or cached.stat().st_size!=entry['bytes']
+                    or (self.verify_sources and source_stamp(path)!=entry['source_stamp'])):
                 raise ValueError('Tiled cache source, channels or file size changed')
             values=np.load(cached,mmap_mode='r',allow_pickle=False)
             if values.dtype!=np.float16 or values.shape!=storage_shape(entry['shape'],self.tile) or list(values.shape)!=entry['storage_shape']:

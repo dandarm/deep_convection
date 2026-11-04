@@ -117,8 +117,9 @@ def build_frame_cache(zarr_root, output, days, *, frames_per_read=8):
 class SeviriFrameCacheReader(SeviriZarrClipReader):
     """Replace compressed storage access while retaining the original checks."""
 
-    def __init__(self, root, cache_root, **kwargs):
+    def __init__(self, root, cache_root, *, verify_sources=True, **kwargs):
         super().__init__(root, **kwargs)
+        self.verify_sources = verify_sources
         self.cache_root = storage_root(cache_root)
         metadata = json.loads((self.cache_root / "metadata.json").read_text())
         if (metadata.get("version") != 1 or metadata.get("units") != "K"
@@ -196,7 +197,7 @@ class SeviriFrameCacheReader(SeviriZarrClipReader):
             cached_path = self.cache_root / entry["file"]
             if cached_path.stat().st_size != entry["bytes"]:
                 raise IncompleteSeviriClipError("Truncated cached frame array")
-            if source_stamp(path) != entry["source_stamp"]:
+            if self.verify_sources and source_stamp(path) != entry["source_stamp"]:
                 raise ValueError(f"Frame cache source has changed: {path}")
             values = np.load(cached_path, mmap_mode="r", allow_pickle=False)
             if values.dtype != np.float16 or list(values.shape) != entry["shape"]:

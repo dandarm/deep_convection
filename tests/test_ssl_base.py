@@ -74,7 +74,7 @@ def test_daily_file_loader_preserves_orientation_normalization_and_detects_mutat
     manifest=tmp_path/'train.csv'
     pd.DataFrame(dict(start_time=['2020-09-12T00:00Z','2020-09-12T00:05Z'],
                       origin_y=[0,0],origin_x=[0,0])).to_csv(manifest,index=False)
-    data=FrameFileDataset(cache,manifest,zarr_root=root)
+    data=FrameFileDataset(cache,manifest,zarr_root=root,verify_integrity=True)
     with SeviriZarrClipReader(root) as reader:
         expected=torch.stack([torch.from_numpy(reader.load(t,origin_y=0,origin_x=0))
                               for t in data.manifest.start_time])
@@ -90,4 +90,4 @@ def test_daily_file_loader_preserves_orientation_normalization_and_detects_mutat
         data.decode_into(0,np.empty((16,7,224,224),dtype=np.float16))
     data.close()
     with pytest.raises(ValueError,match='checksum differs'):
-        FrameFileDataset(cache,manifest,zarr_root=root)
+        FrameFileDataset(cache,manifest,zarr_root=root,verify_integrity=True)

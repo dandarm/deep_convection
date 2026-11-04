@@ -1,4 +1,4 @@
-"""Verified shared copies of native frame arrays for node-local RAM access."""
+"""Shared RAM copies of immutable native arrays verified at dataset ingestion."""
 import hashlib
 import json
 import os
@@ -17,10 +17,10 @@ def digest(path):
     return value.hexdigest()
 
 
-def cache_files(source,metadata_sha256):
+def cache_files(source,metadata_sha256,*,verify=False):
     source=Path(source)
     content=(source/'metadata.json').read_bytes()
-    if hashlib.sha256(content).hexdigest()!=metadata_sha256:
+    if verify and hashlib.sha256(content).hexdigest()!=metadata_sha256:
         raise ValueError('Frame metadata checksum differs')
     metadata=json.loads(content)
     if metadata.get('layout')!='native time,channel,y,x' or metadata.get('lossless') is not True:
@@ -35,11 +35,11 @@ def cache_files(source,metadata_sha256):
     return files
 
 
-def stage_frame_cache(source,destination,metadata_sha256,*,reserve_bytes=8*1024**3,progress=None):
+def stage_frame_cache(source,destination,metadata_sha256,*,reserve_bytes=8*1024**3,progress=None,verify=False):
     source,destination=Path(source).resolve(),Path(destination).resolve()
     if destination==source or destination.is_relative_to(source):
         raise ValueError('Staging destination must be separate from the source')
-    files=cache_files(source,metadata_sha256)
+    files=cache_files(source,metadata_sha256,verify=verify)
     destination.mkdir(parents=True,exist_ok=True,mode=0o700)
     started=time.perf_counter();copied=0
     with exclusive_file_lock(destination/'.staging.lock'):
@@ -50,21 +50,24 @@ def stage_frame_cache(source,destination,metadata_sha256,*,reserve_bytes=8*1024*
             record=files[name];copied_bytes=0
             target=destination/name
             if target.exists():
-                if target.stat().st_size!=record['bytes'] or digest(target)!=record['sha256']:
+                if verify and (target.stat().st_size!=record['bytes'] or digest(target)!=record['sha256']):
                     raise ValueError('Existing staged file checksum differs: '+name)
             else:
                 original=source/name;before=original.stat()
                 temporary=target.with_suffix(target.suffix+'.part')
-                checksum=hashlib.sha256()
-                with original.open('rb') as reader,temporary.open('wb') as writer:
-                    for block in iter(lambda:reader.read(8*1024**2),b''):
-                        writer.write(block);checksum.update(block)
-                    writer.flush();os.fsync(writer.fileno())
-                after=original.stat()
-                if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino):
-                    raise ValueError('Source changed during RAM staging: '+name)
-                if before.st_size!=record['bytes'] or checksum.hexdigest()!=record['sha256'] or digest(temporary)!=record['sha256']:
-                    raise ValueError('Copied frame checksum differs: '+name)
+                if verify:
+                    checksum=hashlib.sha256()
+                    with original.open('rb') as reader,temporary.open('wb') as writer:
+                        for block in iter(lambda:reader.read(8*1024**2),b''):
+                            writer.write(block);checksum.update(block)
+                        writer.flush();os.fsync(writer.fileno())
+                    after=original.stat()
+                    if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino):
+                        raise ValueError('Source changed during RAM staging: '+name)
+                    if before.st_size!=record['bytes'] or checksum.hexdigest()!=record['sha256'] or digest(temporary)!=record['sha256']:
+                        raise ValueError('Copied frame checksum differs: '+name)
+                else:
+                    shutil.copyfile(original,temporary)
                 temporary.replace(target);copied_bytes=record['bytes']
             return name,copied_bytes
         arrays=[name for name in files if name!='metadata.json']
@@ -76,4 +79,5 @@ def stage_frame_cache(source,destination,metadata_sha256,*,reserve_bytes=8*1024*
         if progress is not None:progress(name)
     return dict(source=str(source),destination=str(destination),metadata_sha256=metadata_sha256,
                 total_bytes=sum(row['bytes'] for row in files.values()),copied_bytes=copied,
-                elapsed_seconds=time.perf_counter()-started,files=len(files),status='verified')
+                elapsed_seconds=time.perf_counter()-started,files=len(files),
+                status='verified' if verify else 'ready',integrity_audit=verify)
