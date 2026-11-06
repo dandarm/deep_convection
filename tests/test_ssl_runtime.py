@@ -85,3 +85,49 @@ def test_revision_refuses_modified_scientific_model_source(tmp_path, monkeypatch
     args=SimpleNamespace(output_dir=output,revision_dir=tmp_path/"revision",cuda_runtime=settings)
     with pytest.raises(ValueError,match="Scientific source changed"):
         runner.prepare(args,{"sources":{filename:runner.digest(original)}},{})
+
+
+def test_reader_revision_preserves_completed_runs_and_skips_raw_audits(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from scripts import run_seviri_ssl_runtime_revision as runner
+
+    output=tmp_path/'series';case=output/'case'
+    filename='src/emma_gpm/seviri_frame_dataset.py'
+    original=output/'source_archive'/filename;original.parent.mkdir(parents=True)
+    original.write_text('previous prepared-array reader')
+    sources={filename:runner.digest(original)}
+    stages=[dict(name='done',epochs=1),dict(name='partial',epochs=2)]
+    local=dict(stages=stages,sources=sources)
+    plan=dict(sources=sources,cases=[dict(name='case',frame_metadata_sha256='frames')],
+              batch_size=32,gradient_accumulation=1,workers=4)
+    runner.write_json(output/'scaling_plan.json',plan)
+    runner.write_json(case/'comparison_plan.json',local)
+    for name,completed in [('done',True),('partial',False)]:
+        directory=case/name;directory.mkdir()
+        runner.write_json(directory/'progress.json',dict(
+            status='completed' if completed else 'training',completed_epochs=1))
+        (directory/'checkpoint_latest.pt').write_bytes(name.encode())
+    runner.write_json(case/'done/validation_latest.json',{})
+    runner.write_json(case/'done/encoder/config.json',{})
+    (case/'done/encoder/model.safetensors').write_bytes(b'completed weights')
+    settings=tmp_path/'runtime.json'
+    runner.write_json(settings,CudaRuntime().to_dict())
+    args=SimpleNamespace(output_dir=output,revision_dir=tmp_path/'revision',
+                         cuda_runtime=settings,prepare_only=True)
+    copyfile=runner.shutil.copyfile
+    def copy_pending_only(source,destination):
+        assert case/'done' not in source.parents,'Completed weights must remain untouched'
+        return copyfile(source,destination)
+    monkeypatch.setattr(runner.shutil,'copyfile',copy_pending_only)
+    audits=[]
+    def protocol_check(root,protocol,*,source_data=False):
+        assert not source_data,'Resume must not repeat raw-data integrity audits'
+        audits.append(source_data)
+    monkeypatch.setattr(runner,'verify',protocol_check)
+    runner.run(args)
+    revision=json.loads((args.revision_dir/'case/execution_revision.json').read_text())
+    assert len(revision['parent_checkpoints'])==1
+    assert not (args.revision_dir/'parents/case/done').exists()
+    assert (args.revision_dir/'parents/case/partial/checkpoint_latest.pt').read_bytes()==b'partial'
+    assert audits==[False]

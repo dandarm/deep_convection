@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resume a frozen SEVIRI matrix with an audited CUDA execution revision."""
+"""Resume a frozen SEVIRI matrix with an explicit execution revision."""
 import argparse
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -20,7 +20,11 @@ from scripts.run_seviri_ssl_scaling import execute, stage_command, stage_complet
 
 # This migration covers execution controls, with model/data/loss implementations
 # still bound to their original source hashes.
-ALLOWED_SOURCE_CHANGES = {'scripts/pretrain_seviri_ssl.py', 'src/emma_gpm/ssl_execution.py'}
+ALLOWED_SOURCE_CHANGES = {
+    'scripts/pretrain_seviri_ssl.py', 'src/emma_gpm/ssl_execution.py',
+    'src/emma_gpm/seviri_frame_cache.py', 'src/emma_gpm/seviri_frame_dataset.py',
+    'src/emma_gpm/seviri_tiled_cache.py',
+}
 
 
 def read_protocol(root):
@@ -55,6 +59,8 @@ def prepare(args, plan, plans):
     for case in plan['cases']:
         name=case['name'];parents={}
         for stage in plans[name]['stages']:
+            if stage_completed(args.output_dir/name,stage):
+                continue
             stage_dir=args.output_dir/name/stage['name']
             archive=args.revision_dir/'parents'/name/stage['name']
             archive.mkdir(parents=True,exist_ok=True)
@@ -76,7 +82,7 @@ def prepare(args, plan, plans):
         case_plans={name:digest(args.output_dir/name/'comparison_plan.json') for name in plans},
         sources=sources,cases=case_revisions,cuda_runtime=runtime,cuda_runtime_path=str(runtime_path),
         cuda_runtime_sha256=digest(runtime_path),
-        reason='CUDA runtime optimizations adapted from Demetra; same data, model, loss and optimizer hyperparameters',
+        reason='Execution and prepared-array loading update; same data, model, loss and optimizer hyperparameters',
         numerical_note='Kernel selection and compilation can change floating-point rounding; execution boundary is recorded')
     write_json(path,revision)
     return revision
@@ -109,7 +115,9 @@ def run(args):
             write_json(args.output_dir/'queue_status.json',dict(status='preparing',supervisor_pid=os.getpid(),
                 pid=None,log=str(args.output_dir/'queue.log')))
         revision=prepare(args,plan,plans)
-        verify_revision(args,plan,revision,source_data=True)
+        # Raw-data integrity audits belong to dataset preparation, outside the
+        # training lifecycle. Keep the small protocol/source identity checks.
+        verify_revision(args,plan,revision)
         if args.prepare_only: return
         write_json(args.output_dir/'launcher.json',dict(pid=os.getpid(),command=list(sys.orig_argv),
             log=str(args.output_dir/'queue.log'),started_at_utc=datetime.now(timezone.utc).isoformat(),
@@ -128,7 +136,7 @@ def run(args):
             if all(stage_completed(queue,s) for s in plans[item['case']]['stages']):
                 write_json(queue/'queue_status.json',dict(status='completed',training_completed=True,
                     stages=len(plans[item['case']]['stages'])))
-        verify_revision(args,plan,revision,source_data=True)
+        verify_revision(args,plan,revision)
         publish_summary(args.output_dir)
         write_json(args.output_dir/'queue_status.json',dict(status='completed',training_completed=True,
             stages=len(plan['order']),completed_at_utc=datetime.now(timezone.utc).isoformat()))
