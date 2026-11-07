@@ -327,3 +327,32 @@ class NwcSafCmaCtConfig:
 
     # --- GEO-CT: Quality Assessment Security Margin (ATBD Section 3.2.1.2.2.5, p. 78) ---
     ct_quality_security_margin_k: float = 0.2  # Official 0.2 K security margin in ATBD p. 78
+
+    @classmethod
+    def full_domain_pure_ir(cls, sub_satellite_lon_deg: float = 9.5) -> NwcSafCmaCtConfig:
+        """Return calibrated configuration for full-domain SEVIRI 7-channel Pure-IR MSG archives."""
+        return cls(
+            sub_satellite_lon_deg=sub_satellite_lon_deg,
+            cma_sst_offset_low_sec_k=2.4,
+            cma_sst_offset_high_sec_k=3.6,
+            cma_t108_base_offset_sea_k=3.2,
+            cma_t108_base_offset_land_k=5.8,
+            cma_t108_wv_secant_slope_k=1.35,
+            cma_swd_base_sea_k=1.65,
+            cma_swd_base_land_k=1.85,
+            cma_swd_secant_slope_k=0.55,
+            cma_ice_btd_base_sea_k=0.35,
+            cma_ice_btd_base_land_k=0.35,
+            cma_pure_ir_low_stratus_t108_t87_k=2.65,
+            cma_texture_sd_t108_sea_k=0.85,
+            cma_texture_sd_btd_sea_k=0.35,
+            cma_texture_sd_t108_land_k=2.50,
+            cma_texture_sd_btd_land_k=0.55,
+            ct_t108_t120_opaque_base_k=1.65,
+            ct_t108_t120_thick_base_k=1.45,
+            ct_t87_t108_opaque_base_k=-1.35,
+            ct_multilayer_swd_min_k=1.55,
+            ct_multilayer_ice_btd_min_k=-1.35,
+            ct_multilayer_wv073_t108_min_k=-22.5,
+            ct_multilayer_co2_t134_t108_min_k=-17.5,
+        )

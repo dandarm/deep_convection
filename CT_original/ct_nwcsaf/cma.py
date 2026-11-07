@@ -198,11 +198,16 @@ def compute_nwcsaf_cma(
         + ((ir097 - ir108) <= -10.0).astype(np.int32)
         + ((ir134 - ir108) <= -8.0).astype(np.int32)
     )
+    swd_continuum_max = np.where(
+        ice_btd < -0.15,
+        2.1 + 0.15 * np.clip(ir108 - 278.0, 0.0, 35.0),
+        2.1,
+    )
     deep_clear_sounding = (
         (not profile.nwp_available)
         & (clear_sounding_votes >= 3)
         & (ir108 >= t_surf - 3.5)
-        & (swd < 2.1)
+        & (swd < swd_continuum_max)
     )
 
     sst_applicable = (
@@ -320,10 +325,14 @@ def compute_nwcsaf_cma(
     high_sec_thr = (
         cfg.cma_low_cloud_t108_t87_intercept_k + cfg.cma_low_cloud_t108_t87_secant_slope_k * secant
     ).astype(np.float32)
+    # Guard against warm sunlit quartz reststrahlen land surfaces (where T10.8 - T8.7 >> 0 even in clear sky)
     test_t108_t87_high_sec = (
         processable
         & (secant > cfg.cma_low_cloud_min_secant)
         & (t108_minus_t87 > high_sec_thr)
+        & (sea | (ir108 < 284.0))
+        & (ir108 < t_surf - 3.5)
+        & (~deep_clear_sounding)
     )
     testlist = np.where(
         test_t108_t87_high_sec,
@@ -336,21 +345,29 @@ def compute_nwcsaf_cma(
 
     # Pure-SEVIRI 7-channel IR low/mid cloud spectral test (replacing 3.8 um when unavailable):
     # 1) Warm low water cloud (stratus/fog): water droplets have lower emissivity at 8.7 um than
-    #    at 10.8 um -> T10.8 - T8.7 > 2.4 K, while T10.8 is at least 1.0 K cooler than T_surf.
+    #    at 10.8 um -> T10.8 - T8.7 > 2.4 K, while T10.8 is cooler than T_surf and < 286 K.
     # 2) Mid-level cloud under warm atmosphere: WV_073 - IR_108 > -16.0 K and IR_134 - IR_108 > -11.0 K
-    #    with T10.8 < T_surf - 2.0 K.
+    #    with T10.8 < T_surf - 4.0 K.
+    stratus_thr = np.where(
+        land, cfg.cma_pure_ir_low_stratus_t108_t87_k + 1.1, cfg.cma_pure_ir_low_stratus_t108_t87_k
+    )
+    max_stratus_t108 = np.where(profile.nwp_available, 293.0, 286.0)
+    min_stratus_dep = np.where(profile.nwp_available, 1.5, 2.5)
     test_pure_ir_low_stratus = (
         processable
-        & (t108_minus_t87 > cfg.cma_pure_ir_low_stratus_t108_t87_k)
-        & (ir108 < t_surf - 1.5)
+        & (t108_minus_t87 > stratus_thr)
+        & (ir108 < max_stratus_t108)
+        & (ir108 < t_surf - min_stratus_dep)
+        & (swd < 1.65)
         & (~deep_clear_sounding)
     )
+    min_mid_dep = np.where(profile.nwp_available, 2.0, 4.0)
     test_pure_ir_mid_wv_co2 = (
         processable
         & ((wv073 - ir108) > cfg.cma_pure_ir_wv073_t108_opaque_k)
         & ((wv073 - ir108) <= cfg.cma_cold_inversion_t73_minus_t108_min_k)
         & ((ir134 - ir108) > -11.5)
-        & (ir108 < t_surf - 2.0)
+        & (ir108 < t_surf - min_mid_dep)
     )
     test_pure_ir_spectral = test_pure_ir_low_stratus | test_pure_ir_mid_wv_co2
     testlist = np.where(
@@ -514,26 +531,37 @@ def compute_nwcsaf_cma(
             labels, num_labels = ndimage.label(detected_by_stationary, structure=struct8)
             if num_labels > 0:
                 counts = np.bincount(labels.ravel())
+                slices = ndimage.find_objects(labels)
+                h_full, w_full = shape
+                pad = 15
                 for lbl in range(1, num_labels + 1):
                     if counts[lbl] <= cfg.cma_stationary_min_seed_pixels:
                         continue
-                    seed_mask = labels == lbl
-                    avg_108 = float(np.mean(ir108[seed_mask]))
+                    sl = slices[lbl - 1]
+                    if sl is None:
+                        continue
+                    r0 = max(0, sl[0].start - pad)
+                    r1 = min(h_full, sl[0].stop + pad)
+                    c0 = max(0, sl[1].start - pad)
+                    c1 = min(w_full, sl[1].stop + pad)
+                    sub_lbl = labels[r0:r1, c0:c1] == lbl
+                    sub_ir108 = ir108[r0:r1, c0:c1]
+                    avg_108 = float(np.mean(sub_ir108[sub_lbl]))
                     # Similar thermal characteristics: AVG10.8 - 5.0 K < T10.8 < AVG10.8 + 0.5 K
-                    compatible = (
-                        valid
-                        & (~cloudy)
-                        & (~pure_snow_or_ice)
-                        & (ir108 > (avg_108 - 5.0))
-                        & (ir108 < (avg_108 + 0.5))
+                    sub_comp = (
+                        valid[r0:r1, c0:c1]
+                        & (~cloudy[r0:r1, c0:c1])
+                        & (~pure_snow_or_ice[r0:r1, c0:c1])
+                        & (sub_ir108 > (avg_108 - 5.0))
+                        & (sub_ir108 < (avg_108 + 0.5))
                     )
                     grown = ndimage.binary_propagation(
-                        seed_mask, structure=struct8, mask=compatible | seed_mask
+                        sub_lbl, structure=struct8, mask=sub_comp | sub_lbl
                     )
-                    new_pixels = grown & (~seed_mask)
+                    new_pixels = grown & (~sub_lbl)
                     n_new = int(np.sum(new_pixels))
                     if 0 < n_new <= cfg.cma_stationary_max_grow_pixels:
-                        detected_by_expansion |= new_pixels
+                        detected_by_expansion[r0:r1, c0:c1] |= new_pixels
 
         if np.any(detected_by_expansion):
             cloudy |= detected_by_expansion

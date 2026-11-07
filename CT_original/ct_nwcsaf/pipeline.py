@@ -136,7 +136,7 @@ class NwcSafCmaCtTracker:
         prev_15m_ir108: np.ndarray | None = None
         if len(self._history) >= self._steps_15m:
             entry_15m = self._history[-self._steps_15m]
-            prev_15m_ir108 = entry_15m.cube_7ch[4]  # IR_108 is index 4
+            prev_15m_ir108 = entry_15m.cube_7ch[4].astype(np.float32)  # IR_108 is index 4
 
         prev_1h_cube: np.ndarray | None = None
         prev_1h_cma: np.ndarray | None = None
@@ -144,7 +144,7 @@ class NwcSafCmaCtTracker:
         prev_1h_quality: np.ndarray | None = None
         if len(self._history) >= self._steps_1h:
             entry_1h = self._history[-self._steps_1h]
-            prev_1h_cube = entry_1h.cube_7ch
+            prev_1h_cube = entry_1h.cube_7ch.astype(np.float32)
             prev_1h_cma = entry_1h.cma
             prev_1h_ct = entry_1h.ct
             prev_1h_quality = entry_1h.cma_quality
@@ -164,7 +164,7 @@ class NwcSafCmaCtTracker:
 
         self._history.append(
             _HistoryEntry(
-                cube_7ch=cube.copy(),
+                cube_7ch=cube.astype(np.float16),
                 cma=cma_res.cma.copy(),
                 ct=ct_res.ct.copy(),
                 cma_quality=cma_res.cma_quality.copy(),

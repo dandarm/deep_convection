@@ -462,3 +462,22 @@ def test_ct_quality_security_margin_and_stateful_sequence() -> None:
         int(last.ct_result.ct_status_flag[0, 0])
         & (1 << int(CtStatusBit.TROPOPAUSE_TEMP_AVAILABLE))
     ) != 0
+
+
+def test_automatic_geostationary_land_coast_sea_resolution() -> None:
+    """Verify automatic Natural Earth 50m land-sea-coast resolution when `land_mask=None`."""
+    lats = np.linspace(46.0, 38.0, 16, dtype=np.float32)
+    lons = np.linspace(8.0, 14.0, 16, dtype=np.float32)
+    lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+    cube = _make_uniform_7ch((16, 16), ir108=294.0, ir120=293.2, ir087=292.8)
+    prof, _ = build_atmospheric_profile_fields(
+        cube,
+        NwcSafCmaCtConfig(),
+        lat_deg=lat_grid,
+        lon_deg=lon_grid,
+        land_mask=None,
+    )
+    assert bool(prof.land_mask[1, 5]) is True
+    assert bool(prof.land_mask[13, 9]) is False
+    assert np.any(prof.coast_mask)

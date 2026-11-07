@@ -258,31 +258,36 @@ def compute_nwcsaf_ct(
     # STEP 2: Separation of Semitransparent & Fractional Clouds from Opaque Clouds
     # (ATBD Sections 3.2.1.2.2.1 - 3.2.1.2.2.3, pp. 70-76)
     # -------------------------------------------------------------------------
-    # 2a. Class 14: High Semitransparent above Low or Medium Clouds (Multilayer)
-    # Thin ice anvil/cirrus (high T10.8 - T12.0 and high T8.7 - T10.8) overlying an opaque
-    # lower/middle cloud deck: the lower cloud deck blocks warm surface radiation, while CO2 (IR_134)
-    # and mid-tropospheric WV (WV_073) show strong upper/mid-level emission relative to T10.8.
+    # 2a. Class 13: High Semitransparent Thick Clouds (ATBD p. 71):
+    # Cold high clouds (T10.8 <= maxT108hi) with strong split-window difference (SWD > T108T120thick)
+    # and positive ice signature, excluding saturated deep convective cores.
+    is_deep_opaque_core = (ir108 <= thr.max_t108_vh_k) & ((wv062 - ir108) > -3.5) & (swd < 2.2)
+    is_semitrans_thick = (
+        is_cloud
+        & (ir108 <= thr.max_t108_hi_k)
+        & (swd > thr.t108_t120_thick_k)
+        & (~is_deep_opaque_core)
+    )
+    remaining_cloud = is_cloud & (~is_semitrans_thick)
+
+    # 2b. Class 14: High Semitransparent above Low or Medium Clouds (Multilayer)
+    # Thin ice anvil/cirrus overlying an opaque lower/middle cloud deck:
+    # intermediate temperature (maxT108hi < T10.8 <= maxT108low), high split-window,
+    # ice BTD signature, and elevated mid-tropospheric WV/CO2 emission from the lower deck.
     is_multilayer = np.zeros(shape, dtype=bool)
     if cfg.enable_multilayer_detection:
         is_multilayer = (
-            is_cloud
-            & (ir108 > thr.max_t108_vh_k)
+            remaining_cloud
+            & (ir108 > thr.max_t108_hi_k)
             & (ir108 <= thr.max_t108_low_k)
             & (swd > np.maximum(thr.t108_t120_thick_k, cfg.ct_multilayer_swd_min_k))
             & (ice_btd > cfg.ct_multilayer_ice_btd_min_k)
             & ((wv073 - ir108) > cfg.ct_multilayer_wv073_t108_min_k)
             & ((ir134 - ir108) > cfg.ct_multilayer_co2_t134_t108_min_k)
         )
+    remaining_cloud &= ~is_multilayer
 
-    remaining_cloud = is_cloud & (~is_multilayer)
-
-    # 2b. Warm semitransparent / fractional regime (maxT108med < T10.8 < maxT108low + Delta)
-    # ATBD Section 3.2.1.2.2.1 & 3.2.1.2.2.2 (pp. 71-72):
-    # - High semitransparent thin clouds (Class 11):
-    #   (maxT108med < T10.8 < maxT108low + Delta) and (T10.8 - T12.0 > T108T120opaque)
-    #   and (T8.7 - T10.8 > T87T108opaque)
-    #   OR (T108interthr < T10.8 <= maxT108med) and (T10.8 - T12.0 > T108T120thick)
-    #   and (T8.7 - T10.8 > T87T108opaque) and (VarilogT10.8 > VarilogT10.8thr)
+    # 2c. Warm semitransparent / fractional regime (maxT108med < T10.8 < maxT108low + Delta)
     warm_thin_band = (ir108 > thr.max_t108_med_k) & (
         ir108 < (thr.max_t108_low_k + cfg.ct_thin_cirrus_delta_k)
     )
@@ -303,19 +308,20 @@ def compute_nwcsaf_ct(
     )
     remaining_cloud &= ~is_semitrans_thin
 
-    # 2c. Class 10: Fractional Clouds (ATBD Section 3.2.1.2.2.1 & 3.2.1.2.2.2, pp. 71-72):
-    # - (maxT108med < T10.8 < maxT108low + Delta) and (T10.8 - T12.0 > T108T120opaque)
-    #   and (T8.7 - T10.8 <= T87T108opaque)
-    # - OR (T10.8 >= maxT108low + Delta) and (T10.8 - T12.0 > T108T120opaque)
+    # 2d. Class 10: Fractional Clouds (ATBD Section 3.2.1.2.2.1 & 3.2.1.2.2.2, pp. 71-72):
+    # Warm sub-pixel / broken cloud edges with elevated split-window or marginal thermal depression
     is_fractional = (
         remaining_cloud
         & (ir108 > thr.max_t108_med_k)
-        & (swd > thr.t108_t120_opaque_k)
         & (ice_btd <= thr.t87_t108_opaque_k)
+        & (
+            (swd > thr.t108_t120_opaque_k)
+            | ((ir108 > thr.max_t108_low_k + 3.5) & ((profile.t_surf_k - ir108) < 5.2))
+        )
     )
     remaining_cloud &= ~is_fractional
 
-    # 2d. Class 12: High Semitransparent Moderately Thick Clouds (ATBD p. 71):
+    # 2e. Class 12: High Semitransparent Moderately Thick Clouds (ATBD p. 71):
     # (maxT108hi < T10.8 <= maxT108med) and (T10.8 - T12.0 > T108T120thick)
     is_semitrans_mod_thick = (
         remaining_cloud
@@ -324,20 +330,6 @@ def compute_nwcsaf_ct(
         & (swd > thr.t108_t120_thick_k)
     )
     remaining_cloud &= ~is_semitrans_mod_thick
-
-    # 2e. Class 13: High Semitransparent Thick Clouds (ATBD p. 71):
-    # (T10.8 <= maxT108hi) and (T10.8 - T12.0 > T108T120thick)
-    # Note: Deep convective cores near the tropopause (T10.8 <= maxT108vh with small WV_062 - IR_108
-    # deficit) are opaque anvils/cores; semitransparent thick clouds have larger split-window and
-    # lack saturated opaque core characteristics.
-    is_deep_opaque_core = (ir108 <= thr.max_t108_vh_k) & ((wv062 - ir108) > -3.5) & (swd < 2.2)
-    is_semitrans_thick = (
-        remaining_cloud
-        & (ir108 <= thr.max_t108_hi_k)
-        & (swd > thr.t108_t120_thick_k)
-        & (~is_deep_opaque_core)
-    )
-    remaining_cloud &= ~is_semitrans_thick
 
     # Assign semitransparent and fractional classes
     ct = np.where(is_multilayer, int(CtClass.HIGH_SEMITRANSPARENT_ABOVE_LOW_OR_MEDIUM), ct)

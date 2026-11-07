@@ -15,6 +15,7 @@ from .ancillary import (
     AncillaryData,
     compute_satellite_zenith_secant,
     estimate_autonomous_ir_ancillary,
+    resolve_geostationary_land_mask,
 )
 from .config import (
     CmaBinaryClass,

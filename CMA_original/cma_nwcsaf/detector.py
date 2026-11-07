@@ -206,14 +206,15 @@ def run_cma_frame(
     # Sea Surface Temperature (SST) split-window check over open sea (Bit 3, ATBD p. 17)
     # Over sea, split-window SST estimate: SST_est = T10.8 + 1.15*(T10.8 - T12.0)
     sst_est = ir_108 + 1.15 * np.maximum(0.0, btd_108_120)
-    sst_thr = anc.t_surf_k - (3.5 + 1.5 * sec_m1)
+    sst_base_off = 3.5 if anc.nwp_available else 2.4
+    sst_thr = anc.t_surf_k - (sst_base_off + 1.0 * sec_m1)
     test_sst = non_snow_px & anc.is_sea & (sst_est < sst_thr)
     testlist[test_sst] |= 1 << CmaTestBit.SST_ESTIMATION
 
     # Tropospheric CO2 test T10.8 - T13.4 (Bit 17) & Water Vapour test T7.3 - T10.8 (Bit 18)
     test_co2 = (
         non_snow_px
-        & (ir_108 < cfg.t108_t134_max_t108_k)
+        & (ir_108 < np.minimum(cfg.t108_t134_max_t108_k, anc.t_surf_k - 4.0))
         & (btd_108_134 < cfg.t108_t134_cloud_thr_k)
     )
     testlist[test_co2] |= 1 << CmaTestBit.T108_T134_TROPOSPHERIC_CO2
@@ -221,7 +222,7 @@ def run_cma_frame(
     test_wv73 = (
         non_snow_px
         & (~anc.thermal_inversion)
-        & (ir_108 < cfg.t73_t108_max_t108_k)
+        & (ir_108 < np.minimum(cfg.t73_t108_max_t108_k, anc.t_surf_k - 4.0))
         & (btd_073_108 > cfg.t73_t108_cloud_thr_k)
     )
     testlist[test_wv73] |= 1 << CmaTestBit.T73_T108_WATER_VAPOUR
@@ -237,7 +238,24 @@ def run_cma_frame(
         btd_108_120_base + cfg.btd_108_120_sec_slope_k * sec_m1 + warm_term
     ).astype(np.float32)
 
-    test_split_win = non_snow_px & (btd_108_120 > btd_108_120_thr) & (ir_108 < anc.t_surf_k - 1.0)
+    # Guard against warm moist boundary-layer continuum absorption in clear summer conditions
+    # (ATBD Figure 2, p. 17) when sounding channels are transparent and 8.7 um shows no ice
+    warm_moist_clear_continuum = (
+        (not anc.nwp_available)
+        & (ir_108 > 282.0)
+        & (ir_108 >= anc.t_surf_k - 3.5)
+        & (btd_087_108 < -0.15)
+        & ((ir_108 - wv_062) > 22.0)
+        & (btd_108_134 > 12.0)
+        & (btd_108_120 < (2.1 + 0.15 * np.clip(ir_108 - 278.0, 0.0, 35.0)))
+    )
+
+    test_split_win = (
+        non_snow_px
+        & (~warm_moist_clear_continuum)
+        & (btd_108_120 > btd_108_120_thr)
+        & (ir_108 < anc.t_surf_k - 1.0)
+    )
     testlist[test_split_win] |= 1 << CmaTestBit.T108_T120_SPLIT_WINDOW
 
     # Ice cirrus positive BTD (T8.7 - T10.8 > thr) or low stratus negative BTD (T8.7 - T10.8 < thr)
@@ -259,11 +277,12 @@ def run_cma_frame(
     test_87_108 = test_ice_87_108 | test_stratus_87_108
     testlist[test_87_108] |= 1 << CmaTestBit.T87_T108
 
-    # Combined gross cirrus check: (T10.8 - T12.0) + (T8.7 - T10.8) = T8.7 - T12.0 (Bit 10)
+    # Combined gross cirrus check: requires elevated split-window AND ice signature at 8.7 um (Bit 10)
     test_gross_cirrus = (
         non_snow_px
-        & ((btd_108_120 + np.maximum(0.0, btd_087_108)) > cfg.btd_gross_cirrus_thr_k)
-        & (ir_108 < anc.t_surf_k - 1.5)
+        & (btd_087_108 > -0.25)
+        & ((btd_108_120 + btd_087_108) > np.maximum(cfg.btd_gross_cirrus_thr_k, btd_108_120_thr + 0.15))
+        & (ir_108 < anc.t_surf_k - 2.5)
     )
     testlist[test_gross_cirrus] |= 1 << CmaTestBit.T108_T120_OR_T87_T108_GROSS
 

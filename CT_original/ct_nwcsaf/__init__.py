@@ -7,6 +7,7 @@ from .ancillary import (
     compute_coastal_mask,
     compute_satellite_secant,
     extract_seviri_7ch,
+    resolve_geostationary_land_mask,
 )
 from .cma import CmaResult, compute_local_3x3_stats, compute_nwcsaf_cma
 from .config import (

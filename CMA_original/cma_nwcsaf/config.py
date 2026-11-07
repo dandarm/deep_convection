@@ -284,3 +284,22 @@ class NwcSafCmaConfig:
 
     # Standard lapse rate (K/km) and tropopause proxy constraints
     standard_lapse_rate_k_per_km: float = 6.5
+
+    @classmethod
+    def full_domain_pure_ir(cls, sub_lon_deg: float = 9.5) -> NwcSafCmaConfig:
+        """Return calibrated configuration for full-domain SEVIRI 7-channel Pure-IR MSG archives."""
+        return cls(
+            sub_lon_deg=sub_lon_deg,
+            t108_land_base_offset_k=4.8,
+            t108_sea_base_offset_k=3.0,
+            t108_sec_slope_k=1.35,
+            t73_t108_cloud_thr_k=-13.5,
+            t73_t108_max_t108_k=276.0,
+            t108_t134_cloud_thr_k=11.5,
+            t108_t134_max_t108_k=272.0,
+            btd_108_120_sea_base_k=1.55,
+            btd_108_120_land_base_k=1.75,
+            stratus_btd_087_108_sea_thr_k=-2.45,
+            stratus_btd_087_108_land_thr_k=-3.75,
+            btd_gross_cirrus_thr_k=2.05,
+        )

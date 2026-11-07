@@ -1,0 +1,204 @@
+{
+  "title": "Multi-Temporal Physical Consistency Verification: Cloud Type (High Opaque) vs RDT (Convective Cells)",
+  "num_datasets": 3,
+  "total_frames_evaluated": 108,
+  "grand_convective_pixels_analyzed": 1923674,
+  "grand_convective_recall_in_high_opaque_pct": 94.90017539354382,
+  "grand_convective_recall_in_cma_pct": 100.0,
+  "grand_false_exclusion_clear_or_low_pct": 0.012736045712527174,
+  "grand_convective_density_in_high_opaque_shield_pct": 18.77486883912315,
+  "datasets": [
+    {
+      "dataset": "20261027.zarr",
+      "frames_evaluated": 36,
+      "total_convective_pixels": 699494,
+      "total_high_opaque_pixels": 4284931,
+      "convective_recall_in_high_opaque_pct": 93.04697395545924,
+      "convective_recall_in_cirrus_pct": 6.428504032915222,
+      "convective_recall_in_mid_cloud_pct": 0.5146577383079769,
+      "convective_recall_in_low_cloud_pct": 0.009864273317569557,
+      "convective_recall_in_clear_sky_pct": 0.0,
+      "convective_recall_in_cma_cloud_pct": 100.0,
+      "convective_density_in_high_opaque_shield_pct": 16.324510242988744,
+      "contingency_matrix_rdt_rows_ct_cols": [
+        [
+          24419677,
+          12724049,
+          2369940,
+          2436144,
+          4297374
+        ],
+        [
+          1,
+          435,
+          146902,
+          1197929,
+          106671
+        ],
+        [
+          0,
+          0,
+          148,
+          138793,
+          13236
+        ],
+        [
+          0,
+          17,
+          889,
+          23238,
+          903
+        ],
+        [
+          0,
+          52,
+          2563,
+          488472,
+          30828
+        ],
+        [
+          0,
+          0,
+          0,
+          355,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "dataset": "20240829.zarr",
+      "frames_evaluated": 36,
+      "total_convective_pixels": 665009,
+      "total_high_opaque_pixels": 3554327,
+      "convective_recall_in_high_opaque_pct": 94.52458538155123,
+      "convective_recall_in_cirrus_pct": 4.967301194419925,
+      "convective_recall_in_mid_cloud_pct": 0.4942790247951532,
+      "convective_recall_in_low_cloud_pct": 0.013834399233694582,
+      "convective_recall_in_clear_sky_pct": 0.0,
+      "convective_recall_in_cma_cloud_pct": 100.0,
+      "convective_density_in_high_opaque_shield_pct": 18.70984296042542,
+      "contingency_matrix_rdt_rows_ct_cols": [
+        [
+          26200558,
+          11456967,
+          1944063,
+          2193719,
+          5072556
+        ],
+        [
+          0,
+          442,
+          70173,
+          732011,
+          63118
+        ],
+        [
+          0,
+          1,
+          40,
+          20187,
+          979
+        ],
+        [
+          0,
+          34,
+          594,
+          19053,
+          1265
+        ],
+        [
+          0,
+          57,
+          2653,
+          586636,
+          30779
+        ],
+        [
+          0,
+          0,
+          0,
+          2721,
+          10
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "dataset": "20250801.zarr",
+      "frames_evaluated": 36,
+      "total_convective_pixels": 559171,
+      "total_high_opaque_pixels": 2406747,
+      "convective_recall_in_high_opaque_pct": 97.66511496483187,
+      "convective_recall_in_cirrus_pct": 1.293343181245093,
+      "convective_recall_in_mid_cloud_pct": 1.0265196156453036,
+      "convective_recall_in_low_cloud_pct": 0.01502223827773615,
+      "convective_recall_in_clear_sky_pct": 0.0,
+      "convective_recall_in_cma_cloud_pct": 100.0,
+      "convective_density_in_high_opaque_shield_pct": 23.233476555699458,
+      "contingency_matrix_rdt_rows_ct_cols": [
+        [
+          27084728,
+          14046634,
+          1917215,
+          1262559,
+          2677147
+        ],
+        [
+          0,
+          5689,
+          223728,
+          598073,
+          23672
+        ],
+        [
+          0,
+          7,
+          90,
+          8832,
+          119
+        ],
+        [
+          0,
+          1,
+          926,
+          22066,
+          222
+        ],
+        [
+          0,
+          76,
+          4724,
+          513453,
+          6890
+        ],
+        [
+          0,
+          0,
+          0,
+          1764,
+          1
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ]
+}

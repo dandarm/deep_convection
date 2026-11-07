@@ -13,9 +13,78 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import numpy as np
-from scipy.ndimage import binary_dilation, uniform_filter
+from scipy.ndimage import binary_dilation, maximum_filter, uniform_filter
 
 from .config import NwcSafCmaConfig
+
+_NATURAL_EARTH_LAND_GEOM = None
+_LAND_MASK_CACHE: dict[tuple, np.ndarray] = {}
+
+
+def resolve_geostationary_land_mask(
+    lat_deg: np.ndarray | None,
+    lon_deg: np.ndarray | None,
+    shape: tuple[int, int],
+    default_land: bool = True,
+) -> np.ndarray:
+    """Resolve boolean land mask on the fixed geostationary grid from `(lat_deg, lon_deg)`.
+
+    Uses cached 1:50m Natural Earth continental/island polygons (`shapely.contains_xy`).
+    Falls back to `default_land` when coordinates are absent or synthetic.
+    """
+    if lat_deg is None or lon_deg is None:
+        return np.full(shape, default_land, dtype=bool)
+
+    lat_arr = np.asarray(lat_deg, dtype=np.float32)
+    lon_arr = np.asarray(lon_deg, dtype=np.float32)
+    if lat_arr.shape != shape or lon_arr.shape != shape:
+        return np.full(shape, default_land, dtype=bool)
+
+    valid_ll = np.isfinite(lat_arr) & np.isfinite(lon_arr)
+    if not np.any(valid_ll):
+        return np.full(shape, default_land, dtype=bool)
+
+    lat_span = float(np.nanmax(lat_arr[valid_ll]) - np.nanmin(lat_arr[valid_ll]))
+    lon_span = float(np.nanmax(lon_arr[valid_ll]) - np.nanmin(lon_arr[valid_ll]))
+    if lat_span < 1.5 and lon_span < 1.5:
+        return np.full(shape, default_land, dtype=bool)
+
+    # Fast deterministic cache key for fixed geostationary grids
+    v_idx = np.flatnonzero(valid_ll)
+    key = (
+        shape,
+        int(v_idx.size),
+        round(float(lat_arr.ravel()[v_idx[0]]), 4),
+        round(float(lon_arr.ravel()[v_idx[0]]), 4),
+        round(float(lat_arr.ravel()[v_idx[-1]]), 4),
+        round(float(lon_arr.ravel()[v_idx[-1]]), 4),
+    )
+    if key in _LAND_MASK_CACHE:
+        return _LAND_MASK_CACHE[key].copy()
+
+    global _NATURAL_EARTH_LAND_GEOM
+    try:
+        import cartopy.io.shapereader as shpreader
+        import shapely
+        from shapely.ops import unary_union
+
+        if _NATURAL_EARTH_LAND_GEOM is None:
+            shp_path = shpreader.natural_earth(resolution="50m", category="physical", name="land")
+            _NATURAL_EARTH_LAND_GEOM = unary_union(list(shpreader.Reader(shp_path).geometries()))
+            shapely.prepare(_NATURAL_EARTH_LAND_GEOM)
+
+        safe_lon = np.where(valid_ll, lon_arr, 0.0).astype(np.float64)
+        safe_lat = np.where(valid_ll, lat_arr, 0.0).astype(np.float64)
+        land_mask = np.asarray(
+            shapely.contains_xy(_NATURAL_EARTH_LAND_GEOM, safe_lon, safe_lat) & valid_ll,
+            dtype=bool,
+        )
+        if len(_LAND_MASK_CACHE) >= 8:
+            _LAND_MASK_CACHE.clear()
+        _LAND_MASK_CACHE[key] = land_mask
+        return land_mask.copy()
+    except Exception:
+        return np.full(shape, default_land, dtype=bool)
 
 
 @dataclass
@@ -59,8 +128,11 @@ def compute_satellite_zenith_secant(
         sec = np.full(shape, 1.0 / np.cos(np.deg2rad(42.0)), dtype=np.float32)
         return zen, sec
 
-    lat_rad = np.deg2rad(np.asarray(lat_deg, dtype=np.float64))
-    dlon_rad = np.deg2rad(np.asarray(lon_deg, dtype=np.float64) - sub_lon_deg)
+    lat_arr = np.asarray(lat_deg, dtype=np.float64)
+    lon_arr = np.asarray(lon_deg, dtype=np.float64)
+    valid_geo = np.isfinite(lat_arr) & np.isfinite(lon_arr)
+    lat_rad = np.deg2rad(np.where(valid_geo, lat_arr, 45.0))
+    dlon_rad = np.deg2rad(np.where(valid_geo, lon_arr, sub_lon_deg) - sub_lon_deg)
 
     cos_beta = np.clip(np.cos(lat_rad) * np.cos(dlon_rad), -1.0, 1.0)
     sin_beta = np.sqrt(np.maximum(0.0, 1.0 - cos_beta * cos_beta))
@@ -69,6 +141,7 @@ def compute_satellite_zenith_secant(
     denom = np.sqrt(r_ratio * r_ratio + 1.0 - 2.0 * r_ratio * cos_beta)
     sin_zen = np.clip((r_ratio * sin_beta) / np.maximum(denom, 1e-6), 0.0, 1.0)
     zen_deg = np.rad2deg(np.arcsin(sin_zen)).astype(np.float32)
+    zen_deg = np.where(valid_geo, zen_deg, max_zenith_deg).astype(np.float32)
     zen_clipped_rad = np.deg2rad(np.minimum(zen_deg, max_zenith_deg))
     sec_zen = (1.0 / np.cos(zen_clipped_rad)).astype(np.float32)
     return zen_deg, sec_zen
@@ -107,21 +180,20 @@ def estimate_autonomous_ir_ancillary(
         lat_deg, lon_deg, shape, cfg.sub_lon_deg, cfg.max_viewing_zenith_deg
     )
 
-    # 1. Surface type (land / coast / sea)
+    # 1. Surface type (land / coast / sea) — automatically resolved from geostationary
+    # (lat_deg, lon_deg) against 1:50m Natural Earth coastline polygons when is_land is omitted.
     if is_land is None:
-        land_mask = np.ones(shape, dtype=bool)
-        coast_mask = np.zeros(shape, dtype=bool)
-        sea_mask = np.zeros(shape, dtype=bool)
+        land_mask = resolve_geostationary_land_mask(lat_deg, lon_deg, shape, default_land=True)
     else:
         land_mask = np.asarray(is_land, dtype=bool)
-        sea_raw = ~land_mask
-        if np.any(land_mask) and np.any(sea_raw):
-            coast_mask = (binary_dilation(land_mask, iterations=1) & sea_raw) | (
-                binary_dilation(sea_raw, iterations=1) & land_mask
-            )
-        else:
-            coast_mask = np.zeros(shape, dtype=bool)
-        sea_mask = sea_raw & (~coast_mask)
+    sea_raw = ~land_mask
+    if np.any(land_mask) and np.any(sea_raw):
+        coast_mask = (binary_dilation(land_mask, iterations=1) & sea_raw) | (
+            binary_dilation(sea_raw, iterations=1) & land_mask
+        )
+    else:
+        coast_mask = np.zeros(shape, dtype=bool)
+    sea_mask = sea_raw & (~coast_mask)
 
     elev = (
         np.zeros(shape, dtype=np.float32)
@@ -143,80 +215,190 @@ def estimate_autonomous_ir_ancillary(
     if t_surf_k is not None:
         t_surf = np.asarray(t_surf_k, dtype=np.float32).copy()
     else:
-        # Split-window water-vapor absorption correction (Sobrino / NWC SAF SST form):
-        # T_skin_est = T10.8 + alpha * max(0, T10.8 - T12.0) * sec(theta)
-        btd_108_120_pos = np.clip(ir_108 - ir_120, 0.0, 4.0)
-        t_skin_inst = ir_108 + 0.85 * btd_108_120_pos * np.minimum(sec_zen, 2.2)
+        # Split-window water-vapor absorption correction (clamped to clear-sky window scale
+        # so humid summer boundary-layer continuum does not inflate T_surf relative to IR_108):
+        btd_108_120_pos = np.clip(ir_108 - ir_120, 0.0, 1.8)
+        t_skin_inst = ir_108 + 0.65 * btd_108_120_pos * np.minimum(sec_zen, 1.8)
 
-        # In a clear atmosphere, mid/upper tropospheric absorption bands (WV_062, WV_073,
-        # IR_097, IR_134) are much colder than the surface window IR_108:
-        #   IR_108 - WV_062 > 22 K
-        #   IR_108 - WV_073 > 11 K
-        #   IR_108 - IR_134 > 13 K
-        #   IR_108 - IR_097 > 12 K
-        # Conversely, opaque clouds have brightness temperatures close to those channels.
-        # Additionally, semitransparent cirrus has large split-window (IR_108 - IR_120 > 1.8 K)
-        # or positive ice BTD (IR_087 - IR_108 > 0.4 K).
-        abs_clear_votes = (
-            ((ir_108 - wv_062) > 22.0).astype(np.int32)
-            + ((ir_108 - wv_073) > 11.0).astype(np.int32)
-            + ((ir_108 - ir_134) > 13.0).astype(np.int32)
-            + ((ir_108 - ir_097) > 12.0).astype(np.int32)
-        )
-        likely_clear = (
-            np.isfinite(ir_108)
-            & (ir_108 > 262.0)
-            & (abs_clear_votes >= 3)
-            & ((ir_108 - ir_120) < 1.75)
-            & ((ir_087 - ir_108) < 0.35)
-        )
+        has_broad_lat = False
+        if lat_deg is not None:
+            lat_f = np.asarray(lat_deg, dtype=np.float32)
+            valid_lat = np.isfinite(lat_f) & np.isfinite(ir_108)
+            if np.any(valid_lat) and (float(np.nanmax(lat_f[valid_lat]) - np.nanmin(lat_f[valid_lat])) >= 4.0):
+                has_broad_lat = True
 
-        # Global warm reference as fallback when a window is 100% overcast
-        finite_mask = np.isfinite(t_skin_inst)
-        if np.any(likely_clear):
-            global_ref = float(np.nanpercentile(t_skin_inst[likely_clear], 75.0))
-        elif np.any(finite_mask):
-            global_ref = float(np.nanpercentile(t_skin_inst[finite_mask], cfg.surface_warm_percentile))
+        if has_broad_lat:
+            lat_f = np.asarray(lat_deg, dtype=np.float32)
+            lon_f = (
+                np.asarray(lon_deg, dtype=np.float32)
+                if lon_deg is not None
+                else np.zeros(shape, dtype=np.float32)
+            )
+            valid_px = np.isfinite(ir_108) & np.isfinite(ir_120) & np.isfinite(lat_f)
+            t_scale = np.clip((ir_108 - 268.0) / 22.0, 0.45, 1.0)
+            snd_votes = (
+                ((ir_108 - wv_062) > (22.0 * t_scale)).astype(np.int32)
+                + ((ir_108 - wv_073) > (10.0 * t_scale)).astype(np.int32)
+                + ((ir_108 - ir_134) > (11.5 * t_scale)).astype(np.int32)
+                + ((ir_108 - ir_097) > (11.0 * t_scale)).astype(np.int32)
+            )
+            swd_max = np.where(
+                land_mask,
+                2.1 + 0.16 * np.clip(ir_108 - 278.0, 0.0, 35.0),
+                1.9 + 0.08 * np.clip(ir_108 - 278.0, 0.0, 25.0),
+            )
+            stratus_guard = (
+                np.where(land_mask, (ir_108 - ir_087) < 3.6, (ir_108 - ir_087) < 2.2)
+                | (ir_108 > 289.0)
+            )
+            non_cirrus = (
+                valid_px
+                & (snd_votes >= 3)
+                & ((ir_108 - ir_120) < swd_max)
+                & ((ir_087 - ir_108) < 0.15)
+                & stratus_guard
+                & np.where(land_mask, ir_108 > 270.0, ir_108 > 271.5)
+            )
+
+            # Fit latitudinal baseline separately over Land, Atlantic/North/Baltic Sea,
+            # and Mediterranean/Black/Azov/Caspian Sea basin (separated by Iberia/France)
+            t_lat_model = np.full(shape, 288.0, dtype=np.float32)
+            sea_med = (
+                (~land_mask)
+                & (lat_f < 48.0)
+                & (lon_f > -5.5)
+                & (~((lat_f > 42.5) & (lon_f < 3.5)))
+            )
+            sea_atl = (~land_mask) & (~sea_med)
+            for mask_type, q_pct in [(land_mask, 75.0), (sea_atl, 80.0), (sea_med, 80.0)]:
+                m_valid = non_cirrus & mask_type
+                if np.any(m_valid):
+                    lats_v = lat_f[m_valid]
+                    ts_v = t_skin_inst[m_valid]
+                    bins = np.arange(np.floor(float(lats_v.min())), np.ceil(float(lats_v.max())) + 2.0, 2.0)
+                    bin_centers, bin_p = [], []
+                    for b0, b1 in zip(bins[:-1], bins[1:]):
+                        in_b = (lats_v >= b0) & (lats_v < b1)
+                        if int(in_b.sum()) > 60:
+                            bin_centers.append(0.5 * (b0 + b1))
+                            bin_p.append(float(np.percentile(ts_v[in_b], q_pct)))
+                    if len(bin_centers) >= 2:
+                        bin_p_mono = np.minimum.accumulate(np.asarray(bin_p, dtype=np.float64))
+                        lat_query = lat_f[mask_type & valid_px].astype(np.float64)
+                        interp_vals = np.interp(
+                            lat_query,
+                            np.asarray(bin_centers, dtype=np.float64),
+                            bin_p_mono,
+                        )
+                        top_lat = float(bin_centers[-1])
+                        top_val = float(bin_p_mono[-1])
+                        above_top = lat_query > top_lat
+                        if np.any(above_top):
+                            interp_vals[above_top] = np.maximum(
+                                272.5,
+                                top_val - 0.35 * (lat_query[above_top] - top_lat),
+                            )
+                        t_lat_model[mask_type & valid_px] = interp_vals.astype(np.float32)
+                    else:
+                        t_lat_model[mask_type & valid_px] = float(np.percentile(ts_v, q_pct))
+
+            clear_anchor = non_cirrus & np.where(
+                land_mask,
+                (t_skin_inst >= t_lat_model - 7.5) | (ir_108 > 284.0),
+                (t_skin_inst >= t_lat_model - 3.2),
+            )
+
+            t_surf = t_lat_model.copy()
+            for is_l, mask_type in [(True, land_mask), (False, ~land_mask)]:
+                if not np.any(mask_type):
+                    continue
+                m_anc = clear_anchor & mask_type
+                w = m_anc.astype(np.float32)
+                val_w = np.where(m_anc, t_skin_inst, 0.0).astype(np.float32)
+
+                c25 = uniform_filter(w, size=25, mode="nearest")
+                s25 = uniform_filter(val_w, size=25, mode="nearest")
+                mean25 = s25 / np.maximum(c25, 1e-5)
+
+                c65 = uniform_filter(w, size=65, mode="nearest")
+                s65 = uniform_filter(val_w, size=65, mode="nearest")
+                mean65 = s65 / np.maximum(c65, 1e-5)
+
+                local_env = np.where(
+                    c25 > 0.06,
+                    mean25,
+                    np.where(c65 > 0.02, mean65, t_lat_model),
+                )
+                if is_l:
+                    surf_est = np.where(
+                        m_anc & ((ir_108 > 283.0) | (t_skin_inst >= local_env - 4.5)),
+                        np.maximum(t_skin_inst, local_env - 2.5),
+                        0.75 * local_env + 0.25 * t_lat_model,
+                    )
+                else:
+                    surf_est = np.where(
+                        m_anc & (t_skin_inst >= local_env - 2.2),
+                        np.maximum(t_skin_inst, local_env - 1.2),
+                        0.70 * local_env + 0.30 * t_lat_model,
+                    )
+                t_surf[mask_type] = surf_est[mask_type].astype(np.float32)
+            likely_clear = clear_anchor & (t_skin_inst >= t_surf - 4.0)
         else:
-            global_ref = 288.0
-        global_ref = max(global_ref, 275.0)
+            # Local patch / synthetic grid mode without broad latitudinal span:
+            abs_clear_votes = (
+                ((ir_108 - wv_062) > 22.0).astype(np.int32)
+                + ((ir_108 - wv_073) > 11.0).astype(np.int32)
+                + ((ir_108 - ir_134) > 13.0).astype(np.int32)
+                + ((ir_108 - ir_097) > 12.0).astype(np.int32)
+            )
+            likely_clear = (
+                np.isfinite(ir_108)
+                & (ir_108 > 262.0)
+                & (abs_clear_votes >= 3)
+                & ((ir_108 - ir_120) < 1.75)
+                & ((ir_087 - ir_108) < 0.35)
+            )
 
-        # Compute local 31x31 (~90 km) clear-sky mean skin temperature via normalized convolution
-        clear_f = likely_clear.astype(np.float32)
-        weighted_skin = np.where(likely_clear, t_skin_inst, 0.0).astype(np.float32)
-        local_sum = uniform_filter(weighted_skin, size=31, mode="nearest")
-        local_cnt = uniform_filter(clear_f, size=31, mode="nearest")
+            finite_mask = np.isfinite(t_skin_inst)
+            if np.any(likely_clear):
+                global_ref = float(np.nanpercentile(t_skin_inst[likely_clear], 75.0))
+            elif np.any(finite_mask):
+                global_ref = float(np.nanpercentile(t_skin_inst[finite_mask], cfg.surface_warm_percentile))
+            else:
+                global_ref = 288.0
+            global_ref = max(global_ref, 275.0)
 
-        # Fall back to a broader 91x91 (~270 km) neighborhood where 31x31 is completely overcast
-        broad_sum = uniform_filter(weighted_skin, size=91, mode="nearest")
-        broad_cnt = uniform_filter(clear_f, size=91, mode="nearest")
+            clear_f = likely_clear.astype(np.float32)
+            weighted_skin = np.where(likely_clear, t_skin_inst, 0.0).astype(np.float32)
+            local_sum = uniform_filter(weighted_skin, size=31, mode="nearest")
+            local_cnt = uniform_filter(clear_f, size=31, mode="nearest")
 
-        t_surf_local = np.where(
-            local_cnt > 0.05,
-            local_sum / np.maximum(local_cnt, 1e-5),
-            np.where(
-                broad_cnt > 0.02,
-                broad_sum / np.maximum(broad_cnt, 1e-5),
-                global_ref,
-            ),
-        ).astype(np.float32)
+            broad_sum = uniform_filter(weighted_skin, size=91, mode="nearest")
+            broad_cnt = uniform_filter(clear_f, size=91, mode="nearest")
 
-        # On clear-sounding pixels, the surface skin reference tracks t_skin_inst directly
-        # (while never dropping below t_surf_local - 3.5 K so cool clear pockets aren't flagged)
-        t_surf = np.where(
-            likely_clear,
-            np.maximum(t_skin_inst, t_surf_local - 3.5),
-            np.maximum(t_surf_local, t_skin_inst),
-        ).astype(np.float32)
+            t_surf_local = np.where(
+                local_cnt > 0.05,
+                local_sum / np.maximum(local_cnt, 1e-5),
+                np.where(
+                    broad_cnt > 0.02,
+                    broad_sum / np.maximum(broad_cnt, 1e-5),
+                    global_ref,
+                ),
+            ).astype(np.float32)
+
+            t_surf = np.where(
+                likely_clear,
+                np.maximum(t_skin_inst, t_surf_local - 3.5),
+                np.maximum(t_surf_local, t_skin_inst),
+            ).astype(np.float32)
 
         if prev_t_surf_k is not None:
             prev_s = np.asarray(prev_t_surf_k, dtype=np.float32)
-            # Update surface reference where clear, decay slowly where cloudy
             alpha = cfg.surface_ema_alpha
             t_surf = np.where(
                 likely_clear,
-                (1.0 - alpha) * prev_s + alpha * t_skin_inst,
-                np.maximum(prev_s, t_surf * 0.995),
+                (1.0 - alpha) * prev_s + alpha * np.maximum(t_skin_inst, t_surf),
+                0.5 * prev_s + 0.5 * t_surf,
             ).astype(np.float32)
 
     # 4. Tropospheric temperature profile levels (950, 850, 700, 500 hPa, Tropopause)

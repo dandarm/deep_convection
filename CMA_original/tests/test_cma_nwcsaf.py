@@ -306,3 +306,24 @@ def test_autonomous_pure_ir_sequence_runner() -> None:
         assert np.all(res.cma[t, r0 + 1 : r0 + 4, 7:11] == CmaBinaryClass.CLOUDY)
         assert np.all(res.cma_cover[t, r0 + 1 : r0 + 4, 7:11] == CmaCoverClass.CLOUD_FILLED)
         assert np.all(res.cma_cloudsnow[t, r0 + 1 : r0 + 4, 7:11] == CmaCloudSnowClass.CLOUD)
+
+
+def test_automatic_geostationary_land_coast_sea_resolution() -> None:
+    """Verify automatic Natural Earth 50m land-sea-coast mask when `is_land=None`."""
+    lats = np.linspace(46.0, 38.0, 16, dtype=np.float32)  # Po Valley (45N) down to Tyrrhenian Sea (39N)
+    lons = np.linspace(8.0, 14.0, 16, dtype=np.float32)
+    lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+    bt = _make_clear_sky_7ch(16, 16, t_surf=294.0)
+    anc = estimate_autonomous_ir_ancillary(
+        bt,
+        NwcSafCmaConfig(),
+        lat_deg=lat_grid,
+        lon_deg=lon_grid,
+        is_land=None,
+    )
+    # Po Valley / Alps at (45.5N, 10.0E) -> Land; Tyrrhenian Sea at (39.5N, 11.5E) -> Sea
+    assert bool(anc.is_land[1, 5]) is True
+    assert bool(anc.is_land[13, 9]) is False
+    assert np.any(anc.is_coast)
+    assert np.any(anc.is_sea)
