@@ -152,6 +152,12 @@ evaluation-only interventions. Their results describe sensitivity including
 input distribution shift. The notebook states the limited weather-period
 coverage and distinguishes teacher agreement from independent physical evidence.
 
+The frozen RGB control uses the mean RGB patch-projection kernel replicated
+across all seven channels with amplitude scaling by 3/7. Identical channel
+kernels make its spectral input an equal-weighted combination of the channel
+temperatures. Interpret this control as natural-video transfer together with
+that restricted spectral projection.
+
 ## Execution and monitoring
 
 From the repository root, use its virtual environment:
