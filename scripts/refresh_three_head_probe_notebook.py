@@ -56,7 +56,15 @@ def main():
             complete = tuple(sorted(p.parent.name for p in args.root.glob('*/result.json')))
             fingerprint = (complete, state.get('status'))
             if fingerprint != previous or time.monotonic() - last >= args.interval:
-                if refresh(args.notebook, args.root):
+                try:
+                    updated = refresh(args.notebook, args.root)
+                except Exception as error:
+                    atomic_json(args.root / 'notebook_refresh.json', {
+                        'status': 'failed', 'error': str(error),
+                        'updated_utc': datetime.now(timezone.utc).isoformat(),
+                    })
+                    raise
+                if updated:
                     previous, last = fingerprint, time.monotonic()
                     print(f'Refreshed notebook: {len(complete)} completed experiments', flush=True)
                 else:

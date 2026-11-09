@@ -15,14 +15,21 @@ parser.add_argument('--root',type=Path,default=Path('/data1/deep_convection_resu
 parser.add_argument('--json',action='store_true')
 args=parser.parse_args()
 suite=load_suite(args.root)
+supervisor_path=args.root/'suite_status.json'
+supervisor=json.loads(supervisor_path.read_text()) if supervisor_path.exists() else {}
 rows=[]
 for name,run in suite['runs'].items():
     progress=run['progress']
     age=(datetime.now(timezone.utc)-datetime.fromisoformat(progress['heartbeat_utc'])).total_seconds() if progress.get('heartbeat_utc') else None
     status='completed' if run['result'] else progress.get('status','pending')
+    error=None
+    if not run['result'] and supervisor.get('status')=='failed' and supervisor.get('current')==name:
+        status='failed'
+        error=supervisor.get('error','The training supervisor reported a failure')
     rows.append(dict(experiment=name,status=status,epochs=progress.get('completed_epochs',0),
         planned_epochs=run['config']['epochs'],heartbeat_age_seconds=round(age) if age is not None else None,
-        stalled_suspected=age is not None and age>600 and status not in ('completed','pending')))
+        error=error,
+        stalled_suspected=age is not None and age>600 and status not in ('completed','pending','failed')))
 if args.json:
     print(json.dumps(rows,indent=2))
 else:
@@ -35,3 +42,10 @@ else:
     for row in rows:
         warning='  CHECK: heartbeat older than 10 minutes' if row['stalled_suspected'] else ''
         print(f"{row['experiment']:<32} {row['status']:<23} {row['epochs']:3}/{row['planned_epochs']}{warning}")
+        if row['error']:
+            print('  Error: '+row['error'])
+    refresh=args.root/'notebook_refresh.json'
+    if refresh.exists():
+        state=json.loads(refresh.read_text())
+        if state.get('status')=='failed':
+            print('Notebook refresh failed: '+state['error'])

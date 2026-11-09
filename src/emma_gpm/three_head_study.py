@@ -45,13 +45,16 @@ def dataset_support_figure(suite):
     manifest = json.loads(path.read_text())
     fig, axes = plt.subplots(1, 3, figsize=(17, 5))
     for ax, (head, names) in zip(axes, CLASS_NAMES.items()):
-        for split, label, marker in [('train', 'Training', 'o'),
-                                      ('validation', 'Validation', 's'), ('test', 'Test', '^')]:
+        for offset, (split, label, marker) in enumerate([
+                ('train', 'Training', 'o'), ('validation', 'Validation', 's'), ('test', 'Test', '^')]):
             support = np.asarray(manifest['support'][split][head], dtype=float)
             fractions = np.where(support > 0, 100 * support / support.sum(), np.nan)
-            ax.plot(np.arange(len(names)), fractions, marker=marker, label=label)
-        ax.set(yscale='log', ylabel='Valid target pixels (%)', title=head.upper(),
+            ax.plot(np.arange(len(names))+(offset-1)*.13, fractions,
+                    marker=marker, linestyle='none', label=label)
+        ax.set(yscale='log' if head == 'rdt' else 'linear', ylabel='Valid target pixels (%)', title=head.upper(),
                xticks=np.arange(len(names)), xticklabels=names)
+        if head != 'rdt':
+            ax.set_ylim(0, 100)
         ax.tick_params(axis='x', rotation=35, labelsize=8)
         for label in ax.get_xticklabels():
             label.set_ha('right')
