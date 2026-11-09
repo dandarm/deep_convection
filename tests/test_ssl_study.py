@@ -77,6 +77,47 @@ def test_committed_reports_and_correct_rmse_pooling(series):
     assert coverage.Comparison.tolist() == ['Final', 'Interim / partial']
 
 
+def test_complementary_objectives_require_identical_case_data(series):
+    snapshot = study.load_study(series)
+    reference = {**snapshot, 'runs': {key:run for key,run in snapshot['runs'].items() if key[1] != 'mvm'}}
+    addition = {**snapshot, 'runs': {key:run for key,run in snapshot['runs'].items() if key[1] == 'mvm'}}
+    combined = study.add_completed_experiments(reference,addition)
+    assert set(combined['runs']) == set(snapshot['runs'])
+    with pytest.raises(ValueError,match='already exists'):
+        study.add_completed_experiments(snapshot,addition)
+    with pytest.raises(ValueError,match='same validation'):
+        study.add_completed_experiments(reference,{**addition,'validation_sha256':'changed'})
+    alias = {**addition, 'cases': {'renamed': addition['cases']['n4']},
+             'runs': {('renamed','mvm'): {**addition['runs']['n4','mvm'], 'case':'renamed'}}}
+    combined = study.add_completed_experiments(reference,alias)
+    assert 'renamed' not in combined['cases']
+    assert combined['runs']['n4','mvm']['case'] == 'n4'
+
+
+def test_distributed_history_uses_configured_budget_and_physical_scaling(series,tmp_path):
+    snapshot = study.load_study(series)
+    source = tmp_path/'hpc'
+    case = snapshot['cases']['n4']
+    identity = dict(validation_sha256=snapshot['validation_sha256'],
+        train_sha256=hashlib.sha256((case['queue']/'dataset/train.csv').read_bytes()).hexdigest(),
+        model_config={'hidden_size':384},stats={**case['stats'],'samples':4},objective='future',batch_size=608,world_size=4)
+    write(source/'run_config.json',dict(identity=identity,arguments={'epochs':2}))
+    write(source/'progress.json',dict(status='completed',completed_epochs=2,epochs=[
+        dict(epoch=e,optimizer_steps=e*2,train_loss=.25,validation_score=.5) for e in (1,2)]))
+    snapshot['runs'].pop(('n4','future'))
+    result = study.attach_distributed_training(snapshot,source)
+    run = result['runs']['n4','future']
+    assert run['complete'] and run['stage']['epochs']==2
+    assert run['epochs'][0]['validation_future']==.5
+    assert run['execution']==dict(site='Leonardo',global_batch=608,world_size=4)
+    with pytest.raises(ValueError,match='replace'):
+        study.attach_distributed_training(result,source)
+    identity['train_sha256']='changed'
+    write(source/'run_config.json',dict(identity=identity,arguments={'epochs':2}))
+    with pytest.raises(ValueError,match='manifest differs'):
+        study.attach_distributed_training(snapshot,source)
+
+
 def test_matching_updates_uses_different_epochs_for_nested_sizes(series):
     snapshot = study.load_study(series)
     selected, _ = study.select_budget(snapshot, budget='optimizer_steps', across_sizes=True)

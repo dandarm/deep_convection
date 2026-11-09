@@ -98,6 +98,101 @@ def merge_studies(*studies):
         validation_sha256=studies[0]['validation_sha256'])
 
 
+def add_completed_experiments(reference, addition):
+    """Combine complementary objectives with exactly matched dataset manifests."""
+    if reference['validation_sha256'] != addition['validation_sha256']:
+        raise ValueError('Additional experiments require the same validation manifest')
+    result = {**reference, 'cases': dict(reference['cases']),
+              'runs': dict(reference['runs']), 'reports': {}}
+    aliases = {}
+    for name, case in addition['cases'].items():
+        matches = [key for key, old in result['cases'].items()
+                   if old['encoder'] == case['encoder'] and old['train_samples'] == case['train_samples']]
+        if len(matches) > 1:
+            raise ValueError('Ambiguous architecture and dataset size in reference study')
+        canonical = matches[0] if matches else name
+        aliases[name] = canonical
+        if canonical in result['cases']:
+            old = result['cases'][canonical]
+            for filename in ('train.csv', 'validation.csv', 'channel_stats.json'):
+                if (old['queue']/'dataset'/filename).read_bytes() != (case['queue']/'dataset'/filename).read_bytes():
+                    raise ValueError('Shared case has different data: '+name)
+            if old['encoder'] != case['encoder']:
+                raise ValueError('Shared case has a different encoder architecture')
+        else:
+            result['cases'][name] = case
+    for key, run in addition['runs'].items():
+        key = (aliases[key[0]], key[1])
+        if key in result['runs']:
+            raise ValueError('An objective already exists for this case: '+str(key))
+        result['runs'][key] = {**run, 'case': key[0]}
+    result['captured_at'] = max(reference['captured_at'], addition['captured_at'])
+    return result
+
+
+def attach_distributed_training(reference, directory):
+    """Read DDP histories in the existing geographic study without changing data."""
+    directory = Path(directory).resolve()
+    run_config = read_json(directory/'run_config.json', required=True)
+    identity = run_config['identity']
+    progress = read_json(directory/'progress.json', required=True)
+    if identity['validation_sha256'] != reference['validation_sha256']:
+        raise ValueError('DDP and geographic study use different validation clips')
+    architecture = 'Base' if identity['model_config']['hidden_size'] == 768 else 'Small'
+    matches = [name for name, case in reference['cases'].items()
+               if case['train_samples'] == identity['stats']['samples'] and case['encoder'] == architecture]
+    if len(matches) != 1:
+        raise ValueError('Select exactly one matching geographic training case')
+    case_name = matches[0]
+    case = reference['cases'][case_name]
+    if hashlib.sha256((case['queue']/'dataset/train.csv').read_bytes()).hexdigest() != identity['train_sha256']:
+        raise ValueError('DDP training manifest differs from the geographic study')
+    if any(case['stats'][key] != identity['stats'][key] for key in ('global_mean_k', 'global_std_k')):
+        raise ValueError('DDP global normalization differs from the geographic study')
+    objective = identity['objective']
+    if objective != 'future':
+        raise ValueError('This DDP history adapter currently expects future-frame MSE')
+    key = (case_name, objective)
+    if reference['runs'].get(key, {}).get('epochs'):
+        raise ValueError('Refuse to replace an existing trained experiment')
+    epochs = [{**row, 'train_future': row['train_loss'], 'train_total': row['train_loss'],
+               'validation_future': row['validation_score']} for row in progress['epochs']]
+    if [row['epoch'] for row in epochs] != list(range(1, progress['completed_epochs']+1)):
+        raise ValueError('Incomplete distributed epoch history')
+    result = {**reference, 'runs': dict(reference['runs']), 'reports': {}}
+    stage = dict(name=objective, kind='pretraining', epochs=run_config['arguments']['epochs'])
+    result['runs'][key] = dict(case=case_name, name=objective, directory=directory, stage=stage,
+        progress=progress, epochs=epochs, loss='mse', loss_weights={'mvm': 1., 'future': 1.},
+        completed_epochs=progress['completed_epochs'], complete=progress['status'] == 'completed'
+        and progress['completed_epochs'] == stage['epochs'],
+        execution=dict(site='Leonardo', global_batch=identity['batch_size'], world_size=identity['world_size']))
+    return result
+
+
+def distributed_validation_figure(directory):
+    """Keep the two held-out populations visible with their own baselines."""
+    directory = Path(directory)
+    progress = read_json(directory/'progress.json', required=True)
+    updates = {row['epoch']: row['optimizer_steps'] for row in progress['epochs']}
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4), sharey=True, layout='constrained')
+    for axis, folder, title in zip(axes, ('validation_epochs','validation_extended'),
+                                  ('512 geographic-validation clips', '10,240 extended-validation clips')):
+        rows = []
+        for path in sorted((directory/folder).glob('epoch_*.json')):
+            epoch = int(path.stem.rsplit('_',1)[1])
+            if epoch in updates:
+                report = read_json(path, required=True)
+                rows.append(dict(updates=updates[epoch], **{name:report[name]['rmse_k']
+                            for name in ('neural','persistence','advection')}))
+        for name, label, color, style in [('neural','Base Future','#9467BD','-'),
+            ('persistence','Persistence',COLORS['persistence'],'--'),('advection','Advection',COLORS['advection'],':')]:
+            axis.plot([row['updates'] for row in rows], [row[name] for row in rows],
+                      label=label, color=color, linestyle=style)
+        axis.set(title=title, xlabel='Optimizer updates', ylabel='Forecast RMSE (K)', xscale='log')
+        axis.grid(alpha=.2); axis.legend()
+    return fig
+
+
 def extension_study(reference, extension, reference_case='n8192'):
     """A two-size view of the objectives registered in a nested extension."""
     if reference['validation_sha256'] != extension['validation_sha256']:
@@ -626,16 +721,16 @@ def overview_figure(frame):
     if frame.empty:
         return None
     summary = forecast_summary(frame)
-    sizes = sorted(summary['Training clips'].unique())
+    groups = list(summary.groupby(['Training clips', 'Encoder'], sort=True))
     methods = method_order(frame)
-    figure, axes = _panels(len(sizes), sharey=True)
-    for axis, size in zip(axes, sizes):
-        table = summary[summary['Training clips'] == size].set_index('Model')
+    figure, axes = _panels(len(groups), sharey=True)
+    for axis, ((size, encoder), selected) in zip(axes, groups):
+        table = selected.set_index('Model')
         labels = [LABELS[name] for name in methods if LABELS[name] in table.index]
         axis.bar(labels, table.loc[labels, 'RMSE (K)'], color=[COLORS[name] for name in methods if LABELS[name] in table.index])
         epochs = sorted(set(table.Epoch.dropna().astype(int)))
         epoch_label = ', '.join(str(epoch) for epoch in epochs)
-        axis.set(title=f'{_case_label(frame[frame.training_clips == size])} · epoch {epoch_label}', ylabel='Forecast RMSE (K)', ylim=(0, summary['RMSE (K)'].max()*1.1))
+        axis.set(title=f'{encoder} · {size:,} clips · epoch {epoch_label}', ylabel='Forecast RMSE (K)', ylim=(0, summary['RMSE (K)'].max()*1.1))
         axis.tick_params(axis='x', rotation=20)
         axis.grid(axis='y', alpha=.2)
     return figure
@@ -648,17 +743,16 @@ def variability_figure(table, metric='RMSE (K)'):
         table = table[~table.Model.isin([LABELS['persistence'], LABELS['advection']])]
     if table.empty:
         return None
-    sizes = sorted(table['Training clips'].unique())
+    groups = list(table.groupby(['Training clips', 'Encoder'], sort=True))
     labels = list(dict.fromkeys(table.Model))
     inverse = {value: key for key, value in LABELS.items()}
-    figure, axes = _panels(len(sizes), sharey=True)
-    for axis, size in zip(axes, sizes):
-        rows = table[table['Training clips'] == size]
+    figure, axes = _panels(len(groups), sharey=True)
+    for axis, ((size, encoder), rows) in zip(axes, groups):
         values = rows.pivot(index='Variability', columns='Model', values=metric).reindex(index=['Low', 'Medium', 'High'], columns=labels)
         values.plot.bar(ax=axis, color=[COLORS[inverse[name]] for name in labels], legend=False)
         low, high = min(0., table[metric].min()), max(0., table[metric].max())
         padding = max((high-low)*.1, .01)
-        axis.set(title=f'{rows.Encoder.iloc[0]} · {size:,} clips', ylabel=metric, xlabel='Historical variability',
+        axis.set(title=f'{encoder} · {size:,} clips', ylabel=metric, xlabel='Historical variability',
                  ylim=(low-padding if low < 0 else 0, high+padding))
         axis.axhline(0, color='black', linewidth=.8)
         axis.tick_params(axis='x', rotation=0)
@@ -925,16 +1019,15 @@ def reconstruction_comparison_figure(study):
     table, _ = reconstruction_summary(study)
     if table.empty:
         return None
-    sizes = table['Training clips'].unique()
-    values = table.pivot(index='Training clips', columns='Model', values='Historical reconstruction RMSE (K)')
-    values = values.reindex(index=sizes, columns=['MVM', 'Joint'])
-    fig, axis = plt.subplots(figsize=(11, 4), layout='constrained')
+    values = table.pivot(index=['Training clips', 'Encoder'], columns='Model', values='Historical reconstruction RMSE (K)')
+    values = values.reindex(columns=['MVM', 'Joint'])
+    fig, axis = plt.subplots(figsize=(max(11,len(values)*1.2), 4), layout='constrained')
     values.plot.bar(ax=axis, color=[COLORS['mvm'], COLORS['joint']])
     labels = []
-    for size in sizes:
-        rows = table[table['Training clips'] == size]
+    for size, encoder in values.index:
+        rows = table[(table['Training clips'] == size) & (table.Encoder == encoder)]
         epochs = ', '.join(map(str, sorted(rows.Epoch.unique())))
-        labels.append(f'{rows.Encoder.iloc[0]} · {size:,}\nepoch {epochs}')
+        labels.append(f'{encoder} · {size:,}\nepoch {epochs}')
     axis.set_xticklabels(labels, rotation=0)
     axis.set(title='Reconstruction of hidden historical pixels', xlabel='Training set and selected checkpoint',
              ylabel='Reconstruction RMSE (K)', ylim=(0, table['Historical reconstruction RMSE (K)'].max()*1.1))
@@ -980,13 +1073,13 @@ def probe_reference_summary(summary):
 
 def interpretation(study, summary):
     sentences = []
-    for size, rows in summary.groupby('Training clips'):
+    for (size, encoder), rows in summary.groupby(['Training clips', 'Encoder']):
         predictions = rows[rows.Model.isin([LABELS[name] for name in FAMILIES['pretraining']])].sort_values('RMSE (K)')
         if predictions.empty:
             continue
         leader = predictions.iloc[0]
         values = ', '.join(f'{row.Model} {row["RMSE (K)"]:.2f} K' for _, row in predictions.iterrows())
-        sentences.append(f'At the common epoch {int(leader.Epoch)}, the global forecast RMSE with {size:,} training clips is '
+        sentences.append(f'At the common epoch {int(leader.Epoch)}, the global forecast RMSE for {encoder} with {size:,} training clips is '
                          f'{values}. {leader.Model} has the lowest value among the available learned forecasts, '
                          f'with a {leader["RMSE reduction vs Advection (%)"]:.1f}% reduction relative to Advection.')
     probe_runs = [run for run in study['runs'].values() if run['stage']['kind'] == 'frozen_common_head']
