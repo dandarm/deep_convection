@@ -98,12 +98,17 @@ def result_summary_text(suite):
         f"The encoder weights remain identical to the pretrained checkpoint."
     ]
     for name, description in [('E0-Rand', 'the frozen random encoder'),
+                              ('E0-RGB', 'the frozen natural-video encoder'),
                               ('E1-Single-rdt', 'the independent RDT decoder')]:
         if name in results:
             reference = results[name]['test']['metrics']['rdt']['active_convection']['csi'][1]
-            paragraphs.append(f"Relative to {description} ({name}, CSI {reference:.2f}), "
-                              f"E1-Joint3 changes active-convection CSI by {active['csi'][1]-reference:+.2f} "
-                              "on the same test clips.")
+            text = (f"Relative to {description} ({name}, CSI {reference:.2f}), "
+                    f"E1-Joint3 changes active-convection CSI by {active['csi'][1]-reference:+.2f} "
+                    "on the same test clips.")
+            if name in ('E0-Rand', 'E0-RGB'):
+                cloud = results[name]['test']['metrics']['cma']['iou'][1]
+                text += f" This control's cloud IoU is {cloud:.2f}."
+            paragraphs.append(text)
     ot = metrics['rdt']
     if ot['support'][4]:
         paragraphs.append(f"The overshooting-top class has IoU {ot['iou'][4]:.2f} over "
