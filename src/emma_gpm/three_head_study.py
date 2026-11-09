@@ -4,6 +4,7 @@ import json
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
+from matplotlib.ticker import FuncFormatter
 import numpy as np
 import pandas as pd
 
@@ -149,12 +150,12 @@ def sequential_summary_text(suite):
     return '\n\n'.join(paragraphs)
 
 
-def learning_figure(suite,names=None):
+def learning_figure(suite,names=None,heads=('cma','ct','rdt')):
     names=names or ['E0-Rand','E0-RGB','E1-Single-cma','E1-Single-ct','E1-Single-rdt','E1-Joint3']
     if not any(suite['runs'].get(name,{}).get('history') for name in names):
         return None
-    fig,axes=plt.subplots(1,3,figsize=(17,4.5))
-    for ax,head in zip(axes,CLASS_NAMES):
+    fig,axes=plt.subplots(1,len(heads),figsize=(5.7*len(heads),4.5))
+    for ax,head in zip(np.atleast_1d(axes),heads):
         for name in names:
             run=suite['runs'].get(name)
             if not run or head not in run['config']['heads'] or not run['history']:
@@ -163,21 +164,23 @@ def learning_figure(suite,names=None):
             ax.plot([row['updates'] for row in history],
                     [row['validation']['losses'][head] for row in history],label=name)
         ax.set(xscale='log',yscale='log',xlabel='Optimizer updates',ylabel='Validation loss',title=head.upper())
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:.3g}'))
+        ax.yaxis.set_minor_formatter(FuncFormatter(lambda value, _: f'{value:.3g}'))
         ax.grid(alpha=.2);ax.legend(fontsize=8)
     fig.tight_layout()
     return fig
 
 
-def comparison_figure(suite,names,title,metric='iou'):
+def comparison_figure(suite,names,title,metric='iou',heads=('cma','ct','rdt')):
     data=metric_frame(suite)
     if data.empty:
         return None
-    data=data[data.experiment.isin(names)]
+    data=data[data.experiment.isin(names)&data['head'].isin(heads)]
     if data.empty:
         return None
     present=[name for name in names if name in set(data.experiment)]
-    fig,axes=plt.subplots(1,3,figsize=(18,max(3.5,len(present)*.46)))
-    for ax,head in zip(axes,('cma','ct','rdt')):
+    fig,axes=plt.subplots(1,len(heads),figsize=(6*len(heads),max(3.5,len(present)*.46)))
+    for column,(ax,head) in enumerate(zip(np.atleast_1d(axes),heads)):
         for i,label in enumerate(CLASS_NAMES[head]):
             part=data[(data['head']==head)&(data.class_id==i)].set_index('experiment')
             values=[part.loc[name,metric] if name in part.index else np.nan for name in present]
@@ -185,9 +188,9 @@ def comparison_figure(suite,names,title,metric='iou'):
             color=COLORS[head][i]
             if head=='cma' and i==1:color='#6495ed'
             ax.scatter(values,np.arange(len(present))+offset,label=label,color=color,edgecolor='#333333',linewidth=.3)
-        ax.set(yticks=np.arange(len(present)),yticklabels=present if head=='cma' else [],xlim=(0,1),
+        ax.set(yticks=np.arange(len(present)),yticklabels=present if column==0 else [],xlim=(0,1),
                xlabel='Class IoU / CSI' if metric=='iou' else 'Class F1',title=head.upper())
-        ax.invert_yaxis();ax.grid(axis='x',alpha=.2);ax.legend(fontsize=8,loc='upper center',bbox_to_anchor=(.5,-.16))
+        ax.invert_yaxis();ax.grid(axis='x',alpha=.2);ax.legend(fontsize=8,loc='upper center',bbox_to_anchor=(.5,-.30),ncol=2)
     fig.suptitle(title);fig.tight_layout()
     return fig
 
