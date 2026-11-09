@@ -117,6 +117,38 @@ def result_summary_text(suite):
     return '\n\n'.join(paragraphs)
 
 
+def sequential_summary_text(suite):
+    """Read sequential and full-adaptation scores from completed test reports."""
+    results = {name: run['result'] for name, run in suite['runs'].items() if run['result']}
+    baseline = results.get('E1-Single-rdt')
+    if baseline is None:
+        return ''
+    def csi(result):
+        return result['test']['metrics']['rdt']['active_convection']['csi'][1]
+    paragraphs = []
+    for variant, label in [('selective', 'SSL weight anchoring'),
+                           ('cumulative', 'Retained auxiliary tasks')]:
+        stages = [('Frozen SSL', baseline),
+                  ('After CMA', results.get(f'E2-{variant}-rdt')),
+                  ('After CMA and CT', results.get(f'E3-{variant}-rdt'))]
+        available = [(name, result) for name, result in stages if result is not None]
+        if len(available) > 1:
+            scores = ' → '.join(f'{name}: {csi(result):.3f}' for name, result in available)
+            paragraphs.append(f'**{label}:** active-convection CSI follows {scores}. '
+                              'Each value comes from a fresh RDT decoder trained on the corresponding frozen encoder.')
+    adapted, frozen = results.get('E4-JointFT'), results.get('E1-Joint3')
+    if adapted and frozen:
+        paragraphs.append(
+            f'**Joint adaptation of the complete encoder:** active-convection CSI is {csi(adapted):.3f}, '
+            f'compared with {csi(frozen):.3f} for the frozen encoder with the same three-head decoder. '
+            f"Cloud IoU is {adapted['test']['metrics']['cma']['iou'][1]:.2f} and "
+            f"{frozen['test']['metrics']['cma']['iou'][1]:.2f}, respectively.")
+    if paragraphs:
+        paragraphs.append('These are test-period point estimates from one training seed. '
+                          'The curves describe the observed transfer within this exploratory dataset.')
+    return '\n\n'.join(paragraphs)
+
+
 def learning_figure(suite,names=None):
     names=names or ['E0-Rand','E0-RGB','E1-Single-cma','E1-Single-ct','E1-Single-rdt','E1-Joint3']
     if not any(suite['runs'].get(name,{}).get('history') for name in names):
