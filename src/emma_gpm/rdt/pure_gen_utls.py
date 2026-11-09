@@ -143,6 +143,7 @@ class PureGenUtlsTracker:
         rdt_config: NwcSafRdtConfig | None = None,
         proxy_config: RDTTeacherConfig | None = None,
         cloud_type_config: IrCloudTypeConfig | None = None,
+        separate_observation_support: bool = True,
     ) -> None:
         self.rdt_config = rdt_config or default_pure_gen_rdt_config()
         if self.rdt_config.discri_scheme != "GEN":
@@ -154,7 +155,9 @@ class PureGenUtlsTracker:
         self.proxy_config = proxy_config or RDTTeacherConfig()
         self.cloud_type_config = cloud_type_config or IrCloudTypeConfig()
         self.cloud_type_tracker = SeviriIrCloudTypeTracker(self.cloud_type_config)
-        self.version = "rdt_cw_inspired_pure_gen_utls_v2"
+        self.separate_observation_support = bool(separate_observation_support)
+        self.version = ("rdt_cw_inspired_pure_gen_utls_v3_observation_support"
+                        if self.separate_observation_support else "rdt_cw_inspired_pure_gen_utls_v2")
         payload = {
             "version": self.version,
             "rdt": asdict(self.rdt_config),
@@ -164,6 +167,9 @@ class PureGenUtlsTracker:
             "radial_relative_ot_intersection": True,
             "native_satellite_grid": True,
         }
+        if self.separate_observation_support:
+            payload.update(boundary_and_gradient_support="finite observed pixels before cloud-type screening",
+                           tracking_event_history=True)
         self.config_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -256,6 +262,7 @@ class PureGenUtlsTracker:
             self.rdt_config,
             ct_cloudy_mask=cloud_type.opaque_cloud_mask,
             tropopause_temp_k=None,
+            separate_observation_support=getattr(self, "separate_observation_support", False),
         )
         parents, _children, edges, primary_parent, events, convective_parent = track_rdt_cells(
             self.previous_cells,
@@ -487,6 +494,8 @@ class PureGenUtlsTracker:
                 "phase_code": cell["phase_code"],
                 "severity": cell["severity"],
             }
+            if getattr(self, "separate_observation_support", False):
+                snapshot["event"] = event
             new_track_histories[track_id] = [*history, snapshot][
                 -self.rdt_config.history_slots :
             ]

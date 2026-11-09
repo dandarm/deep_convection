@@ -263,6 +263,7 @@ def detect_rdt_cells(
     *,
     ct_cloudy_mask: np.ndarray | None = None,
     tropopause_temp_k: np.ndarray | float | None = None,
+    separate_observation_support: bool = False,
 ) -> tuple[np.ndarray, dict[int, dict[str, Any]], ThresholdSliceHierarchy, np.ndarray]:
     """Run NWC SAF RDT-CW adaptive cell detection on a 7-channel SEVIRI frame."""
     frame = np.asarray(frame_7ch, dtype=np.float32)
@@ -290,7 +291,8 @@ def detect_rdt_cells(
     else:
         not_stretched = np.ones_like(finite_obs, dtype=bool)
 
-    valid_mask = finite_obs & not_stretched
+    observation_support = finite_obs & not_stretched
+    valid_mask = observation_support
     if ct_cloudy_mask is not None:
         valid_mask = valid_mask & np.asarray(ct_cloudy_mask, dtype=bool)
 
@@ -299,12 +301,16 @@ def detect_rdt_cells(
         return np.zeros(area.shape, dtype=np.int32), {}, hierarchy, valid_mask
 
     # Spatial gradient of IR108 in K/km for inner and peripheral gradient attributes
-    gy_pix, gx_pix = np.gradient(np.where(valid_mask, ir108, np.nan))
+    # Cloud-type screening selects detection candidates. Finite clear pixels
+    # still provide observed radiometry and spatial-gradient support. The
+    # explicit legacy default preserves the original reference implementation.
+    attribute_support = observation_support if separate_observation_support else valid_mask
+    gy_pix, gx_pix = np.gradient(np.where(attribute_support, ir108, np.nan))
     pixel_step_km = np.sqrt(np.maximum(area, 1e-6))
     grad_ir_km = np.hypot(gy_pix, gx_pix) / pixel_step_km
     grad_ir_km = np.where(np.isfinite(grad_ir_km), grad_ir_km, 0.0)
 
-    invalid_neighbour_mask = ndimage.binary_dilation(~valid_mask, structure=CONNECTIVITY_8)
+    invalid_neighbour_mask = ndimage.binary_dilation(~attribute_support, structure=CONNECTIVITY_8)
 
     # Determine local BT floor from BTLIMIT (-60 C = 213.15 K) and optional NWP tropopause
     if tropopause_temp_k is not None and cfg.limittropo:

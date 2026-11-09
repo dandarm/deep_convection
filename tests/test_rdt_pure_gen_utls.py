@@ -10,6 +10,7 @@ from emma_gpm.rdt.pure_gen_utls import (
     RDT_ORIGINAL_CLASS_NAMES,
     PureGenUtlsTracker,
     run_pure_gen_utls_sequence,
+    default_pure_gen_rdt_config,
 )
 from scripts.render_rdt_pure_gen_utls_week import CLASS_COLORS, _radiance_composite
 from scripts.search_rdt_pure_gen_utls_events_2022 import _ordered_inventory, _select_events
@@ -68,6 +69,37 @@ def test_pure_gen_utls_keeps_original_rdt_classes_and_proxy() -> None:
     assert np.isfinite(output["thermal_depth"]).any()
     assert output["cloud_type"].shape == labels.shape
     assert np.all(labels[~output["opaque_cloud_mask"]] == 0)
+
+
+def test_observed_cloud_prefilter_boundary_preserves_geometry_and_missing_flags():
+    from RDT_original.rdt_nwcsaf.detection import detect_rdt_cells
+    clip, _, area = _synthetic_sequence()
+    frame = clip[0]
+    yy,xx=np.mgrid[:96,:96]
+    screen=(np.hypot(yy-48,xx-40)<24)&(xx>=40)
+    legacy=detect_rdt_cells(frame,area,default_pure_gen_rdt_config(),ct_cloudy_mask=screen)
+    corrected=detect_rdt_cells(frame,area,default_pure_gen_rdt_config(),ct_cloudy_mask=screen,
+                               separate_observation_support=True)
+    np.testing.assert_array_equal(legacy[0],corrected[0])
+    assert legacy[1] and all(cell['border'] for cell in legacy[1].values())
+    assert all(not cell['border'] for cell in corrected[1].values())
+    missing=frame.copy();missing[:,:,39]=np.nan
+    observed_gap=detect_rdt_cells(missing,area,default_pure_gen_rdt_config(),ct_cloudy_mask=screen,
+                                  separate_observation_support=True)
+    assert observed_gap[1] and all(cell['border'] for cell in observed_gap[1].values())
+
+
+def test_corrected_teacher_tracks_events_and_versions_legacy_separately():
+    clip,times,area=_synthetic_sequence()
+    corrected=PureGenUtlsTracker()
+    legacy=PureGenUtlsTracker(separate_observation_support=False)
+    assert corrected.config_hash != legacy.config_hash
+    assert legacy.version == 'rdt_cw_inspired_pure_gen_utls_v2'
+    assert 'v3_observation_support' in corrected.version
+    for frame,stamp in zip(clip,times):
+        corrected.step_frame(frame,stamp,area,lat_deg=45.,lon_deg=10.)
+    assert corrected.track_histories
+    assert all('event' in row for history in corrected.track_histories.values() for row in history)
 
 
 def test_ir_cloud_type_rejects_cold_land_and_keeps_deep_cloud() -> None:
