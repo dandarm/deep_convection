@@ -155,6 +155,22 @@ def comparison_figure(suite,names,title,metric='iou'):
     return fig
 
 
+def active_convection_figure(suite,names,title='Active-convection agreement'):
+    data=metric_frame(suite)
+    if data.empty:
+        return None
+    data=data[(data['head']=='active_convection')&data.experiment.isin(names)].set_index('experiment')
+    present=[name for name in names if name in data.index]
+    if not present:
+        return None
+    fig,ax=plt.subplots(figsize=(9,max(3,len(present)*.45)))
+    ax.scatter([data.loc[name,'iou'] for name in present],np.arange(len(present)),color='#d97706')
+    ax.set(yticks=np.arange(len(present)),yticklabels=present,xlim=(0,1),
+           xlabel='Active-convection CSI',title=title)
+    ax.invert_yaxis();ax.grid(axis='x',alpha=.2);fig.tight_layout()
+    return fig
+
+
 def brier_figure(suite,names):
     rows=[]
     for name in names:
