@@ -836,7 +836,6 @@ def learning_differences(study, comparison, family='pretraining', reference_size
     if comparison not in ('architecture', 'dataset'):
         raise ValueError('Choose an architecture or dataset comparison')
     names = ('mvm', 'future', 'joint', 'residual') if family == 'pretraining' else FAMILIES[family]
-    references = {'Small': 4096, 'Base': 16384} if reference_sizes is None else reference_sizes
     runs = {}
     for run in study['runs'].values():
         if run['name'] not in names or not run['epochs']:
@@ -846,6 +845,9 @@ def learning_differences(study, comparison, family='pretraining', reference_size
         if key in runs:
             raise ValueError('Select one run per architecture, dataset size and objective')
         runs[key] = run
+    references = (dict(reference_sizes) if reference_sizes is not None else
+                  {encoder: min(size for candidate_encoder, size, _ in runs if candidate_encoder == encoder)
+                   for encoder, _, _ in runs})
     frames = []
     histories = {}
     for (encoder, size, name), candidate in runs.items():

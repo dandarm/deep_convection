@@ -489,6 +489,22 @@ def test_architecture_differences_hold_dataset_and_objective_fixed(series):
         study.learning_differences(snapshot, 'architecture')
 
 
+def test_dataset_differences_use_smallest_available_set_for_each_encoder(series):
+    snapshot = study.load_study(series)
+    for size in (2, 4):
+        name = f'base_n{size}'
+        snapshot['cases'][name] = {**snapshot['cases'][f'n{size}'], 'encoder': 'Base'}
+        snapshot['runs'][name, 'future'] = {**snapshot['runs'][f'n{size}', 'future'], 'case': name}
+    frame = study.learning_differences(snapshot, 'dataset')
+    assert set(frame.encoder) == {'Small', 'Base'}
+    assert set(frame.training_clips) == {4}
+    assert set(frame.reference_clips) == {2}
+    assert (frame.encoder == frame.reference_encoder).all()
+    # A larger explicit reference remains supported for historical views.
+    explicit = study.learning_differences(snapshot, 'dataset', reference_sizes={'Small': 2, 'Base': 4})
+    assert set(explicit.encoder) == {'Small'}
+
+
 def test_validation_minimum_uses_joint_objective_and_earliest_tie(series):
     snapshot = study.load_study(series)
     run = snapshot['runs']['n2', 'joint']
