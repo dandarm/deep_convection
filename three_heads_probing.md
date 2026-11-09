@@ -2,6 +2,44 @@
 
 Documento tecnico-scientifico per la costruzione del dataset di probing congiunto a 3 teste e per il protocollo di valutazione (parallelo a backbone congelato e sequenziale con curriculum fine-tuning) sul backbone **VideoMAE-Small** (7 canali SEVIRI IR in Kelvin, 16 frame a cadenza 5 minuti, risoluzione spaziale $224 \times 224$).
 
+## Revisione esplorativa approvata il 9 novembre 2026
+
+Per i primi esperimenti a tre teste si applicano le due modifiche seguenti ai
+passi 2 e 4 della sezione 5. Le specifiche originali restano disponibili sotto
+come riferimento. La configurazione eseguibile della revisione è
+`configs/three_head_probe_dataset_exploratory2022.json`.
+
+- **Accordo RDT–CT:** la frazione dei pixel convettivi RDT classificati da CT
+  come nube alta opaca viene riportata come diagnostica, insieme al riferimento
+  originale del 90%. Restano obbligatori almeno il 99,5% di accordo con CMA e
+  meno dello 0,1% di appartenenza alle classi CT sereno/nube bassa, calcolati
+  sul dominio completo prima delle esclusioni per storia temporale. Il manifest
+  conserva sia l'esito del criterio originale sia l'accettazione secondo la
+  revisione esplorativa. Le etichette del teacher corretto v3 restano invariate.
+- **Gruppo B, nubi fredde:** si richiedono almeno il 25% di pixel CT di nube
+  alta opaca o cirro e almeno l'1% di pixel RDT di nube fredda non convettiva,
+  sul totale dei target validi della clip. Le clip che contengono convezione
+  sono ammesse se il pixel centrale dell'ultimo frame è una nube fredda non
+  convettiva RDT e appartiene a una delle due classi CT alte. Questa assegnazione
+  ha priorità sul gruppo A. Il caso originario di clip completamente prive di
+  convezione resta incluso. Ogni pixel conserva la propria classe: il gruppo
+  definisce il campionamento della clip e il target resta una segmentazione.
+
+Il training usa il 1–2 luglio 2022, la validation il 4 luglio e il test il
+7 luglio, con 512, 192 e 192 clip rispettivamente. Le probabilità dei gruppi
+A/B/C restano 50/30/20%; il peso triplo delle clip con overshooting top si
+applica all'interno del solo gruppo A. Validation e test usano campionamento
+uniforme delle posizioni e delle finestre temporali. Tutti i periodi sono
+separati dalle date del pretraining e della sua validation. I risultati
+misurano la decodificabilità di queste pseudo-label nei periodi selezionati;
+la verifica meteorologica su osservazioni indipendenti resta un passo successivo.
+
+Con il teacher corretto l'accordo CT di luglio è 87,1%, 86,9% e 84,1% nei tre
+split; gli altri due criteri sono soddisfatti. Il campionamento del gruppo B
+centrato su nubi fredde rende utilizzabili scene miste, frequenti nei volumi
+di 16 frame e 224 × 224 pixel. La diagnostica della correzione e le definizioni
+dei target sono documentate in `docs/three_head_probe_implementation.md`.
+
 ---
 
 ## 1. Obiettivo e Flusso Canonico

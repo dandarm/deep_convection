@@ -1,0 +1,216 @@
+{
+  "dataset": "/data1/deep_convection_data/three_head_probes_exploratory_july2022_20261109",
+  "output": "/data1/deep_convection_results/three_head_probes_20261109",
+  "defaults": {
+    "epochs": 60,
+    "batch_size": 16,
+    "encoder_mode": "frozen",
+    "kind": "pretrained",
+    "head_lr": 0.001,
+    "encoder_lr": 1e-05,
+    "precision": "bf16",
+    "seed": 20261109,
+    "workers": 2,
+    "nesting_weight": 0.1
+  },
+  "experiments": [
+    {
+      "name": "E1-Joint3",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ],
+      "ablations": true
+    },
+    {
+      "name": "E1-Single-rdt",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "rdt"
+      ],
+      "ablations": true
+    },
+    {
+      "name": "E0-Rand",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ],
+      "kind": "random"
+    },
+    {
+      "name": "E0-RGB",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ],
+      "kind": "rgb"
+    },
+    {
+      "name": "E1-Single-cma",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma"
+      ],
+      "ablations": false
+    },
+    {
+      "name": "E1-Single-ct",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "ct"
+      ],
+      "ablations": false
+    },
+    {
+      "name": "E2-selective-CMA-FT",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma"
+      ],
+      "encoder_mode": "last4",
+      "anchor_weight": 1.0,
+      "auxiliary_mae": false
+    },
+    {
+      "name": "E2-selective-ct",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "ct"
+      ],
+      "parent": "E2-selective-CMA-FT",
+      "ablations": false
+    },
+    {
+      "name": "E2-selective-rdt",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "rdt"
+      ],
+      "parent": "E2-selective-CMA-FT",
+      "ablations": true
+    },
+    {
+      "name": "E3-selective-CT-FT",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "ct"
+      ],
+      "parent": "E2-selective-CMA-FT",
+      "encoder_mode": "last4",
+      "anchor_weight": 1.0,
+      "retain_cma": false
+    },
+    {
+      "name": "E3-selective-rdt",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "rdt"
+      ],
+      "parent": "E3-selective-CT-FT",
+      "ablations": true
+    },
+    {
+      "name": "E2-cumulative-CMA-FT",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma"
+      ],
+      "encoder_mode": "last4",
+      "anchor_weight": 0.0,
+      "auxiliary_mae": true
+    },
+    {
+      "name": "E2-cumulative-ct",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "ct"
+      ],
+      "parent": "E2-cumulative-CMA-FT",
+      "ablations": false
+    },
+    {
+      "name": "E2-cumulative-rdt",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "rdt"
+      ],
+      "parent": "E2-cumulative-CMA-FT",
+      "ablations": true
+    },
+    {
+      "name": "E3-cumulative-CT-FT",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct"
+      ],
+      "parent": "E2-cumulative-CMA-FT",
+      "encoder_mode": "last4",
+      "anchor_weight": 0.0,
+      "retain_cma": true
+    },
+    {
+      "name": "E3-cumulative-rdt",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "rdt"
+      ],
+      "parent": "E3-cumulative-CT-FT",
+      "ablations": true
+    },
+    {
+      "name": "E4-JointFT",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/mvm/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ],
+      "encoder_mode": "full",
+      "ablations": true
+    },
+    {
+      "name": "Compare-Small-65K-future",
+      "source": "results/ssl_factorial_20261028/small_n65536/future/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ]
+    },
+    {
+      "name": "Compare-Small-65K-joint",
+      "source": "results/ssl_factorial_20261028/small_n65536/joint/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ]
+    },
+    {
+      "name": "Compare-Small-65K-residual",
+      "source": "results/ssl_grid_completion_20261103/small_n65536/residual/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ]
+    },
+    {
+      "name": "Compare-Base-131K-future",
+      "source": "/data1/deep_convection_results/leonardo_base_future_131072_20261108/training/checkpoint_best.pt",
+      "heads": [
+        "cma",
+        "ct",
+        "rdt"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "source_root": "/data1/deep_convection_data/MSG-SEVIRI",
+  "teacher_output": "/data1/deep_convection_data/three_head_teachers_20261109",
+  "dataset_output": "/data1/deep_convection_data/three_head_probes_20261109",
+  "splits": {
+    "train": [
+      "2020-12-13",
+      "2020-12-14"
+    ],
+    "validation": [
+      "2020-12-16"
+    ],
+    "test": [
+      "2020-12-26"
+    ]
+  },
+  "pretraining_manifests": [
+    "results/ssl_131072_20261102/data_preparation_random/n131072/dataset/train.csv",
+    "results/ssl_131072_20261102/data_preparation_random/n131072/dataset/validation.csv",
+    "results/ssl_grid_completion_20261103/small_n65536/dataset/train.csv",
+    "results/ssl_grid_completion_20261103/small_n65536/dataset/validation.csv",
+    "results/ssl_validation_10k_20261102/validation.csv"
+  ],
+  "geographic_bounds": [
+    -20.0,
+    40.0,
+    30.0,
+    70.0
+  ],
+  "seed": 20261109,
+  "clip_frames": 16,
+  "crop_size": 224,
+  "training_clips": 512,
+  "validation_clips": 192,
+  "test_clips": 192,
+  "candidate_origins_per_window": 128,
+  "temporal_stride_frames": 16,
+  "bucket_b_min_high_fraction": 0.25,
+  "bucket_b_min_cold_fraction": 0.01,
+  "training_bucket_probabilities": {
+    "A": 0.5,
+    "B": 0.3,
+    "C": 0.2
+  },
+  "ot_sampling_multiplier": 3.0,
+  "rdt_separate_observation_support": true
+}
