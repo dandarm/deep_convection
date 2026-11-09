@@ -82,6 +82,36 @@ def metric_frame(suite):
     return pd.DataFrame(rows)
 
 
+def result_summary_text(suite):
+    """Describe completed held-out results with explicit comparison populations."""
+    results = {name: run['result'] for name, run in suite['runs'].items() if run['result']}
+    main = results.get('E1-Joint3')
+    if main is None:
+        return ''
+    metrics = main['test']['metrics']
+    active = metrics['rdt']['active_convection']
+    paragraphs = [
+        f"**Completed main probe:** E1-Joint3 selects epoch {main['best_epoch']} by validation loss. "
+        f"On the held-out test period, cloud IoU is **{metrics['cma']['iou'][1]:.2f}**, "
+        f"active-convection CSI is **{active['csi'][1]:.2f}**, and active-convection F1 is "
+        f"**{active['f1'][1]:.2f}**. Its binary convection Brier score is {active['brier']:.3f}. "
+        f"The encoder weights remain identical to the pretrained checkpoint."
+    ]
+    for name, description in [('E0-Rand', 'the frozen random encoder'),
+                              ('E1-Single-rdt', 'the independent RDT decoder')]:
+        if name in results:
+            reference = results[name]['test']['metrics']['rdt']['active_convection']['csi'][1]
+            paragraphs.append(f"Relative to {description} ({name}, CSI {reference:.2f}), "
+                              f"E1-Joint3 changes active-convection CSI by {active['csi'][1]-reference:+.2f} "
+                              "on the same test clips.")
+    ot = metrics['rdt']
+    if ot['support'][4]:
+        paragraphs.append(f"The overshooting-top class has IoU {ot['iou'][4]:.2f} over "
+                          f"{ot['support'][4]:,} labelled pixel observations. "
+                          "This small support includes repeated observations and overlapping crops.")
+    return '\n\n'.join(paragraphs)
+
+
 def learning_figure(suite,names=None):
     names=names or ['E0-Rand','E0-RGB','E1-Single-cma','E1-Single-ct','E1-Single-rdt','E1-Joint3']
     if not any(suite['runs'].get(name,{}).get('history') for name in names):
@@ -194,14 +224,33 @@ def ablation_figure(suite):
     return fig
 
 
-def example_figure(suite,name,index=None,time_index=9):
+def example_figure(suite,name,index=None,time_index=15,scene='convective'):
     run=suite['runs'].get(name)
     if not run or not run['result']:
         return None
     files=sorted(run['directory'].glob('example_*.npz'))
     if not files:
         return None
-    file=run['directory']/f'example_{index:05d}.npz' if index is not None else files[0]
+    if scene not in ('convective', 'background'):
+        raise ValueError('Unknown example scene')
+    file=run['directory']/f'example_{index:05d}.npz' if index is not None else None
+    if file is None:
+        # Select using held-out teacher labels alone, in stable sample order.
+        largest_convective_area=0
+        for candidate in files:
+            with np.load(candidate) as archive:
+                if 'target_rdt' not in archive:
+                    continue
+                target=archive['target_rdt'][time_index]
+                valid=target!=255
+                convective=int(np.count_nonzero((target>=2)&(target<=4)))
+                background=valid.any() and np.all(target[valid]==0)
+                if scene=='convective' and convective>largest_convective_area:
+                    file=candidate;largest_convective_area=convective
+                if scene=='background' and background:
+                    file=candidate;break
+    if file is None:
+        return None
     with np.load(file) as archive:
         heads=[head for head in CLASS_NAMES if 'prediction_'+head in archive.files]
         fig,axes=plt.subplots(len(heads),2,figsize=(9,3.5*len(heads)),squeeze=False)
