@@ -399,6 +399,79 @@ def test_objective_panels_preserve_architecture_size_and_partial_history(series)
         for fig in figures.values():plt.close(fig)
 
 
+def test_learning_overlay_preserves_each_validation_population_and_temperature_scale(series):
+    historical = study.load_study(series)
+    source_run = historical['runs']['n4', 'future']
+    geographic = {**historical, 'validation_sha256': 'resampled-manifest',
+        'cases': {'base_n131072': dict(train_samples=131072, encoder='Base', stats={'global_std_k': 10.})},
+        'runs': {('base_n131072', 'future'): {**source_run, 'case': 'base_n131072',
+            'complete': True, 'epochs': [dict(epoch=1, optimizer_steps=216, train_future=.2,
+                                            train_total=.2, validation_future=.1)]}}}
+    with pytest.raises(ValueError, match='same validation'):
+        study.merge_studies(historical, geographic)
+    figures = study.objective_learning_figures(historical,
+        additional_studies={'Resampled validation · 512 clips': geographic})
+    try:
+        axes = figures['future'].axes
+        labels = [line.get_label() for line in axes[1].lines]
+        assert len(labels) == 3
+        extra = next(line for line in axes[1].lines if '131,072' in line.get_label())
+        np.testing.assert_allclose(extra.get_ydata(), [10.])
+        np.testing.assert_allclose(extra.get_xdata(), [216])
+        assert extra.get_marker() == 'D' and extra.get_linestyle() == '--'
+        old = next(line for line in axes[1].lines if '2 clips' in line.get_label())
+        np.testing.assert_allclose(old.get_ydata(), [5., 20., 45., 80.])
+        legend = [item.get_text() for item in figures['future'].legends[0].get_texts()]
+        assert 'Resampled validation · 512 clips' in legend
+        assert 'Historical validation · 512 clips' in legend
+        assert len(figures['mvm'].axes[1].lines) == 2
+        figures['future'].canvas.draw()
+    finally:
+        for fig in figures.values():
+            plt.close(fig)
+    assert historical['validation_sha256'] != geographic['validation_sha256']
+    assert ('base_n131072', 'future') not in historical['runs']
+
+
+def test_extended_validation_overlay_uses_physical_mse_and_preserves_all_points(series, tmp_path):
+    snapshot = study.load_study(series)
+    directory = tmp_path/'distributed'
+    write(directory/'run_config.json', dict(identity=dict(objective='future', stats={'global_std_k': 10.})))
+    write(directory/'progress.json', dict(completed_epochs=2, epochs=[
+        dict(epoch=1, optimizer_steps=216), dict(epoch=2, optimizer_steps=432)]))
+    for epoch, mse, rmse in [(1, .09, 3.), (2, .04, 2.), (3, .01, 1.)]:
+        write(directory/'validation_extended'/f'epoch_{epoch:03d}.json',
+              dict(neural=dict(samples=10240, mse=mse, rmse_k=rmse)))
+    history = study.distributed_validation_history(directory)
+    assert history.epoch.tolist() == [1, 2]
+    assert history.optimizer_steps.tolist() == [216, 432]
+    np.testing.assert_allclose(history.validation_objective_k2, [9., 4.])
+    assert history.validation_clips.tolist() == [10240, 10240]
+    figures = study.objective_learning_figures(snapshot, validation_zoom=True,
+        extra_validation=[dict(objective='future', encoder='Small', training_clips=4,
+                               label='Small · 4 · 10,240 validation clips', history=history)])
+    try:
+        training, validation, detail = figures['future'].axes
+        assert len(training.lines) == 2  # A second evaluation never duplicates training loss.
+        assert len(validation.lines) == len(detail.lines) == 3
+        assert validation.get_yscale() == 'log' and detail.get_yscale() == 'linear'
+        for axis in (validation, detail):
+            extra = next(line for line in axis.lines if '10,240' in line.get_label())
+            np.testing.assert_allclose(extra.get_xdata(), [216, 432])
+            np.testing.assert_allclose(extra.get_ydata(), [9., 4.])
+        for full, zoom in zip(validation.lines, detail.lines):
+            np.testing.assert_array_equal(full.get_xdata(), zoom.get_xdata())
+            np.testing.assert_array_equal(full.get_ydata(), zoom.get_ydata())
+        assert len(figures['mvm'].axes[1].lines) == 2
+        figures['future'].canvas.draw()
+    finally:
+        for figure in figures.values():
+            plt.close(figure)
+    write(directory/'validation_extended/epoch_002.json', dict(neural=dict(samples=10240, mse=.04, rmse_k=9.)))
+    with pytest.raises(ValueError, match='inconsistent'):
+        study.distributed_validation_history(directory)
+
+
 def test_global_dataset_budgets_use_fixed_references_and_actual_saved_epochs(series):
     snapshot = study.load_study(series)
     for encoder, size in [('Small', 8), ('Base', 4), ('Base', 8)]:

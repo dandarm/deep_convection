@@ -193,6 +193,31 @@ def distributed_validation_figure(directory):
     return fig
 
 
+def distributed_validation_history(directory, folder='validation_extended'):
+    """Read the Future MSE on a held-out population at committed updates."""
+    directory = Path(directory)
+    config = read_json(directory/'run_config.json', required=True)
+    if config['identity']['objective'] != 'future':
+        raise ValueError('Additional forecast validation currently requires the Future objective')
+    progress = read_json(directory/'progress.json', required=True)
+    updates = {row['epoch']: row['optimizer_steps'] for row in progress['epochs']
+               if row['epoch'] <= progress['completed_epochs']}
+    scale = config['identity']['stats']['global_std_k']**2
+    records = []
+    for path in sorted((directory/folder).glob('epoch_*.json')):
+        epoch = int(path.stem.rsplit('_', 1)[1])
+        if epoch not in updates:
+            continue
+        metric = read_json(path, required=True)['neural']
+        mse_k2 = metric['mse'] * scale
+        if not np.isclose(mse_k2, metric['rmse_k']**2, rtol=1e-6, atol=1e-8):
+            raise ValueError('Validation MSE and physical RMSE are inconsistent')
+        records.append(dict(epoch=epoch, optimizer_steps=updates[epoch],
+                            validation_objective_k2=mse_k2, validation_clips=metric['samples']))
+    return pd.DataFrame(records, columns=['epoch', 'optimizer_steps', 'validation_objective_k2',
+                                          'validation_clips']).sort_values('optimizer_steps')
+
+
 def extension_study(reference, extension, reference_case='n8192'):
     """A two-size view of the objectives registered in a nested extension."""
     if reference['validation_sha256'] != extension['validation_sha256']:
@@ -922,41 +947,108 @@ def learning_difference_figures(differences):
     return figures
 
 
-def objective_learning_figures(study):
-    """One objective per figure, updates only; colour encodes size, style architecture."""
+def objective_learning_figures(study, *, additional_studies=None, extra_validation=None,
+                               validation_zoom=False,
+                               validation_label='Historical validation · 512 clips'):
+    """Overlay labelled validation populations without merging their comparisons.
+
+    Each source retains its own normalization and histories. Different manifests
+    receive different markers; merge_studies and paired metrics still require
+    identical validation observations. Extra held-out curves appear only on
+    validation axes. The optional lower panel enlarges the validation range;
+    the upper panels retain the complete recorded history and its peaks.
+    """
+    sources = [(validation_label, study), *(additional_studies or {}).items()]
+    extra_validation = extra_validation or []
+    population_markers = {}
+    marker_choices = (None, 'D', 's', '^', 'v')
+    for _, source in sources:
+        manifest = source['validation_sha256']
+        if manifest not in population_markers:
+            if len(population_markers) >= len(marker_choices):
+                raise ValueError('Select at most five validation populations')
+            population_markers[manifest] = marker_choices[len(population_markers)]
     objectives = ('mvm', 'future', 'joint', 'residual')
-    colors = _size_colors(data['train_samples'] for data in study['cases'].values())
+    colors = _size_colors(data['train_samples'] for _, source in sources
+                          for data in source['cases'].values())
     styles = {'Small': '-', 'Base': '--'}
     figures = {}
     for name in objectives:
-        runs = [run for run in study['runs'].values()
+        runs = [(label, source, run) for label, source in sources for run in source['runs'].values()
                 if run['name'] == name and run['stage']['kind'] == 'pretraining' and run['epochs']]
         if not runs:
             continue
-        runs.sort(key=lambda run: (study['cases'][run['case']]['train_samples'],
-                                  study['cases'][run['case']].get('encoder', 'Small')))
-        figure, axes = plt.subplots(1, 2, figsize=(14, 4.5), sharey=True, layout='constrained')
+        runs.sort(key=lambda item: (item[1]['cases'][item[2]['case']]['train_samples'],
+                                   item[1]['cases'][item[2]['case']].get('encoder', 'Small')))
+        if validation_zoom:
+            figure = plt.figure(figsize=(15, 8.5), layout='constrained')
+            grid = figure.add_gridspec(2, 2, height_ratios=(1, 1.15))
+            axes = [figure.add_subplot(grid[0, 0]), figure.add_subplot(grid[0, 1])]
+            detail = figure.add_subplot(grid[1, :], sharex=axes[1])
+        else:
+            figure, axes = plt.subplots(1, 2, figsize=(14, 4.5), sharey=True, layout='constrained')
+            detail = None
+        validation_axes = [axes[1]] + ([detail] if detail is not None else [])
+        validation_values, settled_values, highlighted_handles = [], [], []
         plotted_sizes, architectures, unfinished = set(), set(), False
-        for run in runs:
-            data = study['cases'][run['case']]
+        plotted_populations = {}
+        for population, source, run in runs:
+            data = source['cases'][run['case']]
             size, encoder = data['train_samples'], data.get('encoder', 'Small')
             if encoder not in styles:
                 raise ValueError(f'No registered line style for encoder {encoder}')
-            history = native_loss_history(study, run)
+            history = native_loss_history(source, run)
             if (history[['epoch', 'optimizer_steps']] <= 0).any().any():
                 raise ValueError('Logarithmic training axes require positive recorded budgets')
             plotted_sizes.add(size); architectures.add(encoder)
             ongoing = not run['complete']
             unfinished |= ongoing
-            for i, split in enumerate(('train', 'validation')):
-                axes[i].plot(history.optimizer_steps, history[f'{split}_objective_k2'],
-                    color=colors[size], linestyle=styles[encoder], linewidth=1.6,
-                    marker='o' if ongoing else None, markevery=[len(history)-1],
-                    markerfacecolor='white', markersize=6,
-                    label=f'{encoder} · {size:,} clips')
+            marker = population_markers[source['validation_sha256']]
+            plotted_populations.setdefault(source['validation_sha256'], (population, marker))
+            marks = sorted(set(np.linspace(0, len(history)-1, min(6, len(history)), dtype=int)))
+            prominent = source is not study
+            line_label = f'{encoder} · {size:,} clips' + (f' · {population}' if additional_studies else '')
+            for axis, split in [(axes[0], 'train'), *[(a, 'validation') for a in validation_axes]]:
+                axis.plot(history.optimizer_steps, history[f'{split}_objective_k2'],
+                    color=colors[size], linestyle=styles[encoder], linewidth=2.8 if prominent else 1.3,
+                    alpha=1. if prominent else .8, zorder=6 if prominent else 2,
+                    marker=marker or ('o' if ongoing else None),
+                    markevery=marks if marker else [len(history)-1],
+                    markerfacecolor='white', markersize=5 if prominent else 4,
+                    label=line_label)
+                if ongoing and marker:
+                    axis.scatter(history.optimizer_steps.iloc[-1], history[f'{split}_objective_k2'].iloc[-1],
+                                 marker='o', facecolors='white', edgecolors=colors[size], s=36, zorder=8)
+            if prominent and validation_zoom:
+                highlighted_handles.append(Line2D([], [], color=colors[size], linestyle=styles[encoder],
+                    linewidth=2.8, marker=marker, markerfacecolor='white',
+                    label=f'{encoder} · {size:,} · {data["validation_samples"]:,} validation clips'))
+            validation_values.extend(history.validation_objective_k2)
+            settled_values.extend(history.validation_objective_k2.iloc[len(history)//4:])
             best = history.loc[history.validation_objective_k2.idxmin()]
-            axes[1].scatter(best.optimizer_steps, best.validation_objective_k2,
-                            marker='*', s=95, color=colors[size], edgecolors='black', linewidths=.5, zorder=5)
+            for axis in validation_axes:
+                axis.scatter(best.optimizer_steps, best.validation_objective_k2,
+                             marker='*', s=95, color=colors[size], edgecolors='black', linewidths=.5, zorder=7)
+        extra_handles = []
+        for extra in extra_validation:
+            if extra['objective'] != name or extra['history'].empty:
+                continue
+            history = extra['history']
+            values = history[['optimizer_steps', 'validation_objective_k2']].to_numpy()
+            if not np.isfinite(values).all() or (values <= 0).any() or (np.diff(values[:, 0]) <= 0).any():
+                raise ValueError('Additional validation requires positive losses and increasing updates')
+            color, style = colors[extra['training_clips']], styles[extra['encoder']]
+            for axis in validation_axes:
+                axis.plot(history.optimizer_steps, history.validation_objective_k2,
+                          color=color, linestyle=style, linewidth=2.8, marker='s', markersize=5,
+                          markerfacecolor='white', label=extra['label'], zorder=6)
+                best = history.loc[history.validation_objective_k2.idxmin()]
+                axis.scatter(best.optimizer_steps, best.validation_objective_k2,
+                             marker='*', s=95, color=color, edgecolors='black', linewidths=.5, zorder=7)
+            validation_values.extend(history.validation_objective_k2)
+            settled_values.extend(history.validation_objective_k2.iloc[len(history)//4:])
+            extra_handles.append(Line2D([], [], color=color, linestyle=style, linewidth=2.8,
+                                       marker='s', markerfacecolor='white', label=extra['label']))
         for i, split in enumerate(('Training', 'Validation')):
             axis = axes[i]
             axis.set(title=f'{LABELS[name]} · {split}', xlabel='Optimizer updates',
@@ -964,15 +1056,34 @@ def objective_learning_figures(study):
             axis.xaxis.set_major_locator(LogLocator(base=10))
             axis.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}' if v >= 1 else f'{v:g}'))
             axis.grid(alpha=.2, which='both')
+        if detail is not None:
+            lower = min(validation_values)
+            upper = max(lower, float(np.quantile(settled_values, .85)))
+            padding = max((upper-lower)*.08, lower*.03, .01)
+            detail.set(title=f'{LABELS[name]} · Validation detail', xlabel='Optimizer updates',
+                       ylabel='Objective loss (K²)', xscale='log',
+                       ylim=(max(0., lower-padding), upper+padding))
+            detail.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:.3g}'))
+            detail.grid(alpha=.2, which='both')
+            # Setting the scale on a shared axis resets its formatter.
+            for axis in (*axes, detail):
+                axis.xaxis.set_major_locator(LogLocator(base=10))
+                axis.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}' if v >= 1 else f'{v:g}'))
         handles = [Line2D([], [], color=colors[size], linewidth=2, label=f'{size:,} clips')
                    for size in sorted(plotted_sizes)]
         handles += [Line2D([], [], color='black', linestyle=styles[encoder], label=encoder)
                     for encoder in styles if encoder in architectures]
+        if len(plotted_populations) > 1:
+            handles += [Line2D([], [], color='black', linestyle='-', marker=marker,
+                               markerfacecolor='white', label=label)
+                        for label, marker in plotted_populations.values()
+                        if not validation_zoom or marker is None]
+        handles += highlighted_handles + extra_handles
         handles.append(Line2D([], [], color='black', linestyle='', marker='*', markersize=10,
                               label='Minimum saved validation loss'))
         if unfinished:
             handles.append(Line2D([], [], color='black', linestyle='', marker='o',
-                                  markerfacecolor='white', label='Latest saved epoch · in progress'))
+                                  markerfacecolor='white', label='Latest saved epoch · incomplete run'))
         figure.legend(handles=handles, loc='outside lower center', ncol=4, fontsize=10)
         figures[name] = figure
     return figures
