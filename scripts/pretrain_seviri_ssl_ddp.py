@@ -22,6 +22,7 @@ from emma_gpm.file_lock import exclusive_file_lock
 from emma_gpm.forecasting import ForecastWindow
 from emma_gpm.seviri_clip_files import ClipBatchLoader
 from emma_gpm.seviri_frame_dataset import FrameFileDataset
+from emma_gpm.seviri_immutable_clips import ImmutableClipFileDataset
 from emma_gpm.ssl_distributed import GlobalBatchSampler,initialize,save_distributed,restore_distributed
 from emma_gpm.ssl_diagnostics import encoder_digest
 from emma_gpm.ssl_evaluation import evaluate_ssl
@@ -39,7 +40,7 @@ def args_from_cli():
     early=argparse.ArgumentParser(add_help=False);early.add_argument('--config',type=Path)
     initial,_=early.parse_known_args()
     p=argparse.ArgumentParser(description=__doc__,parents=[early])
-    for name in ('dataset','zarr-root','frame-cache','extended-dataset','output-dir','resume','stop-after-epoch-file','execution-revision'):
+    for name in ('dataset','zarr-root','frame-cache','clip-root','extended-dataset','output-dir','resume','stop-after-epoch-file','execution-revision'):
         p.add_argument('--'+name,type=Path)
     p.add_argument('--model-size',choices=['small','base'],default='base')
     p.add_argument('--objective',choices=['mvm','future','joint','residual'],default='future')
@@ -67,7 +68,7 @@ def args_from_cli():
         if set(defaults)-valid:p.error('Unknown configuration keys: '+str(set(defaults)-valid))
         p.set_defaults(**defaults)
     args=p.parse_args()
-    for name in ('config','dataset','zarr_root','frame_cache','extended_dataset','output_dir','resume','stop_after_epoch_file','execution_revision'):
+    for name in ('config','dataset','zarr_root','frame_cache','clip_root','extended_dataset','output_dir','resume','stop_after_epoch_file','execution_revision'):
         value=getattr(args,name)
         if value is not None:setattr(args,name,Path(value).resolve())
     if args.output_dir is None:p.error('--output-dir is required')
@@ -77,6 +78,7 @@ def args_from_cli():
     if args.synthetic_smoke and args.capacity_probe:p.error('Select one engineering mode')
     if args.pipeline_benchmark_steps<0 or args.benchmark_warmup<1:p.error('Invalid benchmark counts')
     if args.pipeline_benchmark_steps and (args.capacity_probe or args.resume):p.error('Pipeline benchmarks start from fresh weights')
+    if args.clip_root and args.frame_cache:p.error('Select clip files or native frame files')
     return args
 
 
@@ -225,21 +227,23 @@ def run(args,rank,world,device):
         training,validation=SyntheticClips(16,args.seed,mean,std),SyntheticClips(8,args.seed+10000,mean,std)
         train_hash=val_hash=None
     else:
-        if not all([args.dataset,args.frame_cache,args.zarr_root]):raise ValueError('Real data roots are required')
+        if not all([args.dataset,args.clip_root or args.frame_cache,args.zarr_root]):raise ValueError('Real data roots are required')
         train_frame=pd.read_csv(args.dataset/'train.csv');val_frame=pd.read_csv(args.dataset/'validation.csv')
         validate_manifests(train_frame,val_frame)
         stats=load_training_stats(args.dataset/'channel_stats.json',args.dataset/'train.csv',args.zarr_root)
         if stats['samples']!=len(train_frame):raise ValueError('Training statistics sample count differs')
         if rank==0:write_json(args.output_dir/'progress.json',dict(status='preparing',phase='opening_training_frames',updated_unix=time.time()))
-        training=FrameFileDataset(args.frame_cache,args.dataset/'train.csv',zarr_root=args.zarr_root)
-        validation=FrameFileDataset(args.frame_cache,args.dataset/'validation.csv',zarr_root=args.zarr_root)
+        dataset_type = ImmutableClipFileDataset if args.clip_root else FrameFileDataset
+        data_root = args.clip_root or args.frame_cache
+        training=dataset_type(data_root,args.dataset/'train.csv',zarr_root=args.zarr_root)
+        validation=dataset_type(data_root,args.dataset/'validation.csv',zarr_root=args.zarr_root)
         train_hash,val_hash=(digest(args.dataset/name) for name in ('train.csv','validation.csv'))
     sampler=GlobalBatchSampler(len(training),args.batch_size_per_gpu,rank,world,args.seed)
     val_sampler=GlobalBatchSampler(len(validation),args.validation_batch_size,rank,world,314159,False)
     loader=indexed_loader(training,sampler,args,device,stats,args.batch_size_per_gpu)
     val_loader=indexed_loader(validation,val_sampler,args,device,stats,args.validation_batch_size)
     sources={**source_hashes(),**{name:digest(ROOT/name) for name in (
-        'src/emma_gpm/ssl_distributed.py','scripts/pretrain_seviri_ssl_ddp.py')}}
+        'src/emma_gpm/ssl_distributed.py','src/emma_gpm/seviri_immutable_clips.py','scripts/pretrain_seviri_ssl_ddp.py')}}
     identity=dict(window=asdict(window),model_config=config.to_dict(),objective=args.objective,head_width=width,
         frozen_encoder=False,stats=stats,train_sha256=train_hash,validation_sha256=val_hash,seed=args.seed,
         world_size=world,batch_size=args.batch_size_per_gpu*world,batch_size_per_gpu=args.batch_size_per_gpu,
@@ -247,6 +251,9 @@ def run(args,rank,world,device):
         mask_ratio=.9,mask_strategy='tube',max_motion_pixels=12,precision=args.precision,
         cuda_runtime=runtime.to_dict(),sources=sources,storage_mapping_sha256=storage_mapping_digest(),
         sampler='global epoch permutation; no padding or duplicate samples',mask_rng='global sample index and epoch')
+    if args.clip_root:
+        identity['input_pipeline'] = dict(backend='immutable_precomputed_lossless_clips',
+            metadata_sha256=training.metadata_sha256)
     extended=None;extended_config=None
     if args.extended_dataset:
         ready=json.loads((args.extended_dataset/'dataset_ready.json').read_text())
@@ -254,7 +261,7 @@ def run(args,rank,world,device):
         if ready['status']!='completed':raise ValueError('Extended holdout is incomplete')
         for name in ('validation.csv','protocol.json'):
             if digest(args.extended_dataset/name)!=expected_digest(ready,name):raise ValueError('Extended identity differs')
-        cache=storage_root(extended_config['frame_cache'])
+        cache=storage_root(extended_config.get('clip_root') or extended_config['frame_cache'])
         if digest(cache/'metadata.json')!=expected_digest(ready,'metadata.json'):raise ValueError('Extended frame metadata changed')
         extended_frame=pd.read_csv(args.extended_dataset/'validation.csv');validate_manifests(train_frame,extended_frame)
         identity['extended_validation']=dict(manifest_sha256=digest(args.extended_dataset/'validation.csv'),
@@ -279,7 +286,9 @@ def run(args,rank,world,device):
         if extended is None:
             if rank==0:write_json(args.output_dir/'progress.json',dict(status='preparing',validation_set='extended',
                 phase='opening_extended_frames',updated_unix=time.time(),**progress))
-            extended=FrameFileDataset(extended_config['frame_cache'],args.extended_dataset/'validation.csv',
+            data_type = ImmutableClipFileDataset if extended_config.get('clip_root') else FrameFileDataset
+            cache_root = extended_config.get('clip_root') or extended_config['frame_cache']
+            extended=data_type(cache_root,args.extended_dataset/'validation.csv',
                                       zarr_root=extended_config['zarr_root'])
         dist.barrier();prepared=time.perf_counter()
         ext_sampler=GlobalBatchSampler(len(extended),args.validation_batch_size,rank,world,314159,False)

@@ -23,12 +23,15 @@ def cache_files(source,metadata_sha256,*,verify=False):
     if verify and hashlib.sha256(content).hexdigest()!=metadata_sha256:
         raise ValueError('Frame metadata checksum differs')
     metadata=json.loads(content)
-    if metadata.get('layout')!='native time,channel,y,x' or metadata.get('lossless') is not True:
+    is_clips = ('clips' in metadata and metadata.get('shape') == [16, 7, 224, 224]
+                and metadata.get('dtype') == 'float16' and metadata.get('units') == 'K')
+    if (metadata.get('layout')!='native time,channel,y,x' and not is_clips) or metadata.get('lossless') is not True:
         raise ValueError('A lossless native frame cache is required')
     files={}
-    for entry in metadata['stores'].values():
-        name=entry['file']
-        if Path(name).name!=name or not name.endswith('.npy') or name in files:
+    entries = metadata['clips'].items() if is_clips else ((entry['file'], entry) for entry in metadata['stores'].values())
+    suffix = '.blosc' if is_clips else '.npy'
+    for name, entry in entries:
+        if Path(name).name!=name or not name.endswith(suffix) or name in files:
             raise ValueError('Invalid or repeated frame filename')
         files[name]=dict(bytes=int(entry['bytes']),sha256=entry['sha256'])
     files['metadata.json']=dict(bytes=len(content),sha256=metadata_sha256)

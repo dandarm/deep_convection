@@ -232,8 +232,10 @@ def full_training(root):
     progress=json.loads((path/'progress.json').read_text()) if (path/'progress.json').exists() else {}
     if progress.get('status')=='completed' and progress.get('completed_epochs')==plan['epochs']:return 0
     resume=path/'checkpoint_latest.pt'
+    input_options = (['--clip-root', locations['canonical_clip_root']] if locations.get('canonical_clip_root')
+                     else ['--frame-cache', locations['canonical_frame_root']])
     options=['--dataset',str(dataset),'--zarr-root',locations['canonical_zarr_root'],
-        '--frame-cache',locations['canonical_frame_root'],'--extended-dataset',str(extended),
+        *input_options,'--extended-dataset',str(extended),
         '--model-size',plan['model_size'],'--objective',plan['objective'],
         '--epochs',str(plan['epochs']),'--batch-size-per-gpu',str(plan['batch_size_per_gpu']),
         '--learning-rate',str(plan.get('learning_rate',1.5e-4)),

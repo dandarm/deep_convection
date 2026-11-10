@@ -132,3 +132,21 @@ def test_calendar_run_propagates_reduced_lr_and_benchmarks_before_fresh_training
     monkeypatch.setattr(trials, 'launch', launch)
     assert trials.full_training(tmp_path) == 0
     assert calls == ['benchmark', 'training']
+
+
+def test_full_spaced_run_selects_precomputed_clips(tmp_path, monkeypatch):
+    from scripts import stage_seviri_ssl_ram
+    monkeypatch.setattr(stage_seviri_ssl_ram, 'stage', lambda root: None)
+    monkeypatch.setenv('SEVIRI_STORAGE_ROOTS', 'test-placeholder')
+    (tmp_path/'data_locations.json').write_text(json.dumps(dict(training='/training', extended='/extended',
+        canonical_zarr_root='/raw', canonical_clip_root='/clips')))
+    (tmp_path/'full_training.json').write_text(json.dumps(dict(epochs=250, model_size='base',
+        objective='future', batch_size_per_gpu=152, learning_rate=5e-5)))
+    def launch(root, name, options):
+        assert '--frame-cache' not in options
+        assert options[options.index('--clip-root')+1] == '/clips'
+        output = root/name
+        output.mkdir()
+        (output/'progress.json').write_text(json.dumps(dict(status='completed', completed_epochs=250)))
+    monkeypatch.setattr(trials, 'launch', launch)
+    assert trials.full_training(tmp_path) == 0

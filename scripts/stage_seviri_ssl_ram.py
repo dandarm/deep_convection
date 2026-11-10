@@ -34,18 +34,20 @@ def stage(root):
     datasets=[];needed=0;shared={}
     for name in ('training','extended'):
         directory=Path(locations[name]);plan=json.loads((directory/'transfer_plan.json').read_text())
-        expected=plan['frames']['metadata.json']['sha256']
-        if plan['canonical_frame_root'] not in mapping['roots']:
+        kind = 'clips' if 'canonical_clip_root' in plan else 'frames'
+        root_key = 'canonical_clip_root' if kind == 'clips' else 'canonical_frame_root'
+        expected=plan[kind]['metadata.json']['sha256']
+        if plan[root_key] not in mapping['roots']:
             raise ValueError('Canonical frame root is absent from the storage mapping')
-        canonical=plan['canonical_frame_root']
+        canonical=plan[root_key]
         if canonical in shared:
             if shared[canonical]['metadata_sha256']!=expected:
                 raise ValueError('Shared frame root has inconsistent metadata')
             continue
         shared[canonical]=dict(dataset=name,metadata_sha256=expected)
-        files=cache_files(directory/'frames',expected)
+        files=cache_files(directory/kind,expected)
         needed+=sum(row['bytes'] for filename,row in files.items() if not (ram/name/filename).exists())
-        datasets.append((name,directory,expected,plan['canonical_frame_root']))
+        datasets.append((name,directory/kind,expected,canonical))
     if backend=='tmpfs':
         if shutil.disk_usage(ram).free<needed+8*1024**3:
             raise ValueError('The frame archives exceed available tmpfs space')
@@ -63,10 +65,10 @@ def stage(root):
             report.update(current_dataset=name,current_file=filename,updated_unix=time.time())
             write_json(root/'ram_stage.json',report)
         if backend=='tmpfs':
-            report['datasets'][name]=stage_frame_cache(directory/'frames',ram/name,expected,progress=progress)
+            report['datasets'][name]=stage_frame_cache(directory,ram/name,expected,progress=progress)
             mapping['roots'][canonical]=str(ram/name)
         else:
-            report['datasets'][name]=stage_memfd_cache(directory/'frames',ram/name,expected,progress=progress)
+            report['datasets'][name]=stage_memfd_cache(directory,ram/name,expected,progress=progress)
             mapping['roots'][canonical]=str(ram/name)
     write_json(root/'ram_storage_roots.json',mapping)
     report.update(status='ready',mapping_sha256=digest(root/'ram_storage_roots.json'),updated_unix=time.time())
