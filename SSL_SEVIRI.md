@@ -1374,3 +1374,70 @@ l'ultimo intervallo Small/MVM per 4.096 aggiornamenti dà una proiezione di
 circa 46 minuti, che esclude validation e checkpoint. Questi tempi descrivono
 questa macchina e questi percorsi di archiviazione.
 Il confronto completo è in `backend_comparison.json` nella directory dei benchmark.
+
+### Campionamento calendariale con IoU attiva massima 0,20
+
+`configs/ssl_spaced_iou020_20261110.json` conserva le 93 giornate di training,
+il dominio completo 20°W–40°E, 30–70°N e i manifest di validation del dataset
+calendariale. Considera tutte le partenze complete a cinque minuti. Riutilizza
+`spatial_sampling.py`, introdotto nel commit `d569662`, con il criterio di
+copertura e il limite di sovrapposizione ispirati a Demetra.
+
+Due clip che condividono almeno un frame devono avere IoU spaziale al massimo
+0,20. Il vincolo vale anche tra partenze differenti e include l'osservazione
+finale a 75 minuti. La ricerca considera 2.048 origini casuali per proposta e
+accetta fino a 16 clip per partenza; una ricerca senza candidati ammissibili
+lascia la proposta esclusa. Ogni pixel del crop rispetta dominio, disponibilità
+fisica e validità radiometrica nei sette canali. La selezione finale bilancia
+mesi, giornate e intervalli di sei ore entro le rispettive disponibilità.
+Il parametro `target_samples` è il limite superiore della selezione; il
+conteggio effettivo dipende dalle clip ammissibili. La ripartizione sulle
+quattro GPU può rimuovere fino a tre clip in eccesso, aggiornando manifest,
+statistiche e metadati prima di pubblicare il dataset.
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/build_seviri_ssl_spaced_dataset.py \
+  --config configs/ssl_spaced_iou020_20261110.json --workers 3
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/prepare_seviri_spaced_validation.py \
+  --config configs/ssl_spaced_iou020_20261110.json --workers 1 --wait-for-training
+```
+
+La preparazione salva clip già orientate north-up/west-left, in Kelvin float16
+con compressione LZ4 e bitshuffle senza perdita. Verifica i valori salvati
+durante la materializzazione e verifica la copia su HPC al trasferimento.
+`ImmutableClipFileDataset` legge e decomprime queste clip nei buffer del batch;
+la normalizzazione globale avviene sulla GPU. L'avvio del job copia i file in
+RAM condivisa. Staging e letture delle epoche eseguono questa preparazione
+senza ripetere i checksum dei dati. I controlli sui valori usati dal modello
+restano nel percorso di training.
+
+`sampling_ready.json` registra campionamento, copertura e volume delle clip
+di training; `dataset_ready.json` pubblica il dataset dopo la preparazione delle
+validation immutate. La GIF usa direttamente il manifest finale, con le clip
+attive ai timestamp osservati; il JSON associato registra hash del manifest e
+identificatori visualizzati in ciascun frame. Comandi di verifica e rendering:
+
+```bash
+.venv/bin/python scripts/audit_seviri_spaced_dataset.py \
+  --dataset /data1/deep_convection_data/ssl_spaced_iou020_20261110 \
+  --reference /data1/deep_convection_data/ssl_calendar_131072_20261110 \
+  --output results/ssl_spaced_iou020_20261110/audit
+
+.venv/bin/python scripts/render_seviri_sampling_gif.py \
+  --manifest /data1/deep_convection_data/ssl_spaced_iou020_20261110/training/dataset/train.csv \
+  --zarr-root /data1/deep_convection_data/MSG-SEVIRI \
+  --output results/ssl_spaced_iou020_20261110/sampling.gif
+```
+
+Il training sperimentale è definito in
+`configs/ssl_spaced_base_future_20261110.json`: Base Future da zero,
+250 epoche, learning rate 5e-5 e batch globale 608 su quattro GPU. Il piano
+congelato registra il conteggio effettivo di aggiornamenti. Il job esegue prima
+un benchmark di 32 aggiornamenti con dati reali, poi inizializza il training
+da zero. `prepare_seviri_spaced_hpc.py` prepara il bundle;
+`transfer_seviri_spaced_hpc.py` trasferisce e verifica una volta i file, e
+accetta `--submit` per la sottomissione. Il notebook del dataset raccoglie
+copertura, confronto delle osservazioni uniche e collegamento all'animazione.

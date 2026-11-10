@@ -158,12 +158,18 @@ def finalize(output, reference, results):
     metadata['total_bytes'] = sum(record['bytes'] for record in metadata['clips'].values())
     metadata['uncompressed_bytes'] = len(metadata['clips'])*16*7*224*224*2
     write_json(output/'clips/metadata.json', metadata)
+    summary.update(validation_clips_materialized=True, total_cache_gib=metadata['total_bytes']/2**30)
+    write_json(output/'sampling_ready.json', summary)
     ext = output/'extended/dataset'
-    protocol = json.loads((reference/'extended/dataset/protocol.json').read_text())
-    protocol.pop('frame_cache', None)
+    original_protocol = json.loads((reference/'extended/dataset/protocol.json').read_text())
+    protocol = {key:original_protocol[key] for key in ('name', 'samples', 'days',
+        'domain_lonlat', 'geographic_check_passed', 'geographic_constraint',
+        'radiometric_selection', 'temporal_separation_hours') if key in original_protocol}
     protocol.update(clip_root=str(output/'clips'), zarr_root=str(output/'sources'),
         storage='Immutable precomputed lossless Kelvin clips',
+        sampling='Fixed calendar-balanced validation manifest; original clip identities preserved',
         reference_manifest_sha256=file_digest(reference/'extended/dataset/validation.csv'),
+        reference_protocol_sha256=file_digest(reference/'extended/dataset/protocol.json'),
         normalization='Global training statistics of the evaluated checkpoint')
     write_json(ext/'protocol.json', protocol)
     write_json(ext/'dataset_ready.json', dict(status='completed', files={str(path):file_digest(path)

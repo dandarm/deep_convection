@@ -111,10 +111,73 @@ def crop_origin_locations(frame, root):
             lon,lat=transform.transform(xx[points.west_left_x],yy[points.north_up_y])
             if not np.isfinite(lon).all() or not np.isfinite(lat).all():
                 raise ValueError('Crop (0, 0) lies outside the observable Earth')
-            frames.append(pd.DataFrame({'longitude':lon,'latitude':lat,'clips':points.clips.to_numpy()}))
-    locations=pd.concat(frames,ignore_index=True).groupby(['longitude','latitude'],as_index=False).clips.sum()
+            frames.append(pd.DataFrame({'longitude':lon,'latitude':lat,'clips':points.clips.to_numpy(),
+                'store':store,'north_up_y':points.north_up_y.to_numpy(),
+                'west_left_x':points.west_left_x.to_numpy()}))
+    locations=pd.concat(frames,ignore_index=True).groupby(['longitude','latitude'],as_index=False).agg(
+        clips=('clips','sum'),store=('store','first'),north_up_y=('north_up_y','first'),
+        west_left_x=('west_left_x','first'))
     locations['clip_fraction_percent']=100*locations.clips/len(frame)
     return locations
+
+
+def boundary_crop_origins(origins, spacing=10.):
+    """Select southern/eastern sampled origins near 10-degree geographic lines."""
+    if not np.isfinite(spacing) or spacing <= 0:
+        raise ValueError('A positive angular spacing is required')
+    selected=[]
+    for along, extreme, edge in (('longitude','latitude','south'),('latitude','longitude','east')):
+        low,high=origins[along].min(),origins[along].max()
+        for target in np.arange(np.ceil((low-spacing/20)/spacing)*spacing,high+1e-8,spacing):
+            nearby=origins[(origins[along]-target).abs()<=spacing/20]
+            if nearby.empty:
+                continue
+            row=nearby.sort_values([extreme,along],ascending=[edge=='south',True]).iloc[0]
+            selected.append(dict(row,edge=edge))
+    if not selected:
+        return origins.iloc[:0].assign(edge=pd.Series(dtype=str))
+    # Use one example where the two sampled edges meet.
+    sparse=[]
+    for row in selected:
+        point=np.array([row['longitude'],row['latitude']])
+        if all(np.linalg.norm(point-np.array([p['longitude'],p['latitude']]))>=spacing/3 for p in sparse):
+            sparse.append(row)
+    return pd.DataFrame(sparse).reset_index(drop=True)
+
+
+def crop_footprint(row, root, crop=224):
+    """Transform the outer pixel centres of a north-up, west-left crop perimeter."""
+    import xarray as xr
+    from pyproj import Transformer
+    with xr.open_zarr(Path(root)/row['store'],consolidated=True,chunks=None) as ds:
+        x,y=np.asarray(ds.x.values),np.asarray(ds.y.values)
+        x=x if x[-1]>x[0] else x[::-1]
+        y=y if y[-1]<y[0] else y[::-1]
+        iy,ix=int(row['north_up_y']),int(row['west_left_x'])
+        x,y=x[ix:ix+crop],y[iy:iy+crop]
+        if len(x)!=crop or len(y)!=crop:
+            raise ValueError('Crop footprint exceeds the source grid')
+        xx=np.concatenate([x,np.repeat(x[-1],crop),x[::-1],np.repeat(x[0],crop),x[:1]])
+        yy=np.concatenate([np.repeat(y[0],crop),y,np.repeat(y[-1],crop),y[::-1],y[:1]])
+        lon,lat=Transformer.from_crs(ds.attrs['projection_wkt'],'EPSG:4326',always_xy=True).transform(xx,yy)
+    if not np.isfinite(lon).all() or not np.isfinite(lat).all():
+        raise ValueError('Selected crop perimeter extends outside the observable Earth')
+    return np.column_stack([lon,lat])
+
+
+def draw_boundary_crops(axis, origins, root):
+    """Overlay a small set of actual crop perimeters along the southern/eastern edge."""
+    import cartopy.crs as ccrs
+    import matplotlib.patheffects as pe
+    selected=boundary_crop_origins(origins)
+    for i,(_,row) in enumerate(selected.iterrows()):
+        outline=crop_footprint(row,root)
+        axis.plot(outline[:,0],outline[:,1],transform=ccrs.PlateCarree(),color='#D55E00',
+            linewidth=1.3,zorder=6,label='Boundary crops · 224 × 224 pixels' if i==0 else None,
+            path_effects=[pe.Stroke(linewidth=2.5,foreground='white'),pe.Normal()])
+        axis.scatter([row.longitude],[row.latitude],transform=ccrs.PlateCarree(),s=13,
+            facecolor='#D55E00',edgecolor='white',linewidth=.5,zorder=7)
+    return selected
 
 
 def manifest_coverage_figure(frame, root, *, title):
@@ -133,6 +196,8 @@ def manifest_coverage_figure(frame, root, *, title):
     points = geo.scatter(origins.longitude, origins.latitude,
         c=origins.clip_fraction_percent, s=3, cmap='viridis',
         transform=ccrs.PlateCarree(), rasterized=True)
+    draw_boundary_crops(geo,origins,root)
+    geo.legend(loc='upper right',fontsize=8,framealpha=.9)
     geo.set_title(f'{title}: crop origins')
     lines = geo.gridlines(draw_labels=True, linewidth=.3, alpha=.4)
     lines.top_labels = lines.right_labels = False
@@ -189,13 +254,14 @@ def dataset_overview(queue, show_tables=True):
         axes[0,column].plot([-20,40,40,-20,-20],[30,30,70,70,30],
             transform=ccrs.PlateCarree(),color='black',linestyle='--',linewidth=1,
             label='Requested acquisition domain',zorder=4)
-        axes[0,column].legend(loc='lower left',fontsize=8)
         axes[0,column].add_feature(cfeature.NaturalEarthFeature('physical','land','10m'),
                                    facecolor='#f1f1f1',edgecolor='#777777',linewidth=.4)
         image=axes[0,column].scatter(points.longitude,points.latitude,transform=ccrs.PlateCarree(),
             c=points.clip_fraction_percent,s=max(.3,min(30,4500/len(points))),
             cmap='viridis',vmin=0,vmax=maximum,zorder=3,rasterized=True,
             linewidths=0,alpha=.6 if len(points)>2000 else 1.)
+        draw_boundary_crops(axes[0,column],points,root)
+        axes[0,column].legend(loc='upper right',fontsize=8,framealpha=.9)
         axes[0,column].set(title=f'{name.capitalize()} crop origins · {len(frame):,} clips',
             xlabel='Longitude',ylabel='Latitude')
         lines=axes[0,column].gridlines(draw_labels=True,linewidth=.5,alpha=.3)
