@@ -1418,7 +1418,11 @@ restano nel percorso di training.
 di training; `dataset_ready.json` pubblica il dataset dopo la preparazione delle
 validation immutate. La GIF usa direttamente il manifest finale, con le clip
 attive ai timestamp osservati; il JSON associato registra hash del manifest e
-identificatori visualizzati in ciascun frame. Comandi di verifica e rendering:
+identificatori visualizzati in ciascun frame. Il rendering usa la proiezione
+geostazionaria e l'ellissoide degli Zarr, preservando la griglia dei pixel IR108.
+I contorni arancioni identificano tutte le clip attive con lo stesso colore;
+il riquadro del disco terrestre colloca il dominio nella vista del satellite.
+Comandi di verifica e rendering:
 
 ```bash
 .venv/bin/python scripts/audit_seviri_spaced_dataset.py \
@@ -1441,3 +1445,47 @@ da zero. `prepare_seviri_spaced_hpc.py` prepara il bundle;
 `transfer_seviri_spaced_hpc.py` trasferisce e verifica una volta i file, e
 accetta `--submit` per la sottomissione. Il notebook del dataset raccoglie
 copertura, confronto delle osservazioni uniche e collegamento all'animazione.
+
+### Origini uniformi e partenze asincrone
+
+`configs/ssl_uniform_async_iou020_20261110.json` mantiene dominio, giornate e
+validation del confronto calendariale. Il campionamento usa dodici sequenze
+temporali indipendenti per giornata: ciascuna inizia con un ritardo casuale
+di 0–75 minuti e propone le clip successive a distanza di 80–160 minuti.
+Tutte le partenze seguono la cadenza osservata di cinque minuti. Le sequenze
+usano un generatore casuale separato dalle proposte spaziali; eventuali
+esclusioni spaziali lasciano invariato il calendario delle proposte successive.
+
+Ogni proposta cerca fino a 64 origini estratte uniformemente sulla griglia
+nativa e accetta la prima che soddisfa i vincoli. I pesi per copertura passata
+e preferenza dei bordi sono entrambi zero. Restano attivi il dominio completo
+del crop, la validità radiometrica e il massimo IoU di 0,20 tra tutte le clip
+che condividono un frame. Per crop di uguale area, questo limite corrisponde a
+un'intersezione fino a un terzo della superficie di ciascun crop. Il
+bilanciamento finale per mese, giornata e intervallo di sei ore seleziona un
+sottoinsieme dei candidati accettati. Il conteggio finale dipende anche dal
+numero di sequenze temporali e dalla loro distanza tra partenze.
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/build_seviri_ssl_spaced_dataset.py \
+  --config configs/ssl_uniform_async_iou020_20261110.json --workers 3
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/prepare_seviri_spaced_validation.py \
+  --config configs/ssl_uniform_async_iou020_20261110.json --wait-for-training
+```
+
+`reuse_validation_clips_from` riutilizza le clip di validation già preparate
+mediante hard link, dopo il confronto dei manifest. `transfer_payload` impostato
+a `training_only` limita il trasferimento alle clip materializzate e ai pochi
+manifest, indici e file di configurazione necessari al loader. Le coordinate
+geografiche e la provenienza degli Zarr restano disponibili localmente per
+l'analisi del dataset. La GIF viene costruita dal manifest definitivo e
+registra, per ogni istante, sia le clip attive sia quelle appena iniziate.
+
+`configs/ssl_uniform_async_base_future_20261110.json` conserva Base Future,
+250 epoche, learning rate 5e-5 e batch globale 608. Il bundle HPC riporta il
+numero effettivo di aggiornamenti per epoca e complessivi. Il benchmark
+iniziale usa fino a 32 batch completi dopo quattro batch di riscaldamento,
+entro una singola lettura del dataset.
