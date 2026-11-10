@@ -164,11 +164,12 @@ def prepare_day(task):
     return result
 
 
-def finalize(config, results, hashes):
+def finalize(config, results, hashes, *, selected=None):
     output, reference = Path(config['output']), Path(config['reference_dataset'])
     candidates = pd.DataFrame([row for result in results for row in result['clips']])
     candidates.to_csv(output/'candidates.csv', index=False)
-    selected = balanced_subset(candidates, config['target_samples'], config['seed']+1)
+    if selected is None:
+        selected = balanced_subset(candidates, config['target_samples'], config['seed']+1)
     protocol = json.loads((reference/'training/dataset/protocol.json').read_text())
     assert_day_separation(selected, protocol['reserved_days'], 24)
     from scripts.pretrain_seviri_ssl import validate_manifests
@@ -245,6 +246,22 @@ def finalize(config, results, hashes):
             max_gap_frames=config['max_gap_frames'], temporal_schedule='UTC day; independent stream schedules and spatial RNG')
         summary.update(sampling_mode='uniform_asynchronous',temporal_streams=config['temporal_streams'],
             coverage_weight=0.,border_boost=0.)
+    if config.get('sampling_mode') == 'incremental_uniform':
+        for name in ('temporal_streams','initial_start_jitter_frames','min_gap_frames','max_gap_frames',
+                     'surplus_clips_removed_for_equal_rank_sizes'):
+            protocol.pop(name, None)
+        incremental = dict(parent_dataset=config['parent_dataset'],
+            parent_samples=config['parent_samples'], parent_manifest_sha256=config['parent_manifest_sha256'],
+            added_samples=len(selected)-config['parent_samples'],
+            max_shared_observation_fraction_new=config['max_shared_fraction'],
+            shared_fraction_scope='Pairs containing at least one added clip; all parent clips are retained',
+            measured_maximum_new_pair_shared_fraction=max(r['maximum_new_pair_shared_fraction'] for r in results),
+            sampling_mode='incremental_uniform', coverage_weight=0., border_boost=0.,
+            proposal_block_size=config['block_size'], minimum_acceptance_rate=config['minimum_acceptance'],
+            stopping_patience=config['patience'], maximum_proposals_per_day=config['max_proposals'])
+        protocol.update(incremental, sampling='Fixed parent clips with uniform random complete start times and admissible origins; adaptive rejection stopping',
+            temporal_schedule='Uniform proposals over complete five-minute starts; parent events fixed', ddp_world_size=4)
+        summary.update(incremental)
     protocol.pop('frame_cache', None)
     protocol.pop('selected_starts_per_six_hour_bin', None)
     write_json(dataset/'protocol.json', protocol)

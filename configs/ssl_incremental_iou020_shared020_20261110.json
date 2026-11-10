@@ -1,0 +1,19 @@
+{
+  "inventory": "results/ssl_annual_131072_20261110/preparation/inventory_archive.json",
+  "parent_dataset": "/data1/deep_convection_data/ssl_uniform_async_iou020_20261110",
+  "reference_dataset": "/data1/deep_convection_data/ssl_uniform_async_iou020_20261110",
+  "reuse_validation_clips_from": "/data1/deep_convection_data/ssl_uniform_async_iou020_20261110",
+  "output": "/data1/deep_convection_data/ssl_incremental_iou020_shared020_20261110",
+  "domain": [-20, 40, 30, 70],
+  "seed": 20261110,
+  "sampling_mode": "incremental_uniform",
+  "max_iou": 0.2,
+  "max_shared_fraction": 0.2,
+  "sampling_attempts": 1,
+  "block_size": 1024,
+  "minimum_acceptance": 0.1,
+  "patience": 3,
+  "max_proposals": 32768,
+  "target_samples": 131072,
+  "transfer_payload": "training_only"
+}

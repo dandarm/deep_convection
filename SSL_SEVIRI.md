@@ -1489,3 +1489,50 @@ registra, per ogni istante, sia le clip attive sia quelle appena iniziate.
 numero effettivo di aggiornamenti per epoca e complessivi. Il benchmark
 iniziale usa fino a 32 batch completi dopo quattro batch di riscaldamento,
 entro una singola lettura del dataset.
+
+### Estensione incrementale con riuso spazio-temporale limitato
+
+`configs/ssl_incremental_iou020_shared020_20261110.json` mantiene tutte le
+9.900 clip del dataset precedente e aggiunge proposte casuali sulle stesse
+93 giornate. Ogni proposta sceglie un istante fra le partenze complete alla
+cadenza di cinque minuti e un'origine uniforme fra quelle geograficamente e
+radiometricamente ammissibili per quella finestra. Le clip fisse vengono
+indicizzate anche quando iniziano dopo la nuova proposta, così il controllo
+comprende tutte le coppie che condividono osservazioni.
+
+L'IoU spaziale massima resta 0,20. Per ogni coppia contenente almeno una clip
+aggiunta, la quota di osservazioni pixel–istante comuni rispetto a quelle di
+una clip può arrivare al 20%. Questa quota tiene conto sia dell'area condivisa
+sia dei frame condivisi. Le coppie composte da due clip del dataset iniziale
+conservano la selezione originale. I sette canali condividono le stesse
+posizioni spazio-temporali; il criterio usa la griglia nativa dei pixel.
+
+La ricerca valuta singole proposte e registra separatamente gli scarti per
+IoU e per osservazioni condivise. Si arresta per giornata quando la frazione
+accettata scende sotto il 10% per tre blocchi consecutivi di 1.024 proposte,
+oppure raggiunge il limite operativo di 32.768 proposte. Questi conteggi
+descrivono la ricerca casuale eseguita e il suo criterio di arresto.
+
+La selezione finale bilancia i totali mensili conservando tutte le clip del
+manifest iniziale. All'interno del mese ripartisce le aggiunte fra date e
+intervalli di sei ore considerando anche i conteggi già presenti. Il numero
+finale supporta quattro partizioni DDP uguali. I file originali sono
+riutilizzati mediante hard link; soltanto le clip aggiunte vengono
+materializzate. I momenti radiometrici delle clip selezionate aggiornano la
+normalizzazione globale del nuovo dataset. Le validation da 512 e 10.240
+clip conservano esattamente le loro identità.
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/build_seviri_ssl_incremental_dataset.py \
+  --config configs/ssl_incremental_iou020_shared020_20261110.json --workers 3
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/prepare_seviri_spaced_validation.py \
+  --config configs/ssl_incremental_iou020_shared020_20261110.json --wait-for-training
+```
+
+`sampling_daily/` conserva i tassi di accettazione per blocco;
+`incremental_sampling_summary.json` registra conteggi iniziali, aggiunte e
+conservazione del manifest di partenza. La versione da 9.900 clip e il training
+che la utilizza mantengono i propri file e la propria configurazione.
