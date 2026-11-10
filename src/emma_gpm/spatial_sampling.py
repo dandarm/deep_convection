@@ -44,13 +44,17 @@ def verify_overlap(events, size=224, max_iou=0.):
 
 def choose_crop(rng, timestamp, active, coverage, size, *, attempts=2048,
                 max_iou=0., coverage_weight=1., border_boost=.25,
-                min_gap_pixels=0, center_allowed=None):
+                min_gap_pixels=0, center_allowed=None, origin_mask=None):
     """Choose among feasible random origins; return None if search finds none."""
     height, width = coverage.shape
     max_y, max_x = height - size, width - size
     origins = rng.integers([max_y + 1, max_x + 1], size=(attempts, 2))
     ys, xs = origins[:, 0], origins[:, 1]
     feasible = np.ones(attempts, dtype=bool)
+    if origin_mask is not None:
+        if origin_mask.shape != (max_y + 1, max_x + 1) or origin_mask.dtype != bool:
+            raise ValueError('Origin mask must match all possible crop origins')
+        feasible &= origin_mask[ys, xs]
     if center_allowed is not None:
         feasible &= np.array([center_allowed(int(y), int(x)) for y, x in origins])
     if active:
@@ -76,6 +80,52 @@ def choose_crop(rng, timestamp, active, coverage, size, *, attempts=2048,
     score -= border_boost * (1-edge_distance/max(1,max(max_x,max_y)))
     selected = int(np.argmin(score))
     return CropEvent(timestamp, int(ys[selected]), int(xs[selected]))
+
+
+class ActiveCropSampler:
+    """Chronological proposals with strict active IoU and Demetra coverage bias.
+
+    The caller supplies whole-crop geographic and radiometric validity for each
+    exact RSS window. Every accepted event enters the returned dataset; a
+    renderer can replay that manifest without generating a second simulation.
+    Coverage and the random generator persist across windows within a day.
+    """
+
+    def __init__(self, shape, *, seed, max_iou=.2, size=224, attempts=2048,
+                 proposals_per_start=16, coverage_weight=1., border_boost=.25):
+        if (len(shape) != 2 or min(shape) < size or size < 1
+                or not 0 <= max_iou < 1 or attempts < 1 or proposals_per_start < 1):
+            raise ValueError('Invalid chronological crop sampling configuration')
+        self.rng = np.random.default_rng(seed)
+        self.coverage = np.zeros(shape, dtype=np.uint32)
+        self.max_iou, self.size = max_iou, size
+        self.attempts, self.proposals_per_start = attempts, proposals_per_start
+        self.coverage_weight, self.border_boost = coverage_weight, border_boost
+        self.active, self.events = [], []
+        self.previous = None
+        self.exhausted_windows = 0
+
+    def sample_window(self, timestamp, origin_mask):
+        timestamp = pd.Timestamp(timestamp)
+        if pd.isna(timestamp) or (self.previous is not None and timestamp <= self.previous):
+            raise ValueError('Sampling windows must have unique increasing timestamps')
+        self.previous = timestamp
+        probe = CropEvent(timestamp, 0, 0)
+        self.active = [event for event in self.active if shared_frames(probe, event)]
+        selected = []
+        for _ in range(self.proposals_per_start):
+            event = choose_crop(self.rng, timestamp, self.active, self.coverage, self.size,
+                attempts=self.attempts, max_iou=self.max_iou,
+                coverage_weight=self.coverage_weight, border_boost=self.border_boost,
+                origin_mask=origin_mask)
+            if event is None:
+                self.exhausted_windows += 1
+                break
+            self.active.append(event)
+            self.events.append(event)
+            selected.append(event)
+            self.coverage[event.y:event.y+self.size, event.x:event.x+self.size] += 1
+        return selected
 
 
 def pixel_frame_coverage(manifest, height, width, *, size=224, frames=16, cadence_minutes=5):
