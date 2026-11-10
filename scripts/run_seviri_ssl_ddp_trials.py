@@ -236,8 +236,12 @@ def full_training(root):
         '--frame-cache',locations['canonical_frame_root'],'--extended-dataset',str(extended),
         '--model-size',plan['model_size'],'--objective',plan['objective'],
         '--epochs',str(plan['epochs']),'--batch-size-per-gpu',str(plan['batch_size_per_gpu']),
-        '--extended-every','10','--compile-mode','default',
+        '--learning-rate',str(plan.get('learning_rate',1.5e-4)),
+        '--extended-every',str(plan.get('extended_every',10)),'--compile-mode','default',
         '--stop-after-epoch-file',str(root/'stop_after_epoch')]
+    benchmark_steps=plan.get('pipeline_benchmark_steps',0)
+    if benchmark_steps and not resume.exists() and not (root/'benchmark/pipeline_benchmark.json').exists():
+        launch(root,'benchmark',[*options,'--pipeline-benchmark-steps',str(benchmark_steps)])
     if resume.exists():options+=['--resume',str(resume)]
     elif plan.get('parent_checkpoint'):
         options+=['--resume',plan['parent_checkpoint'],'--execution-revision',str(root/'execution_revision.json')]

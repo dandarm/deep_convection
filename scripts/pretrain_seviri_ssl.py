@@ -355,7 +355,10 @@ def run(args):
             if not np.isfinite(changes).all() or (changes < 0).any():
                 raise ValueError("Invalid prepared training variability descriptors")
         else:
-            for batch in torch.utils.data.DataLoader(training, batch_size=args.batch_size):
+            reference_loader = (ClipBatchLoader(training, seed=314159, shuffle=False, **loader_options)
+                if args.clip_root or args.frame_cache
+                else torch.utils.data.DataLoader(training, batch_size=args.batch_size))
+            for batch in reference_loader:
                 history, _ = window.split(batch["pixel_values"])
                 changes.extend(variability_statistics(history * std + mean)["mean_abs_change_k"].tolist())
         progress["variability_edges_k"] = np.quantile(changes, [1/3, 2/3]).tolist()

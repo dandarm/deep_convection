@@ -352,3 +352,61 @@ completate; ogni directory esperimento conserva `progress.json`, loss e
 checkpoint. Per richiedere una pausa manuale al termine dell'epoca, creare
 `stop_requests/<indice>.stop`; con questo script la pausa viene seguita da
 requeue. Per sospendere l'intera serie usare il controllo dei job Slurm.
+
+## Dataset bilanciato sul calendario e Base Future, novembre 2026
+
+`configs/ssl_calendar_131072_20261110.json` definisce 131.072 clip di training
+su gennaio–giugno 2022, con quote uguali per mese, quindi per giornata disponibile
+e per fascia di sei ore. Le giornate dei precedenti holdout SSL e dei probe
+restano riservate, insieme alla separazione temporale di almeno 24 ore.
+L'inventario del 10 novembre trova cartelle successive al semestre, ma gli
+archivi della seconda metà dell'anno sono incompleti. Il protocollo registra
+le date utilizzate e le esclusioni.
+
+La preparazione seleziona tre inizi casuali per fascia di sei ore nel training,
+poi origini spaziali casuali a risoluzione di un pixel. Ogni crop contiene
+16 osservazioni reali consecutive a cinque minuti, tutti i sette canali e
+soltanto valori finiti fra 100 e 400 K. Tutti i pixel devono rientrare nel
+dominio 20°W–40°E, 30–70°N. Media e deviazione standard globali sono calcolate
+sui pixel delle sole clip selezionate per il training.
+
+La validation comprende 10.240 clip bilanciate per mese sulle 20 giornate
+già riservate, usando le finestre complete disponibili nell'intera giornata.
+Un sottoinsieme fisso di 512 clip, anch'esso bilanciato sul calendario, viene
+valutato a ogni epoca. La raccolta storica da 10.240 clip resta un riferimento
+separato, con il proprio manifest.
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_seviri_ssl_calendar_dataset.py \
+  --config configs/ssl_calendar_131072_20261110.json --workers 3
+```
+
+Le giornate completate hanno un record atomico sotto `daily/`; la ripresa
+riutilizza questi record. I frame del training vengono salvati una sola volta
+come unione delle finestre selezionate. I timestamp originali rimangono nel
+file di metadati; il lettore richiede sempre tutti i 16 frame esatti di ciascuna
+clip. I frame della validation condividono i file immutabili esistenti.
+
+`scripts/transfer_seviri_calendar_frames.py` trasferisce le giornate completate
+in parallelo alla preparazione e verifica SHA256 sulla destinazione una volta
+per ciascun nuovo file. `scripts/prepare_seviri_ssl_calendar_hpc.py` congela
+codice, configurazione e corrispondenza dei percorsi dopo il completamento del
+dataset. I dati sono conservati su `$WORK`.
+
+Per questa raccolta `ram_backend=memfd` mantiene copie condivise in RAM attraverso
+file anonimi Linux, resi di sola lettura mediante kernel seals. Il processo
+controller conserva i descrittori; i processi DDP accedono agli stessi array
+tramite mmap. Il volume disponibile dipende dalla RAM richiesta a Slurm,
+senza essere limitato dalla capacità del mount `/dev/shm`. La preparazione
+verifica il budget degli input e riserva 64 GiB ai processi e ai batch.
+I percorsi logici restano uguali durante una ripresa. Le copie in RAM non
+eseguono checksum o confronti dei pixel.
+
+`configs/ssl_calendar_base_future_20261110.json` imposta Base Future da zero,
+250 epoche, learning rate costante `5e-5`, bf16 e batch globale 608
+(152 clip per GPU, quattro GPU). Il budget è 54.000 optimizer updates.
+Prima del training viene misurata la nuova pipeline per 32 aggiornamenti;
+il training scientifico inizializza quindi nuovamente modello e optimizer.
+La validation estesa viene valutata ogni dieci epoche e all'ultima epoca.
+Lo script Slurm conserva la richiesta di 480 GiB, i checkpoint completi e
+la ripresa automatica dopo il limite di wall time.

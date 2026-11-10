@@ -81,3 +81,51 @@ def stage_frame_cache(source,destination,metadata_sha256,*,reserve_bytes=8*1024*
                 total_bytes=sum(row['bytes'] for row in files.values()),copied_bytes=copied,
                 elapsed_seconds=time.perf_counter()-started,files=len(files),
                 status='verified' if verify else 'ready',integrity_audit=verify)
+
+
+_MEMFD_FILES = {}
+
+
+def stage_memfd_cache(source, destination, metadata_sha256, *, progress=None):
+    """Keep sealed RAM files in the controller, independent of /dev/shm capacity.
+
+    Array paths point to the controller's open descriptors. Its DDP children
+    read these paths as ordinary mmap files. Memory is released when the
+    controller and readers close their descriptors; no byte audit is repeated.
+    """
+    import fcntl
+    source, destination = Path(source).resolve(), Path(destination).resolve()
+    if source == destination or destination.is_relative_to(source):
+        raise ValueError('RAM destination must be separate from the source')
+    destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+    files = cache_files(source, metadata_sha256)
+    started = time.perf_counter()
+    def copy_one(name):
+        target = destination/name
+        if str(target) in _MEMFD_FILES:
+            return name, 0
+        fd = os.memfd_create('seviri_'+name, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+        try:
+            with (source/name).open('rb') as reader, os.fdopen(os.dup(fd), 'wb') as writer:
+                shutil.copyfileobj(reader, writer, length=8*1024**2)
+            fcntl.fcntl(fd, fcntl.F_ADD_SEALS,
+                fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+            temporary = target.with_suffix(target.suffix+'.part')
+            if temporary.is_symlink():temporary.unlink()
+            temporary.symlink_to(f'/proc/{os.getpid()}/fd/{fd}')
+            temporary.replace(target)
+            _MEMFD_FILES[str(target)] = fd
+            return name, files[name]['bytes']
+        except BaseException:
+            os.close(fd)
+            raise
+    copied = 0
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for name, size in pool.map(copy_one, files):
+            copied += size
+            if progress is not None:
+                progress(name)
+    return dict(status='ready', backend='sealed_memfd', source=str(source), destination=str(destination),
+        total_bytes=sum(row['bytes'] for row in files.values()), copied_bytes=copied,
+        files=len(files), controller_pid=os.getpid(), elapsed_seconds=time.perf_counter()-started,
+        integrity_audit=False)
