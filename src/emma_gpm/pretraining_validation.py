@@ -29,6 +29,26 @@ def assert_temporal_holdout(training, validation, embargo_hours=24):
         raise ValueError('Temporal leakage: training must end before validation and embargo')
 
 
+def assert_temporal_separation(training, validation, separation_hours=24):
+    """Require a gap around every 75-minute window, including interleaved dates."""
+    if not np.isfinite(separation_hours) or separation_hours < 0:
+        raise ValueError('A finite nonnegative temporal separation is required')
+    arrays = []
+    for frame in (training, validation):
+        dates = pd.DatetimeIndex(pd.to_datetime(frame.start_time, utc=True))
+        if dates.empty or dates.hasnans:
+            raise ValueError('Nonempty manifests with finite timestamps are required')
+        arrays.append(np.unique(dates.tz_localize(None).to_numpy(dtype='datetime64[ns]').astype(np.int64)))
+    train, val = arrays
+    insertion = np.searchsorted(val, train)
+    left = val[np.clip(insertion-1, 0, len(val)-1)]
+    right = val[np.clip(insertion, 0, len(val)-1)]
+    distance = np.minimum(np.abs(train-left), np.abs(train-right))
+    minimum = pd.Timedelta(hours=separation_hours, minutes=75).value
+    if (distance <= minimum).any():
+        raise ValueError('Temporal leakage: training and validation windows violate the required gap')
+
+
 def fixed_tube_mask(config, indices, ratio, seed, device):
     """One CPU-generated mask per manifest index, independent of batch/RNG."""
     import torch

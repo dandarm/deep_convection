@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 from emma_gpm.advection import advection_forecast
 from emma_gpm.file_lock import exclusive_file_lock
 from emma_gpm.forecasting import ForecastWindow, temporal_ablation, variability_statistics
-from emma_gpm.pretraining_validation import assert_temporal_holdout
+from emma_gpm.pretraining_validation import assert_temporal_separation
 from emma_gpm.seviri import THERMAL_CHANNELS
 from emma_gpm.seviri_clips import SeviriVideoMAEDataset, SeviriZarrClipReader
 from emma_gpm.seviri_clip_files import ClipFileDataset, ClipBatchLoader
@@ -137,7 +137,7 @@ def validate_manifests(training, validation, reserved_days=()):
                 raise ValueError("Crop origins must be finite nonnegative integers")
         if frame.duplicated(["start_time", "origin_y", "origin_x"]).any():
             raise ValueError("Duplicate clips in a manifest")
-    assert_temporal_holdout(training, validation, embargo_hours=24)
+    assert_temporal_separation(training, validation, separation_hours=24)
     from emma_gpm.ssl_validation_set import assert_day_separation
     registered_holdout = ROOT / 'configs/ssl_validation_extended.json'
     if registered_holdout.exists():

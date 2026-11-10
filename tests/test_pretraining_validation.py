@@ -3,6 +3,42 @@ import pandas as pd
 import pytest
 
 from emma_gpm.pretraining_validation import split_temporal_starts, assert_temporal_holdout, fixed_tube_mask, evaluate_reconstruction
+from emma_gpm.pretraining_validation import assert_temporal_separation
+
+
+def test_calendar_holdout_accepts_separated_dates_on_both_sides():
+    train = pd.DataFrame({'start_time':['2022-01-01', '2022-01-09', '2022-02-03']})
+    val = pd.DataFrame({'start_time':['2022-01-05', '2022-01-20']})
+    assert_temporal_separation(train, val)
+    assert_temporal_separation(val, train)
+    # The original chronological protocol retains its stronger ordering rule.
+    with pytest.raises(ValueError, match='leakage'):
+        assert_temporal_holdout(train, val)
+
+
+@pytest.mark.parametrize('direction', [-1, 1])
+def test_calendar_gap_includes_clip_duration_in_both_directions(direction):
+    reference = pd.Timestamp('2022-01-10T00:00Z')
+    val = pd.DataFrame({'start_time':[reference]})
+    exact = reference + direction*pd.Timedelta(hours=24, minutes=75)
+    with pytest.raises(ValueError, match='leakage'):
+        assert_temporal_separation(pd.DataFrame({'start_time':[exact]}), val)
+    further = exact + direction*pd.Timedelta(minutes=5)
+    assert_temporal_separation(pd.DataFrame({'start_time':[further]}), val)
+
+
+def test_calendar_gap_matches_pairwise_window_comparison():
+    rng = np.random.default_rng(51)
+    for _ in range(50):
+        train = pd.Timestamp('2022-01-01') + pd.to_timedelta(rng.integers(0, 2000, 5), unit='h')
+        val = pd.Timestamp('2022-01-01') + pd.to_timedelta(rng.integers(0, 2000, 4), unit='h')
+        too_close = any(abs(a-b) <= pd.Timedelta(hours=25, minutes=15) for a in train for b in val)
+        frames = pd.DataFrame({'start_time':train}), pd.DataFrame({'start_time':val})
+        if too_close:
+            with pytest.raises(ValueError, match='leakage'):
+                assert_temporal_separation(*frames)
+        else:
+            assert_temporal_separation(*frames)
 
 
 def test_split_embargo_applies_to_entire_clip_and_rejects_leakage():
