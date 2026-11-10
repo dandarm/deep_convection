@@ -117,6 +117,42 @@ def crop_origin_locations(frame, root):
     return locations
 
 
+def manifest_coverage_figure(frame, root, *, title):
+    """Show geographic tensor origins and temporal counts for one manifest."""
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    origins = crop_origin_locations(frame, root)
+    times = pd.to_datetime(frame.start_time, utc=True)
+    fig = plt.figure(figsize=(13, 8), layout='constrained')
+    grid = fig.add_gridspec(2, 2)
+    geo = fig.add_subplot(grid[:, 0], projection=ccrs.PlateCarree())
+    geo.set_extent([-20, 40, 30, 70], crs=ccrs.PlateCarree())
+    geo.add_feature(cfeature.LAND, facecolor='#eeeeee')
+    geo.coastlines(resolution='50m', linewidth=.6)
+    points = geo.scatter(origins.longitude, origins.latitude,
+        c=origins.clip_fraction_percent, s=3, cmap='viridis',
+        transform=ccrs.PlateCarree(), rasterized=True)
+    geo.set_title(f'{title}: crop origins')
+    lines = geo.gridlines(draw_labels=True, linewidth=.3, alpha=.4)
+    lines.top_labels = lines.right_labels = False
+    fig.colorbar(points, ax=geo, shrink=.7, label='Clips at this origin (%)')
+    dates = times.dt.normalize().value_counts().sort_index()
+    daily = fig.add_subplot(grid[0, 1])
+    daily.bar(dates.index, dates.values, width=.8, color='#0072B2')
+    daily.set(title='Observation dates', ylabel='Clips', xlabel='Date (UTC)')
+    import matplotlib.dates as mdates
+    locator = mdates.AutoDateLocator(minticks=4, maxticks=7)
+    daily.xaxis.set_major_locator(locator)
+    daily.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    hourly = fig.add_subplot(grid[1, 1])
+    hours = times.dt.hour.value_counts().reindex(range(24), fill_value=0)
+    hourly.bar(hours.index, hours.values, color='#0072B2')
+    hourly.set(title='Clip start times', xlabel='Hour (UTC)', ylabel='Clips',
+               xticks=range(0, 24, 3))
+    return fig, origins
+
+
 def dataset_overview(queue, show_tables=True):
     from IPython.display import display
     import cartopy.crs as ccrs

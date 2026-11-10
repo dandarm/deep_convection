@@ -186,48 +186,49 @@ seguire l'handoff GPU anziché riutilizzare alla cieca il comando CPU.
 ## Notebook
 
 [`notebooks/study_seviri_ssl_training.ipynb`](notebooks/study_seviri_ssl_training.ipynb)
-riunisce i risultati di tutti i 22 training conclusi al 28 ottobre:
-MVM, Future, Joint, Residual e cinque probe su 4.096 e 8.192 clip Small;
-Future e Joint su 16.384 clip Small e 32.768 clip Base. La validation comune
-contiene 512 clip del 17 settembre. Le dimensioni del dataset compaiono negli
-stessi confronti, con architettura indicata nelle legende e nei titoli.
-Le curve mostrano un grafico per obiettivo rispetto agli aggiornamenti,
-includendo la matrice Small/Base fino a 65.536 clip. Il colore indica il numero
-di clip; la linea continua identifica Small e quella tratteggiata Base. Joint
-compare con la somma delle sue loss. Una stella identifica il minimo di
-validation di ogni run e il relativo numero di aggiornamenti. Le curve
-differenziali confrontano Base − Small sullo stesso dataset e dataset maggiore
-meno riferimento sulla stessa architettura: 4.096 clip per Small e 16.384 per
-Base. Ogni coppia usa tutti gli aggiornamenti salvati in comune, con differenze
-della loss corrente e del minimo raggiunto fino a quell'update. Valori negativi
-favoriscono Base o il dataset maggiore. I minimi progressivi comprendono tutte
-le valutazioni precedenti di ciascun run; le curve terminano all'ultima
-osservazione condivisa dalla coppia. Minimi e differenze sono esportati in CSV.
-L'overview e le diagnostiche per canale conservano le serie di riferimento
-elencate sopra. Le sezioni successive
-confrontano errori per canale/orizzonte e variabilità, gradienti, ricostruzioni
-storiche, previsioni salvate e rappresentazioni congelate.
-A 38.400 aggiornamenti, da 8.192 a 16.384 clip Future passa da 3,77 a 3,67 K
-di RMSE e Joint da 3,99 a 3,92 K, conservando l'architettura Small. Base a
-32.768 clip termina 150 epoche e 153.600 aggiornamenti con 3,78 K per Future
-e 3,70 K per Joint; il confronto a pari aggiornamenti distingue il budget
-comune dal risultato dell'intero training.
-Il testo chiarisce il riferimento deterministico Advection, i dati e la testa
-convoluzionale dei probe, le regressioni ridge e l'interpretazione dei grafici.
-La visualizzazione corrente usa assi logaritmici per loss e aggiornamenti;
-le differenze hanno asse verticale lineare con zero esplicito. I confronti
-per canale conservano le barre con i training affiancati.
-Le tabelle sono opzionali (`SHOW_TABLES = True`);
-valori completi, figure e copia eseguita sono in
-`results/learning_differences_20261102/`. Le revisioni precedenti rimangono nelle
-rispettive directory locali dei risultati.
-Le valutazioni sono lette dai report delle epoche completate; copertura dei
-confronti e analisi ancora attese sono esplicite. Le conclusioni si aggiornano
-dai risultati disponibili. Il kernel è `Python (deep_convection)`.
-Il testo scientifico in inglese definisce metodi, metriche e nomi delle legende.
-La modalità predefinita produce figure dirette; `USE_WIDGETS = True` abilita
-i selettori per il confronto dei canali. Rieseguire le celle dall'inizio
-aggiorna lo snapshot. Protocollo e ripresa sono in `SSL_SEVIRI.md`.
+presenta i quaranta training SSL della griglia Small/Base × quattro obiettivi ×
+cinque dataset da 4.096 a 65.536 clip. Le stesse figure per obiettivo includono
+Base Future a 131.072 clip, completato su Leonardo, e le tre epoche salvate di
+Small MVM a quella dimensione. Il colore identifica il numero di clip, la linea
+continua Small e quella tratteggiata Base. I rombi distinguono la serie a
+131.072 clip, che usa una validation ricampionata. Base Future mostra anche
+la validation da 10.240 clip sugli stessi assi, con quadrati. I pannelli superiori
+mantengono le loss complete su assi logaritmici; il pannello inferiore ingrandisce
+la validation con asse verticale lineare. Le stelle indicano i minimi salvati.
+
+La griglia storica usa batch globale 32; Base Future su Leonardo usa 608 clip
+per aggiornamento. Il notebook esplicita questa differenza e mantiene separati
+i riferimenti delle due popolazioni di validation. Le curve differenziali
+Base − Small e dataset maggiore − 4.096 usano soltanto training con la stessa
+validation; il riferimento da 4.096 clip è disponibile per entrambe le
+architetture. Seguono metriche per canale e orizzonte, variabilità delle scene,
+errori nei gradienti, ricostruzioni ed esempi di previsione. I risultati sono
+letti dai report delle epoche completate, senza eseguire inferenza.
+
+[`notebooks/study_seviri_ssl_dataset.ipynb`](notebooks/study_seviri_ssl_dataset.ipynb)
+raccoglie le distribuzioni del dataset: origini dei crop, date delle osservazioni,
+tempi iniziali distinti, dominio geografico, separazione temporale e
+normalizzazione. Confronta il campionamento storico sulla griglia spaziale con
+il ricampionamento a risoluzione di un pixel entro il dominio concordato.
+Mostra inoltre il dataset del 10 novembre: 131.072 clip su 93 giornate di
+gennaio–giugno 2022, con contributi mensili uniformi, e le sue validation da
+512 e 10.240 clip. La validation estesa precedente conserva una figura
+di copertura e un'identità separate.
+
+[`notebooks/study_seviri_cloud_mask_probe.ipynb`](notebooks/study_seviri_cloud_mask_probe.ipynb)
+presenta i probe CMA/CT/RDT e i controlli sulle rappresentazioni, con periodi di
+luglio 2022 esclusi dal pretraining. I precedenti probe di previsione
+radiometrica, ridge e interventi temporali sono conservati in
+[`notebooks/study_seviri_ssl_radiometric_probes.ipynb`](notebooks/study_seviri_ssl_radiometric_probes.ipynb),
+come approfondimento sulla decodificabilità delle rappresentazioni congelate.
+
+Il kernel è `Python (deep_convection)`. Rieseguire le celle dall'inizio aggiorna
+le figure e gli export CSV. `SHOW_TABLES = True` abilita le tabelle opzionali;
+`USE_WIDGETS = True` abilita i selettori nel notebook di training. Gli output
+correnti sono in `results/training_study_20261110/`,
+`results/dataset_study_20261110/` e `results/radiometric_probes_study_20261110/`.
+Le revisioni precedenti restano nelle rispettive directory dei risultati.
+Protocollo e ripresa sono in `SSL_SEVIRI.md`.
 
 [`notebooks/study_seviri_ssl_scaling.ipynb`](notebooks/study_seviri_ssl_scaling.ipynb)
 contiene il rimando allo studio unificato. La versione precedente è archiviata
