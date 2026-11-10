@@ -12,7 +12,8 @@ from scripts import prepare_seviri_spaced_hpc as prepare
 from scripts.transfer_seviri_spaced_hpc import REMOTE_VERIFY
 
 
-def test_spaced_hpc_freezes_actual_update_budget_and_shared_clip_ram(tmp_path, monkeypatch):
+@pytest.mark.parametrize('samples,updates,benchmark_steps',[(35000,58,32),(10000,17,12)])
+def test_spaced_hpc_freezes_actual_update_budget_and_shared_clip_ram(tmp_path, monkeypatch,samples,updates,benchmark_steps):
     root = tmp_path/'repo'
     for name in ('src', 'scripts', 'configs'):
         (root/name).mkdir(parents=True)
@@ -22,7 +23,7 @@ def test_spaced_hpc_freezes_actual_update_budget_and_shared_clip_ram(tmp_path, m
     data = tmp_path/'data'
     data.mkdir()
     (data/'dataset_ready.json').write_text(json.dumps(dict(status='completed', files={},
-        cache_gib=200, train_samples=35000)))
+        cache_gib=200, train_samples=samples)))
     sampling = data/'sampling_ready.json'
     sampling.write_text(json.dumps(dict(max_iou_active=.2, measured_maximum_active_iou=.1999)))
     (data/'preparation_plan.json').write_text('{}')
@@ -33,8 +34,10 @@ def test_spaced_hpc_freezes_actual_update_budget_and_shared_clip_ram(tmp_path, m
         remote_dataset=tmp_path/'remote-data', remote_run=tmp_path/'remote-run')
     prepare.prepare(args)
     plan = json.loads((args.output/'full_training.json').read_text())
-    assert plan['updates_per_epoch'] == 58
-    assert plan['planned_total_updates'] == 14500
+    assert plan['updates_per_epoch'] == updates
+    assert plan['planned_total_updates'] == updates*250
+    assert plan['pipeline_benchmark_steps'] == benchmark_steps
+    assert plan['pipeline_benchmark_steps']+plan['pipeline_benchmark_warmup'] <= samples//608
     locations = json.loads((args.output/'data_locations.json').read_text())
     assert locations['ram_backend'] == 'tmpfs'
     assert locations['canonical_clip_root'] == str(data/'clips')
@@ -98,3 +101,31 @@ def test_rank_alignment_removes_surplus_and_rebinds_statistics_and_metadata(tmp_
     assert set(metadata['manifests']) == {hashlib.sha256(manifest.read_bytes()).hexdigest()}
     align_training_ranks(tmp_path)  # Already aligned; no further edits.
     assert len(pd.read_csv(manifest)) == 8
+
+
+def test_fixed_validation_reuse_preserves_files_and_rejects_changed_manifest(tmp_path):
+    import os
+    from scripts.prepare_seviri_spaced_validation import reuse_validation
+    from emma_gpm.seviri_clip_files import clip_key
+    source,reference,output = (tmp_path/name for name in ('source','reference','output'))
+    for root in (source,reference,output):
+        for directory in ('training/dataset','extended/dataset','clips','validation_clips'):
+            (root/directory).mkdir(parents=True)
+    frame = pd.DataFrame([dict(start_time='2022-07-01T00:00Z',origin_y=0,origin_x=0,
+                               day='2022-07-01',store='2022/20220701.zarr')])
+    for root in (source,reference):
+        for role in ('training','extended'):
+            frame.to_csv(root/role/'dataset/validation.csv',index=False)
+    key=clip_key(frame.iloc[0].start_time,0,0)
+    name=hashlib.sha256(key.encode()).hexdigest()[:24]+'.blosc'
+    payload=b'preexisting immutable clip'
+    (source/'clips'/name).write_bytes(payload)
+    record=dict(key=key,bytes=len(payload),sha256=hashlib.sha256(payload).hexdigest())
+    (source/'clips/metadata.json').write_text(json.dumps(dict(clips={name:record})))
+    (source/'dataset_ready.json').write_text(json.dumps(dict(status='completed')))
+    result=reuse_validation(output,reference,source)
+    assert result[0]['clips']=={name:record}
+    assert os.path.samefile(source/'clips'/name,output/'validation_clips'/name)
+    (reference/'extended/dataset/validation.csv').write_text('changed')
+    with pytest.raises(ValueError,match='holdout'):
+        reuse_validation(output,reference,source)

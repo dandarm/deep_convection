@@ -3,8 +3,40 @@ import pandas as pd
 import pytest
 
 from emma_gpm.spatial_sampling import ActiveCropSampler, verify_overlap
-from emma_gpm.ssl_spaced_sampling import (active_clip_rows, balanced_subset,
+from emma_gpm.ssl_spaced_sampling import (active_clip_rows, asynchronous_start_counts, balanced_subset,
     window_crop_moments)
+
+
+def test_asynchronous_stream_timing_uses_independent_jitter_and_real_frame_gaps():
+    counts = asynchronous_start_counts(288,seed=23,streams=1,min_gap_frames=0,max_gap_frames=16)
+    starts = np.flatnonzero(counts)
+    assert len(counts) == 273 and counts.max() == 1
+    assert 0 <= starts[0] < 16
+    assert ((np.diff(starts)>=16) & (np.diff(starts)<=32)).all()
+    assert starts[-1]+15 < 288
+    np.testing.assert_array_equal(counts,asynchronous_start_counts(288,seed=23,streams=1))
+    many = asynchronous_start_counts(288,seed=23,streams=12)
+    assert 120 < many.sum() < 160
+    assert many[:16].sum() == 12
+    assert np.count_nonzero(many[:16]) > 1
+    assert not len(asynchronous_start_counts(10,seed=23))
+    with pytest.raises(ValueError,match='parameters'):
+        asynchronous_start_counts(288,seed=23,min_gap_frames=2,max_gap_frames=1)
+
+
+def test_uniform_spatial_choice_ignores_history_and_border_preference():
+    from emma_gpm.spatial_sampling import CropEvent, choose_crop, crop_iou
+    shape,size,seed,attempts=(50,70),20,105,100
+    coverage = np.arange(np.prod(shape),dtype=float).reshape(shape)
+    timestamp = pd.Timestamp('2022-03-10T00:00Z')
+    active = [CropEvent(timestamp,5,15)]
+    mask = np.zeros((31,51),bool);mask[3:29,4:48]=True
+    proposals = np.random.default_rng(seed).integers([31,51],size=(attempts,2))
+    expected = next(CropEvent(timestamp,int(y),int(x)) for y,x in proposals
+        if mask[y,x] and crop_iou(CropEvent(timestamp,int(y),int(x)),active[0],size)<=.2)
+    selected = choose_crop(np.random.default_rng(seed),timestamp,active,coverage,size,
+        attempts=attempts,max_iou=.2,coverage_weight=0.,border_boost=0.,origin_mask=mask)
+    assert selected == expected
 
 
 def test_chronological_sampler_keeps_full_footprint_mask_and_active_limit():

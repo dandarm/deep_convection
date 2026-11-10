@@ -71,6 +71,11 @@ def choose_crop(rng, timestamp, active, coverage, size, *, attempts=2048,
     choices = np.flatnonzero(feasible)
     if not len(choices):
         return None
+    if coverage_weight == 0 and border_boost == 0:
+        # The first feasible iid uniform proposal is uniform over the currently
+        # feasible origins. Historical coverage and edge distance play no role.
+        index = choices[0]
+        return CropEvent(timestamp, int(ys[index]), int(xs[index]))
     ys, xs = ys[choices], xs[choices]
     probes = np.stack([coverage[ys, xs], coverage[ys, xs+size-1],
         coverage[ys+size-1, xs], coverage[ys+size-1, xs+size-1],
@@ -105,15 +110,18 @@ class ActiveCropSampler:
         self.previous = None
         self.exhausted_windows = 0
 
-    def sample_window(self, timestamp, origin_mask):
+    def sample_window(self, timestamp, origin_mask, *, proposals=None):
         timestamp = pd.Timestamp(timestamp)
         if pd.isna(timestamp) or (self.previous is not None and timestamp <= self.previous):
             raise ValueError('Sampling windows must have unique increasing timestamps')
         self.previous = timestamp
         probe = CropEvent(timestamp, 0, 0)
         self.active = [event for event in self.active if shared_frames(probe, event)]
+        count = self.proposals_per_start if proposals is None else proposals
+        if not isinstance(count, (int, np.integer)) or count < 1:
+            raise ValueError('A positive integer proposal count is required')
         selected = []
-        for _ in range(self.proposals_per_start):
+        for _ in range(count):
             event = choose_crop(self.rng, timestamp, self.active, self.coverage, self.size,
                 attempts=self.attempts, max_iou=self.max_iou,
                 coverage_weight=self.coverage_weight, border_boost=self.border_boost,

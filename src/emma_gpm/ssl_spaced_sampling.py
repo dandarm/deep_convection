@@ -7,6 +7,29 @@ import pandas as pd
 from .ssl_seasonal_sampling import crop_sums
 
 
+def asynchronous_start_counts(frame_count, *, seed, streams=12, clip_frames=16,
+                              min_gap_frames=0, max_gap_frames=16):
+    """Independent streams with initial jitter and random gaps after each clip.
+
+    A start occupies ``clip_frames`` observed frames. Each stream then waits
+    zero to sixteen additional frame intervals by default. Schedule generation
+    has its own RNG, independent of spatial rejection and crop materialization.
+    """
+    parameters = (frame_count, streams, clip_frames, min_gap_frames, max_gap_frames)
+    if (any(not isinstance(v, (int, np.integer)) for v in parameters)
+            or frame_count < 0 or streams < 1 or clip_frames < 1
+            or not 0 <= min_gap_frames <= max_gap_frames):
+        raise ValueError('Invalid asynchronous temporal sampling parameters')
+    counts = np.zeros(max(0, frame_count-clip_frames+1), dtype=np.int64)
+    rng = np.random.default_rng(seed)
+    for _ in range(streams):
+        start = int(rng.integers(clip_frames))
+        while start < len(counts):
+            counts[start] += 1
+            start += clip_frames + int(rng.integers(min_gap_frames, max_gap_frames+1))
+    return counts
+
+
 def window_crop_moments(values, windows, *, crop=224):
     """Yield exact population moments, reading each needed frame once.
 

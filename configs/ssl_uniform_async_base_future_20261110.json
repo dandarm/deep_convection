@@ -1,0 +1,14 @@
+{
+  "model_size": "base",
+  "objective": "future",
+  "initialization": "scratch",
+  "epochs": 250,
+  "learning_rate": 0.00005,
+  "batch_size_per_gpu": 152,
+  "global_batch_size": 608,
+  "world_size": 4,
+  "extended_every": 10,
+  "precision": "bf16",
+  "seed": 20261024,
+  "dataset_config": "configs/ssl_uniform_async_iou020_20261110.json"
+}

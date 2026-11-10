@@ -23,7 +23,7 @@ from emma_gpm.seviri_frame_cache import file_digest, source_stamp
 from emma_gpm.spatial_sampling import ActiveCropSampler, verify_overlap
 from emma_gpm.ssl_random_sampling import geographic_origin_mask
 from emma_gpm.ssl_seasonal_sampling import frame_pixel_validity, valid_crop_origins_from_pixels
-from emma_gpm.ssl_spaced_sampling import balanced_subset, window_crop_moments
+from emma_gpm.ssl_spaced_sampling import asynchronous_start_counts, balanced_subset, window_crop_moments
 from emma_gpm.ssl_validation_set import assert_day_separation
 from scripts.build_seviri_ssl_calendar_dataset import physical_support, write_json
 
@@ -106,9 +106,18 @@ def prepare_day(task):
         for i in range(len(times)):
             if not present[i].all():
                 frame_valid[i] &= np.repeat(np.repeat(present[i], cy, 0), cx, 1)[:h, :w]
+        asynchronous = config.get('sampling_mode') == 'uniform_asynchronous'
         sampler = ActiveCropSampler((h, w), seed=np.random.SeedSequence(
             [config['seed'], int(Path(record['store']).stem)]), max_iou=config['max_iou'],
-            attempts=config['sampling_attempts'], proposals_per_start=config['proposals_per_start'])
+            attempts=config['sampling_attempts'], proposals_per_start=config.get('proposals_per_start',1),
+            coverage_weight=0. if asynchronous else 1., border_boost=0. if asynchronous else .25)
+        schedule = None
+        if asynchronous:
+            counts = asynchronous_start_counts(288, seed=np.random.SeedSequence(
+                [config['seed'], int(Path(record['store']).stem), 1]),
+                streams=config['temporal_streams'], min_gap_frames=config['min_gap_frames'],
+                max_gap_frames=config['max_gap_frames'])
+            schedule = dict(zip(pd.date_range(day,periods=len(counts),freq='5min',tz='UTC'), counts))
         rows, windows, files, mask_cache = [], [], {}, {}
         complete_windows = 0
         for index in range(len(times)-15):
@@ -118,11 +127,14 @@ def prepare_day(task):
                     or stamps[0].normalize() != stamps[-1].normalize()):
                 continue
             complete_windows += 1
+            proposals = int(schedule.get(stamps[0],0)) if schedule is not None else None
+            if proposals == 0:
+                continue
             pixels = frame_valid[indices].all(axis=0)
             key = np.packbits(pixels).tobytes()
             if key not in mask_cache:
                 mask_cache[key] = valid_crop_origins_from_pixels(pixels, geographic)
-            selected = sampler.sample_window(stamps[0], mask_cache[key])
+            selected = sampler.sample_window(stamps[0], mask_cache[key],proposals=proposals)
             if not selected:
                 continue
             windows.append((indices, [(event.y, event.x) for event in selected]))
@@ -144,7 +156,10 @@ def prepare_day(task):
         raise ValueError('Source changed during preparation: ' + record['store'])
     result = dict(identity=identity, day=day, store=record['store'], shape=record['shape'],
         source_stamp=before, complete_windows=complete_windows, clips=rows, clip_files=files,
-        **audit, exhausted_windows=sampler.exhausted_windows, elapsed_seconds=time.monotonic()-started)
+        **audit, exhausted_windows=sampler.exhausted_windows,
+        sampling_mode=config.get('sampling_mode','coverage_dense'),
+        planned_temporal_proposals=int(sum(schedule.values())) if schedule is not None else None,
+        elapsed_seconds=time.monotonic()-started)
     write_json(committed, result)
     return result
 
@@ -212,14 +227,24 @@ def finalize(config, results, hashes):
         validation_clips_materialized=False, training_submitted=False,
         capacity_interpretation='Realized accepted proposals under the configured randomized search; no claim of optimal packing.',
         source_sha256=hashes, manifest_sha256=file_digest(dataset/'train.csv'))
+    asynchronous = config.get('sampling_mode') == 'uniform_asynchronous'
+    description = ('Independent asynchronous streams; uniform feasible spatial proposals; strict active IoU; calendar-balanced subset'
+        if asynchronous else 'Every available complete five-minute start; strict active IoU and cumulative spatial coverage preference; calendar-balanced subset')
     protocol.update(train_samples=len(selected), train_days=selected.groupby('day').size().to_dict(),
-        sampling='Every available complete five-minute start; strict active IoU and cumulative spatial coverage preference; calendar-balanced subset',
+        sampling=description, sampling_mode=config.get('sampling_mode','coverage_dense'),
+        coverage_weight=0. if asynchronous else 1., border_boost=0. if asynchronous else .25,
         max_iou_active=config['max_iou'], sampling_attempts=config['sampling_attempts'],
-        proposals_per_start=config['proposals_per_start'],
+        proposals_per_start=config.get('proposals_per_start'),
         candidate_samples=len(candidates), training_unique_start_times=selected.start_time.nunique(),
         zarr_root=str(output/'sources'), clip_root=str(clip_root),
         storage='Lossless precomputed north-up float16 clips; candidate files retained separately',
         validation_reference=str(reference))
+    if asynchronous:
+        protocol.update(temporal_streams=config['temporal_streams'],
+            initial_start_jitter_frames=[0,15], min_gap_frames=config['min_gap_frames'],
+            max_gap_frames=config['max_gap_frames'], temporal_schedule='UTC day; independent stream schedules and spatial RNG')
+        summary.update(sampling_mode='uniform_asynchronous',temporal_streams=config['temporal_streams'],
+            coverage_weight=0.,border_boost=0.)
     protocol.pop('frame_cache', None)
     protocol.pop('selected_starts_per_six_hour_bin', None)
     write_json(dataset/'protocol.json', protocol)
@@ -233,6 +258,11 @@ def finalize(config, results, hashes):
 
 def build(args):
     config = json.loads(args.config.read_text())
+    if config.get('sampling_mode','coverage_dense') not in ('coverage_dense','uniform_asynchronous'):
+        raise ValueError('Unknown spatial/temporal sampling mode')
+    if config.get('sampling_mode') == 'uniform_asynchronous':
+        asynchronous_start_counts(288,seed=config['seed'],streams=config['temporal_streams'],
+            min_gap_frames=config['min_gap_frames'],max_gap_frames=config['max_gap_frames'])
     output = Path(config['output']).resolve()
     config['output'] = str(output)
     inventory = json.loads(Path(config['inventory']).read_text())

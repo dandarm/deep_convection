@@ -47,8 +47,11 @@ def prepare(args):
         shutil.copytree(ROOT/directory, archive/directory, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     write(args.output/'runtime_files.json', {str(path.relative_to(archive)):digest(path)
         for path in archive.rglob('*') if path.is_file()})
+    warmup = 4
+    benchmark_steps = min(32,max(0,ready['train_samples']//plan['global_batch_size']-warmup))
     plan.update(training_clips=ready['train_samples'], primary_validation_clips=512,
-        extended_validation_clips=10240, pipeline_benchmark_steps=32,
+        extended_validation_clips=10240, pipeline_benchmark_steps=benchmark_steps,
+        pipeline_benchmark_warmup=warmup, pipeline_benchmark_full_batches_only=True,
         updates_per_epoch=(ready['train_samples']+607)//608,
         planned_total_updates=((ready['train_samples']+607)//608)*plan['epochs'],
         dataset_plan_sha256=digest(data/'preparation_plan.json'),

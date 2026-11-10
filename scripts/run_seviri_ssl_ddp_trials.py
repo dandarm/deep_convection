@@ -243,7 +243,8 @@ def full_training(root):
         '--stop-after-epoch-file',str(root/'stop_after_epoch')]
     benchmark_steps=plan.get('pipeline_benchmark_steps',0)
     if benchmark_steps and not resume.exists() and not (root/'benchmark/pipeline_benchmark.json').exists():
-        launch(root,'benchmark',[*options,'--pipeline-benchmark-steps',str(benchmark_steps)])
+        launch(root,'benchmark',[*options,'--pipeline-benchmark-steps',str(benchmark_steps),
+            '--benchmark-warmup',str(plan.get('pipeline_benchmark_warmup',4))])
     if resume.exists():options+=['--resume',str(resume)]
     elif plan.get('parent_checkpoint'):
         options+=['--resume',plan['parent_checkpoint'],'--execution-revision',str(root/'execution_revision.json')]

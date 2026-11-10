@@ -189,7 +189,13 @@ def finalize(output, reference, results):
     clip_files['metadata.json'] = dict(bytes=(output/'clips/metadata.json').stat().st_size,
         sha256=file_digest(output/'clips/metadata.json'))
     payload = {}
-    for directory in ('sources', 'training/dataset', 'extended/dataset', 'preparation_sources', 'preparation_history'):
+    preparation = json.loads((output/'preparation_plan.json').read_text())
+    payload_mode = preparation.get('config',{}).get('transfer_payload','full_provenance')
+    if payload_mode not in ('training_only','full_provenance'):
+        raise ValueError('Unknown transfer payload mode')
+    directories = (('training/dataset','extended/dataset') if payload_mode == 'training_only' else
+        ('sources','training/dataset','extended/dataset','preparation_sources','preparation_history'))
+    for directory in directories:
         for path in (output/directory).rglob('*'):
             if path.is_file():
                 payload[str(path.relative_to(output))] = dict(bytes=path.stat().st_size, sha256=file_digest(path))
@@ -197,7 +203,7 @@ def finalize(output, reference, results):
         path = output/name
         payload[name] = dict(bytes=path.stat().st_size, sha256=file_digest(path))
     transfer = dict(version=1, canonical_clip_root=str(output/'clips'), canonical_zarr_root=str(output/'sources'),
-        clips=clip_files, payload=payload)
+        clips=clip_files, payload=payload, payload_mode=payload_mode)
     for role in ('training', 'extended'):
         write_json(output/role/'transfer_plan.json', transfer)
         link = output/role/'clips'
@@ -209,21 +215,67 @@ def finalize(output, reference, results):
     print(json.dumps(ready, indent=2), flush=True)
 
 
+def reuse_validation(output, reference, source):
+    """Reuse the same immutable holdout clips without decoding or rehashing data."""
+    import hashlib
+    from emma_gpm.seviri_clip_files import clip_key
+    source = Path(source)
+    ready = json.loads((source/'dataset_ready.json').read_text())
+    if ready['status'] != 'completed':
+        raise ValueError('Validation reuse requires a completed materialized dataset')
+    metadata = json.loads((source/'clips/metadata.json').read_text())
+    for role in ('training','extended'):
+        if (source/role/'dataset/validation.csv').read_bytes() != (reference/role/'dataset/validation.csv').read_bytes():
+            raise ValueError('Reused validation must match the fixed holdout exactly')
+    frame = pd.read_csv(reference/'extended/dataset/validation.csv')
+    results = []
+    for store, rows in frame.groupby('store'):
+        clips = {}
+        for row in rows.itertuples(index=False):
+            key = clip_key(row.start_time,row.origin_y,row.origin_x)
+            name = hashlib.sha256(key.encode()).hexdigest()[:24]+'.blosc'
+            record = metadata['clips'][name]
+            original = source/'clips'/name
+            if record['key'] != key or original.stat().st_size != record['bytes']:
+                raise ValueError('Reused clip identity or size differs')
+            destination = output/'validation_clips'/name
+            if not destination.exists():os.link(original,destination)
+            if not os.path.samefile(original,destination):
+                raise ValueError('Validation reuse must preserve the original immutable file')
+            clips[name] = record
+        # Coordinate headers stay local for plots; each file is shared by a
+        # hard link. They are excluded from training_only HPC payloads.
+        for original in (source/'sources'/store).rglob('*'):
+            if original.is_file():
+                destination = output/'sources'/original.relative_to(source/'sources')
+                destination.parent.mkdir(parents=True,exist_ok=True)
+                if not destination.exists():os.link(original,destination)
+        result = dict(day=str(rows.day.iloc[0]),clips=clips,reused_from=str(source))
+        write_json(output/'validation_daily'/f"{result['day']}.json",result)
+        results.append(result)
+    return results
+
+
 def build(args):
     config = json.loads(args.config.read_text())
     output, reference = Path(config['output']), Path(config['reference_dataset'])
     (output/'validation_clips').mkdir(parents=True, exist_ok=True)
-    manifest = pd.read_csv(reference/'extended/dataset/validation.csv')
-    metadata = json.loads((reference/'frames/metadata.json').read_text())
-    tasks = [(str(reference), str(output), store, metadata['stores'][store], rows.to_dict('records'))
-        for store, rows in manifest.groupby('store')]
-    results = []
-    with ProcessPoolExecutor(max_workers=args.workers, mp_context=mp.get_context('spawn')) as pool:
-        for result in pool.map(prepare_day, tasks, chunksize=1):
-            results.append(result)
-            write_json(output/'validation_progress.json', dict(status='materializing',
-                completed_days=len(results), total_days=len(tasks), updated_unix=time.time()))
-            print(f'{len(results)}/{len(tasks)} validation days', flush=True)
+    if config.get('reuse_validation_clips_from'):
+        results = reuse_validation(output,reference,config['reuse_validation_clips_from'])
+        write_json(output/'validation_progress.json',dict(status='reused_existing_files',
+            source=config['reuse_validation_clips_from'],days=len(results),updated_unix=time.time()))
+    else:
+        manifest = pd.read_csv(reference/'extended/dataset/validation.csv')
+        metadata = json.loads((reference/'frames/metadata.json').read_text())
+        tasks = [(str(reference), str(output), store, metadata['stores'][store], rows.to_dict('records'))
+            for store, rows in manifest.groupby('store')]
+        results = []
+        with ProcessPoolExecutor(max_workers=args.workers, mp_context=mp.get_context('spawn')) as pool:
+            for result in pool.map(prepare_day, tasks, chunksize=1):
+                results.append(result)
+                write_json(output/'validation_progress.json', dict(status='materializing',
+                    completed_days=len(results), total_days=len(tasks), updated_unix=time.time()))
+                print(f'{len(results)}/{len(tasks)} validation days', flush=True)
     if args.wait_for_training:
         while not (output/'sampling_ready.json').exists():
             time.sleep(10)
