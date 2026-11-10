@@ -215,14 +215,18 @@ gennaio–giugno 2022, con contributi mensili uniformi, e le sue validation da
 512 e 10.240 clip. La validation estesa precedente conserva una figura
 di copertura e un'identità separate.
 
-Il nuovo campionamento con **IoU spaziale massima 0,20 fra clip che condividono
-frame** contiene 35.016 clip sulle stesse 93 giornate, con 5.836 clip per mese.
-Usa 26.736 istanti SEVIRI distinti e mantiene le validation calendariali.
-Il notebook confronta la copertura dei due manifest e collega una GIF ricavata
-dalle clip effettivamente selezionate. Training e validation sono materializzati
-in file di clip compressi senza perdita, complessivamente 210 GiB, destinati
-alla RAM condivisa del nodo. Protocollo e comandi nella sezione sul
-campionamento con IoU attiva di `SSL_SEVIRI.md`.
+Il campionamento corrente con **IoU spaziale massima 0,20 fra clip che condividono
+frame** contiene 9.900 clip sulle stesse 93 giornate, con 1.650 clip per mese.
+Dodici sequenze temporali asincrone propongono origini spaziali uniformi fra
+quelle ammissibili. Il dataset usa 26.450 istanti SEVIRI distinti e mantiene
+le validation calendariali. Il notebook confronta la copertura dei manifest
+e collega una GIF geostazionaria ricavata dalle clip effettivamente selezionate.
+Le mappe composite mostrano piccoli punti arancioni e perimetri dello stesso
+colore ogni 5° lungo tutti e quattro i bordi del campionamento.
+Training e validation sono materializzati in file di clip compressi senza
+perdita, complessivamente 94 GiB, destinati alla RAM condivisa del nodo.
+Protocollo e comandi nella sezione «Origini uniformi e partenze asincrone»
+di `SSL_SEVIRI.md`.
 
 [`notebooks/study_seviri_cloud_mask_probe.ipynb`](notebooks/study_seviri_cloud_mask_probe.ipynb)
 presenta i probe CMA/CT/RDT e i controlli sulle rappresentazioni, con periodi di

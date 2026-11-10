@@ -34,6 +34,8 @@ COLORS=dict(zip(('mvm','future','joint','residual'),('tab:blue','tab:orange','ta
 COLORS.update({f'probe_{key}':value for key,value in list(COLORS.items())})
 COLORS['probe_random']='tab:gray'
 COLORS.update(persistence='black',advection='tab:purple')
+CROP_COLOR = '#ed542f'
+CROP_ORIGIN_POINT_SIZE = .3
 
 
 @contextmanager
@@ -121,22 +123,23 @@ def crop_origin_locations(frame, root):
     return locations
 
 
-def boundary_crop_origins(origins, spacing=10.):
-    """Select southern/eastern sampled origins near 10-degree geographic lines."""
+def boundary_crop_origins(origins, spacing=5.):
+    """Select sampled origins on all four edges near evenly spaced geographic lines."""
     if not np.isfinite(spacing) or spacing <= 0:
         raise ValueError('A positive angular spacing is required')
     selected=[]
-    for along, extreme, edge in (('longitude','latitude','south'),('latitude','longitude','east')):
+    for along, extreme, edge in (('longitude','latitude','south'),('longitude','latitude','north'),
+                                 ('latitude','longitude','west'),('latitude','longitude','east')):
         low,high=origins[along].min(),origins[along].max()
         for target in np.arange(np.ceil((low-spacing/20)/spacing)*spacing,high+1e-8,spacing):
             nearby=origins[(origins[along]-target).abs()<=spacing/20]
             if nearby.empty:
                 continue
-            row=nearby.sort_values([extreme,along],ascending=[edge=='south',True]).iloc[0]
+            row=nearby.sort_values([extreme,along],ascending=[edge in ('south','west'),True]).iloc[0]
             selected.append(dict(row,edge=edge))
     if not selected:
         return origins.iloc[:0].assign(edge=pd.Series(dtype=str))
-    # Use one example where the two sampled edges meet.
+    # Use one example where adjacent sampled edges meet.
     sparse=[]
     for row in selected:
         point=np.array([row['longitude'],row['latitude']])
@@ -166,17 +169,15 @@ def crop_footprint(row, root, crop=224):
 
 
 def draw_boundary_crops(axis, origins, root):
-    """Overlay a small set of actual crop perimeters along the southern/eastern edge."""
+    """Overlay actual crop perimeters along all four sampled edges."""
     import cartopy.crs as ccrs
     import matplotlib.patheffects as pe
     selected=boundary_crop_origins(origins)
     for i,(_,row) in enumerate(selected.iterrows()):
         outline=crop_footprint(row,root)
-        axis.plot(outline[:,0],outline[:,1],transform=ccrs.PlateCarree(),color='#D55E00',
-            linewidth=1.3,zorder=6,label='Boundary crops · 224 × 224 pixels' if i==0 else None,
-            path_effects=[pe.Stroke(linewidth=2.5,foreground='white'),pe.Normal()])
-        axis.scatter([row.longitude],[row.latitude],transform=ccrs.PlateCarree(),s=13,
-            facecolor='#D55E00',edgecolor='white',linewidth=.5,zorder=7)
+        axis.plot(outline[:,0],outline[:,1],transform=ccrs.PlateCarree(),color=CROP_COLOR,
+            linewidth=.9,zorder=6,label='Boundary crops · 224 × 224 pixels' if i==0 else None,
+            path_effects=[pe.Stroke(linewidth=1.8,foreground='white'),pe.Normal()])
     return selected
 
 
@@ -193,15 +194,14 @@ def manifest_coverage_figure(frame, root, *, title):
     geo.set_extent([-20, 40, 30, 70], crs=ccrs.PlateCarree())
     geo.add_feature(cfeature.LAND, facecolor='#eeeeee')
     geo.coastlines(resolution='50m', linewidth=.6)
-    points = geo.scatter(origins.longitude, origins.latitude,
-        c=origins.clip_fraction_percent, s=3, cmap='viridis',
+    geo.scatter(origins.longitude, origins.latitude,
+        color=CROP_COLOR, s=CROP_ORIGIN_POINT_SIZE, linewidths=0,
         transform=ccrs.PlateCarree(), rasterized=True)
     draw_boundary_crops(geo,origins,root)
     geo.legend(loc='upper right',fontsize=8,framealpha=.9)
     geo.set_title(f'{title}: crop origins')
     lines = geo.gridlines(draw_labels=True, linewidth=.3, alpha=.4)
     lines.top_labels = lines.right_labels = False
-    fig.colorbar(points, ax=geo, shrink=.7, label='Clips at this origin (%)')
     dates = times.dt.normalize().value_counts().sort_index()
     daily = fig.add_subplot(grid[0, 1])
     daily.bar(dates.index, dates.values, width=.8, color='#0072B2')
@@ -238,7 +238,6 @@ def dataset_overview(queue, show_tables=True):
         display(pd.DataFrame(rows).set_index('Subset'))
     root=read_json(queue/'dataset/channel_stats.json')['zarr_root']
     origins={name:crop_origin_locations(frame,root) for name,frame in frames.items()}
-    maximum=max(points.clip_fraction_percent.max() for points in origins.values())
     all_points=pd.concat(origins.values(),ignore_index=True)
     extent=[min(-20,all_points.longitude.min()-2),max(40,all_points.longitude.max()+2),
             min(30,all_points.latitude.min()-2),max(70,all_points.latitude.max()+2)]
@@ -256,17 +255,14 @@ def dataset_overview(queue, show_tables=True):
             label='Requested acquisition domain',zorder=4)
         axes[0,column].add_feature(cfeature.NaturalEarthFeature('physical','land','10m'),
                                    facecolor='#f1f1f1',edgecolor='#777777',linewidth=.4)
-        image=axes[0,column].scatter(points.longitude,points.latitude,transform=ccrs.PlateCarree(),
-            c=points.clip_fraction_percent,s=max(.3,min(30,4500/len(points))),
-            cmap='viridis',vmin=0,vmax=maximum,zorder=3,rasterized=True,
-            linewidths=0,alpha=.6 if len(points)>2000 else 1.)
+        axes[0,column].scatter(points.longitude,points.latitude,transform=ccrs.PlateCarree(),
+            color=CROP_COLOR,s=CROP_ORIGIN_POINT_SIZE,zorder=3,rasterized=True,linewidths=0)
         draw_boundary_crops(axes[0,column],points,root)
         axes[0,column].legend(loc='upper right',fontsize=8,framealpha=.9)
         axes[0,column].set(title=f'{name.capitalize()} crop origins · {len(frame):,} clips',
             xlabel='Longitude',ylabel='Latitude')
         lines=axes[0,column].gridlines(draw_labels=True,linewidth=.5,alpha=.3)
         lines.top_labels=lines.right_labels=False
-        fig.colorbar(image,ax=axes[0,column],label='Clips at this origin (%)')
         frame.groupby('day').size().plot.bar(ax=axes[1,column],color='tab:blue')
         axes[1,column].set_xticklabels(pd.to_datetime(sorted(frame.day.unique())).strftime('%d %b\n%Y'))
         axes[1,column].set_ylabel('Number of clips')

@@ -43,13 +43,16 @@ def test_selected_frame_count_unions_overlapping_crops_and_crosses_midnight():
     assert counts.to_list()==[2,15]
 
 
-def test_sparse_boundary_examples_select_only_southern_and_eastern_edges():
+def test_sparse_boundary_examples_select_all_four_edges_at_five_degrees():
     points=pd.DataFrame(itertools.product(range(-20,31),range(40,61)),columns=['longitude','latitude'])
     selected=boundary_crop_origins(points)
-    assert ((selected.latitude==40)|(selected.longitude==30)).all()
-    assert len(selected)==8
+    assert ((selected.latitude.isin([40,60]))|(selected.longitude.isin([-20,30]))).all()
+    assert len(selected)==28
     assert not selected.duplicated(['longitude','latitude']).any()
-    assert set(selected.loc[selected.edge=='south','longitude'])==set(range(-20,31,10))
+    for edge in ('south','north'):
+        assert set(selected.loc[selected.edge==edge,'longitude'])==set(range(-20,31,5))
+    for edge in ('west','east'):
+        assert set(selected.loc[selected.edge==edge,'latitude'])==set(range(45,60,5))
 
 
 @pytest.mark.parametrize('reverse_x,reverse_y',list(itertools.product([False,True],repeat=2)))
