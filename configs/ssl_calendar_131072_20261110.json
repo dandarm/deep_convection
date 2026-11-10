@@ -1,0 +1,19 @@
+{
+  "inventory": "results/ssl_annual_131072_20261110/preparation/inventory_archive.json",
+  "output": "/data1/deep_convection_data/ssl_calendar_131072_20261110",
+  "year": 2022,
+  "months": [1, 2, 3, 4, 5, 6],
+  "domain": [-20, 40, 30, 70],
+  "seed": 20261110,
+  "train_samples": 131072,
+  "primary_validation_samples": 512,
+  "validation_samples": 10240,
+  "starts_per_bin": 3,
+  "validation_starts_per_bin": 72,
+  "maximum_frame_gib": 400,
+  "validation_frames": "/data1/deep_convection_data/ssl_validation_10240_20261102/frames",
+  "probe_reservations": [
+    "configs/three_head_probe_dataset_seasonal2022.json",
+    "configs/three_head_probe_dataset_exploratory2022.json"
+  ]
+}
