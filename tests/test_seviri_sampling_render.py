@@ -40,3 +40,16 @@ def test_projection_and_grid_errors_are_explicit():
         pixel_edges([0,1,3])
     with pytest.raises(ValueError,match='outside'):
         native_rectangle(SimpleNamespace(origin_x=1,origin_y=0),pixel_edges([0,1,2]),pixel_edges([0,1,2]),size=3)
+
+
+def test_video_includes_previous_day_clips_and_excludes_unseen_tail_starts():
+    import pandas as pd
+    from scripts.render_seviri_sampling_video import visible_clip_rows
+    from emma_gpm.ssl_spaced_sampling import active_clip_rows
+    frame = pd.DataFrame(dict(start_time=['2022-12-31T23:30Z', '2023-01-01T00:00Z',
+        '2023-01-01T23:45Z', '2023-01-01T23:50Z'], clip_id=['previous','first','last','after']))
+    timestamps = pd.date_range('2023-01-01', periods=96, freq='15min', tz='UTC')
+    visible = visible_clip_rows(frame, timestamps)
+    assert visible.clip_id.tolist() == ['previous', 'first', 'last']
+    displayed = set().union(*(set(active_clip_rows(frame, t).clip_id) for t in timestamps))
+    assert set(visible.clip_id) == displayed

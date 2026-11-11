@@ -23,23 +23,38 @@ def overlap_summary(manifest, *, size=224, frames=16):
     channels share those positions. These counts describe geometric coverage;
     atmospheric correlation between different observations is a separate issue.
     """
-    daily = []
-    neighbors = []
-    for day, group in manifest.groupby('day'):
-        if group.store.nunique() != 1:
-            raise ValueError('A date must use one native coordinate grid')
-        times = pd.DatetimeIndex(pd.to_datetime(group.start_time, utc=True)).as_unit('ns')
+    from .ssl_continuous_sampling import temporal_context
+
+    if manifest.empty:
+        raise ValueError('A nonempty clip manifest is required')
+    manifest = manifest.copy()
+    starts = pd.to_datetime(manifest.start_time, utc=True)
+    manifest['day'] = starts.dt.strftime('%Y-%m-%d')
+    ends = starts+pd.Timedelta(minutes=5*(frames-1))
+    dates = sorted(set(starts.dt.normalize()) | set(ends.dt.normalize()))
+    daily, neighbors = [], []
+    for date in dates:
+        day = date.strftime('%Y-%m-%d')
+        group = manifest[manifest.day == day]
+        context = temporal_context(manifest, day, frames=frames)
+        times = pd.DatetimeIndex(pd.to_datetime(context.start_time, utc=True)).as_unit('ns')
         t = times.asi8 // 300_000_000_000
-        y, x = group.origin_y.to_numpy(int), group.origin_x.to_numpy(int)
-        shared = np.maximum(0, frames-np.abs(t[:, None]-t[None, :]))
-        np.fill_diagonal(shared, 0)
-        intersection = np.maximum(0, size-np.abs(y[:, None]-y[None, :])) * np.maximum(0, size-np.abs(x[:, None]-x[None, :]))
-        iou = intersection / (2*size*size-intersection)
-        iou[shared == 0] = 0
+        y, x = context.origin_y.to_numpy(int), context.origin_x.to_numpy(int)
+        owned = np.flatnonzero(context.day.to_numpy() == day)
+        # Each owned clip sees both previous-day and following-day starts.
+        shared = np.maximum(0, frames-np.abs(t[owned, None]-t[None, :]))
+        shared[np.arange(len(owned)), owned] = 0
+        intersection = np.maximum(0, size-np.abs(y[owned, None]-y[None, :])) * np.maximum(
+            0, size-np.abs(x[owned, None]-x[None, :]))
+        iou = np.where(shared > 0, intersection/(2*size*size-intersection), 0.)
         fraction = intersection/(size*size) * shared/frames
-        neighbors.append(group[['start_time', 'origin_y', 'origin_x', 'day']].assign(
+        neighbors.append(context.iloc[owned][['start_time', 'origin_y', 'origin_x', 'day']].assign(
             maximum_active_iou=iou.max(axis=1), maximum_shared_observation_fraction=fraction.max(axis=1)))
-        boundaries = np.unique(np.r_[t, t+frames])
+        first = date.value//300_000_000_000
+        last = first+288
+        # Partition observed time, so midnight observations are counted once.
+        boundaries = np.unique(np.r_[first, last, np.clip(t, first, last),
+                                      np.clip(t+frames, first, last)])
         unique, nframes, maximum_active, maximum_reuse = 0, 0, 0, 0
         for start, end in zip(boundaries[:-1], boundaries[1:]):
             active = (t <= start) & (t+frames > start)
@@ -48,10 +63,10 @@ def overlap_summary(manifest, *, size=224, frames=16):
             nframes += int(end-start) if area else 0
             maximum_active = max(maximum_active, int(active.sum()))
             maximum_reuse = max(maximum_reuse, multiplicity)
-        daily.append(dict(day=day, clips=len(group), start_times=len(np.unique(t)),
+        daily.append(dict(day=day, clips=len(group), start_times=group.start_time.nunique(),
             distinct_frames=nframes, unique_pixel_frames=unique,
             maximum_active_clips=maximum_active, maximum_pixel_frame_reuse=maximum_reuse,
-            maximum_active_iou=float(iou.max())))
+            maximum_active_iou=float(iou.max(initial=0))))
     daily = pd.DataFrame(daily)
     neighbors = pd.concat(neighbors, ignore_index=True)
     sampled = len(manifest)*frames*size*size

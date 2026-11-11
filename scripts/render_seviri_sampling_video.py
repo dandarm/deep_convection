@@ -61,6 +61,18 @@ def date_status(day, training_dates, protocol):
     return 'Outside training selection'
 
 
+def visible_clip_rows(manifest, timestamps):
+    """Clips containing at least one of the exact displayed observation slots."""
+    timestamps = pd.DatetimeIndex(timestamps).as_unit('ns')
+    if timestamps.empty or not timestamps.is_monotonic_increasing or not timestamps.is_unique:
+        raise ValueError('Unique increasing display timestamps are required')
+    starts = pd.DatetimeIndex(pd.to_datetime(manifest.start_time, utc=True)).as_unit('ns')
+    following = np.searchsorted(timestamps.asi8, starts.asi8)
+    offset = timestamps.asi8[np.minimum(following, len(timestamps)-1)]-starts.asi8
+    return manifest.loc[(following < len(timestamps)) & (offset >= 0)
+        & (offset <= 75*60*10**9) & (offset % (300*10**9) == 0)].copy()
+
+
 def render(args):
     import zarr
     from numcodecs import blosc
@@ -83,8 +95,7 @@ def render(args):
         raise ValueError('The manifest must contain unique clip IDs')
     protocol = json.loads((args.manifest.parent/'protocol.json').read_text())
     domain = protocol['domain_lonlat']
-    times = pd.to_datetime(frame.start_time, utc=True)
-    selected = frame[(times >= start-pd.Timedelta(minutes=75)) & (times < end)].copy()
+    selected = visible_clip_rows(frame, stamps)
     if selected.empty:
         raise ValueError('No selected training clips in this interval')
     audit = verify_overlap([CropEvent(pd.Timestamp(r.start_time), r.origin_y, r.origin_x)

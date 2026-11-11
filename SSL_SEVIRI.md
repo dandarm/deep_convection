@@ -1571,3 +1571,100 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 .venv/bin/python scripts/prepare_seviri_spaced_validation.py \
   --config configs/ssl_incremental_patience10_20261111.json --wait-for-training
 ```
+
+### Campionamento continuo tra archivi giornalieri
+
+`build_seviri_ssl_continuous_dataset.py` usa tutte le partenze RSS complete,
+comprese quelle tra le 22:45 e le 23:55 UTC quando i frame della giornata
+successiva sono disponibili e ammessi al training. La durata resta di 16 frame
+consecutivi a cinque minuti. Una giornata possiede le partenze delle clip;
+le osservazioni e i confronti di sovrapposizione continuano oltre mezzanotte,
+compresi i cambi di mese, anno e gli anni bisestili. Le finestre che incontrano
+un frame mancante o un intervallo riservato vengono escluse integralmente.
+
+Per ogni proposta vengono considerate tutte le clip che possono condividere
+almeno un frame, incluse quelle già selezionate nella giornata precedente e
+nella successiva. Restano IoU spaziale ≤ 0,20 e frazione delle posizioni
+pixel–istante condivise ≤ 0,20 per ogni coppia contenente una nuova clip.
+Le coppie formate soltanto da clip originali conservano il criterio applicato
+alla loro selezione. La soglia sulle posizioni condivise è applicata a ciascuna
+coppia. Le proposte scelgono uniformemente un istante ammissibile e poi
+un'origine spaziale ammissibile per tutti i suoi frame.
+
+Le giornate vengono elaborate in due fasi deterministiche secondo la parità
+del loro numero ordinale: date non adiacenti possono essere elaborate in
+parallelo; la seconda fase include nel contesto tutte le aggiunte della prima.
+Il risultato dipende dal seed e dall'inventario congelato, ed è indipendente
+dall'ordine di completamento dei worker. La partizione giornaliera limita la
+memoria necessaria a leggere gli Zarr e definisce il budget delle proposte.
+Il controllo di sovrapposizione usa gli istanti UTC assoluti e persiste lungo
+le sequenze continue. Ogni giornata arresta la ricerca dopo dieci blocchi
+consecutivi da 1.024 proposte con accettazione inferiore al 10%, oppure dopo
+32.768 proposte. Il numero ottenuto dipende dalla ricerca randomizzata;
+una bassa accettazione misura il rendimento di questa ricerca.
+
+La configurazione `configs/ssl_continuous_iou020_20261111.json` mantiene le
+16.536 clip selezionate e tutti i 21.358 candidati materializzati della
+versione precedente. I file vengono riutilizzati mediante hard link, e si
+materializzano soltanto le aggiunte. Il manifest finale conserva le clip
+selezionate in precedenza, bilancia i contributi mensili e aggiorna l'unica
+media e deviazione standard globali del training. Le validation da 512 e
+10.240 clip mantengono gli stessi manifest e file. Le figure temporali
+conteggiano ogni osservazione una volta, comprese le clip che attraversano
+mezzanotte.
+
+Il risultato contiene **17.568 clip selezionate**, con 2.928 clip per mese e
+1.032 aggiunte rispetto alla selezione precedente. **134 clip attraversano
+mezzanotte**. Il pool completo contiene 22.753 candidati materializzati;
+1.395 file sono stati creati durante questa estensione.
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/build_seviri_ssl_continuous_dataset.py \
+  --config configs/ssl_continuous_iou020_20261111.json --workers 4
+
+.venv/bin/python scripts/prepare_seviri_spaced_validation.py \
+  --config configs/ssl_continuous_iou020_20261111.json --wait-for-training
+
+.venv/bin/python scripts/analyze_seviri_continuous_sampling.py \
+  --dataset /data1/deep_convection_data/ssl_continuous_iou020_20261111 \
+  --output results/ssl_continuous_iou020_20261111
+```
+
+Per aggiungere anni si prepara un nuovo inventario congelato e una nuova
+configurazione con output distinto, usando il dataset corrente come
+`parent_dataset`. `training_days` specifica le date da considerare; omettendo
+questa chiave vengono considerate tutte le date dell'inventario ammissibili
+rispetto alle riserve temporali del protocollo di riferimento. La lista deve
+comprendere le date dei candidati conservati. I parametri di sovrapposizione,
+durata, cadenza e arresto possono restare identici. Il bilanciamento mensile
+richiede una capacità sufficiente in ogni mese per conservare tutte le clip
+precedentemente selezionate. Se il vincolo è incompatibile con i dati o con
+`target_samples`, il builder interrompe la preparazione finale con un errore
+esplicito. Senza `parent_dataset`, lo stesso builder costruisce un dataset
+iniziale dal relativo inventario e protocollo di validation.
+
+Le clip risultanti contengono direttamente tutti i 16 frame: il dataloader
+legge gli stessi file compressi utilizzati dalle versioni precedenti. La
+lettura di due Zarr giornalieri riguarda soltanto la preparazione delle nuove
+clip che attraversano mezzanotte.
+
+
+Il controllo `configs/ssl_continuous_fresh_week_20261111.json` applica lo
+stesso algoritmo al 6–11 maggio 2022, inizializzando il campionatore con un
+insieme vuoto di clip. Produce 1.413 clip, di cui 62 attraversano mezzanotte;
+entrambe le soglie di sovrapposizione valgono per tutte le coppie. Sulle cinque
+mezzanotti interne al periodo, il numero medio di clip attive è 14, rispetto
+a 1,8 per la selezione giornaliera e 4,2 per la sua estensione che conserva
+le clip precedenti. Questi valori descrivono il controllo sui sei giorni.
+Il notebook presenta le curve delle tre selezioni sulle stesse date. Il
+controllo resta distinto dal dataset ampliato da 17.568 clip.
+
+```bash
+.venv/bin/python scripts/build_seviri_ssl_continuous_dataset.py \
+  --config configs/ssl_continuous_fresh_week_20261111.json --workers 3
+.venv/bin/python scripts/analyze_seviri_continuous_sampling.py \
+  --dataset /data1/deep_convection_data/ssl_continuous_iou020_20261111 \
+  --fresh-dataset /data1/deep_convection_data/ssl_continuous_fresh_week_20261111 \
+  --output results/ssl_continuous_iou020_20261111
+```

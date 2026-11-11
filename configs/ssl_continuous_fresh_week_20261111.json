@@ -1,0 +1,31 @@
+{
+  "inventory": "results/ssl_annual_131072_20261110/preparation/inventory_archive.json",
+  "reference_dataset": "/data1/deep_convection_data/ssl_uniform_async_iou020_20261110",
+  "reuse_validation_clips_from": "/data1/deep_convection_data/ssl_incremental_patience10_20261111",
+  "output": "/data1/deep_convection_data/ssl_continuous_fresh_week_20261111",
+  "domain": [
+    -20,
+    40,
+    30,
+    70
+  ],
+  "seed": 20261111,
+  "sampling_mode": "continuous_uniform",
+  "max_iou": 0.2,
+  "max_shared_fraction": 0.2,
+  "sampling_attempts": 1,
+  "block_size": 1024,
+  "minimum_acceptance": 0.1,
+  "patience": 10,
+  "max_proposals": 32768,
+  "target_samples": 131072,
+  "transfer_payload": "training_only",
+  "training_days": [
+    "2022-05-06",
+    "2022-05-07",
+    "2022-05-08",
+    "2022-05-09",
+    "2022-05-10",
+    "2022-05-11"
+  ]
+}

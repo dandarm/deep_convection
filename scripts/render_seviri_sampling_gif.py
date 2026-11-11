@@ -78,9 +78,13 @@ def render(args):
     if frame.duplicated(['start_time', 'origin_y', 'origin_x']).any():
         raise ValueError('The manifest must contain unique clips')
     day = args.day or frame.groupby('day').size().sort_values().index[len(frame.day.unique())//2]
-    selected = frame[frame.day == day].copy()
-    if selected.empty or selected.store.nunique() != 1:
+    owned = frame[frame.day == day]
+    if owned.empty or owned.store.nunique() != 1:
         raise ValueError('Select one available native-grid observation date')
+    starts = pd.to_datetime(frame.start_time, utc=True)
+    midnight = pd.Timestamp(day, tz='UTC')
+    selected = frame[(starts >= midnight-pd.Timedelta(minutes=75)) &
+                     (starts < midnight+pd.Timedelta(days=1))].copy()
     if 'clip_id' not in selected:
         selected['clip_id'] = [f'row_{i}' for i in selected.index]
     audit = verify_overlap([CropEvent(pd.Timestamp(row.start_time), row.origin_y, row.origin_x)
@@ -89,13 +93,18 @@ def render(args):
     stamps = pd.date_range(start, periods=args.frames, freq='5min')
     if stamps[-1].normalize() != start.normalize():
         raise ValueError('Animation must stay within the selected observation day')
-    with xr.open_zarr(args.zarr_root/selected.store.iloc[0], consolidated=True, chunks=None) as ds:
+    with xr.open_zarr(args.zarr_root/owned.store.iloc[0], consolidated=True, chunks=None) as ds:
         times = pd.DatetimeIndex(pd.to_datetime(ds.time.values, utc=True))
         indices = times.get_indexer(stamps)
         if (indices < 0).any():
             raise ValueError('Animation has missing native observation times')
         x, y, projection = ds.x.values, ds.y.values, ds.attrs['projection_wkt']
         ir = ds.seviri.isel(time=indices, channel=list(ds.channel.values).index('IR_108')).values
+    for store in selected.store.unique():
+        with xr.open_zarr(args.zarr_root/store, consolidated=True, chunks=None) as ds:
+            if (not np.array_equal(x, ds.x.values) or not np.array_equal(y, ds.y.values)
+                    or projection != ds.attrs['projection_wkt']):
+                raise ValueError('Displayed clips must share the same native grid')
     native = geostationary_crs(projection)
     x_edges, y_edges = pixel_edges(x), pixel_edges(y)
     polygons = {row.clip_id:native_rectangle(row,x_edges,y_edges) for row in selected.itertuples(index=False)}

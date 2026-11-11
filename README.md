@@ -215,7 +215,7 @@ gennaio–giugno 2022, con contributi mensili uniformi, e le sue validation da
 512 e 10.240 clip. La validation estesa precedente conserva una figura
 di copertura e un'identità separate.
 
-Il campionamento corrente con **IoU spaziale massima 0,20 fra clip che condividono
+Il dataset iniziale con **IoU spaziale massima 0,20 fra clip che condividono
 frame** contiene 9.900 clip sulle stesse 93 giornate, con 1.650 clip per mese.
 Dodici sequenze temporali asincrone propongono origini spaziali uniformi fra
 quelle ammissibili. Il dataset usa 26.450 istanti SEVIRI distinti e mantiene
@@ -227,6 +227,15 @@ Training e validation sono materializzati in file di clip compressi senza
 perdita, complessivamente 94 GiB, destinati alla RAM condivisa del nodo.
 Protocollo e comandi nella sezione «Origini uniformi e partenze asincrone»
 di `SSL_SEVIRI.md`.
+
+Il campionatore continuo in
+`scripts/build_seviri_ssl_continuous_dataset.py` estende le clip attraverso
+mezzanotte e i cambi di anno usando tutti i frame RSS consecutivi ammissibili.
+La selezione risultante contiene 17.568 clip, comprese tutte le 16.536
+precedenti e 134 clip che attraversano mezzanotte. Il campionatore controlla
+entrambe le giornate confinanti con gli stessi limiti di sovrapposizione. Configurazione riproducibile e
+istruzioni per nuovi anni nella sezione «Campionamento continuo tra archivi
+giornalieri» di `SSL_SEVIRI.md`.
 
 [`notebooks/study_seviri_cloud_mask_probe.ipynb`](notebooks/study_seviri_cloud_mask_probe.ipynb)
 presenta i probe CMA/CT/RDT e i controlli sulle rappresentazioni, con periodi di
