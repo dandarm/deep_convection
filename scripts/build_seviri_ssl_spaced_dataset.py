@@ -262,6 +262,16 @@ def finalize(config, results, hashes, *, selected=None):
         protocol.update(incremental, sampling='Fixed parent clips with uniform random complete start times and admissible origins; adaptive rejection stopping',
             temporal_schedule='Uniform proposals over complete five-minute starts; parent events fixed', ddp_world_size=4)
         summary.update(incremental)
+        if config.get('preserve_selected_from'):
+            continuation = dict(preserve_selected_from=config['preserve_selected_from'],
+                preserved_samples=config['preserved_samples'],
+                preserved_manifest_sha256=config['preserved_manifest_sha256'],
+                new_selected_since_previous=len(selected)-config['preserved_samples'],
+                reuse_candidates_from=config.get('reuse_candidates_from'),
+                newly_materialized_samples=sum(r['newly_materialized_samples'] for r in results),
+                original_proposal_blocks_reproduced=all(r['original_proposal_blocks_reproduced'] for r in results))
+            protocol.update(continuation)
+            summary.update(continuation)
     protocol.pop('frame_cache', None)
     protocol.pop('selected_starts_per_six_hour_bin', None)
     write_json(dataset/'protocol.json', protocol)

@@ -61,3 +61,16 @@ def test_calendar_extension_keeps_every_parent_and_balances_full_totals():
     assert selected.clip_id.is_unique
     assert set(selected.groupby(selected.day.str[:7]).size()) == {24}
     pd.testing.assert_frame_equal(selected, balanced_extension(fixed, candidates, seed=4))
+
+
+def test_longer_search_keeps_original_blocks_candidates_and_pairwise_limits():
+    choices = {i: np.arange(31*31) for i in range(40)}
+    options = dict(seed=11, size=10, block_size=64, minimum_acceptance=1., max_proposals=1024)
+    short = augment_events([[0, 0, 0]], choices, 31, patience=3, **options)
+    long = augment_events([[0, 0, 0]], choices, 31, patience=10, **options)
+    assert len(short[1]) == 3 and len(long[1]) == 10
+    assert long[1][:3] == short[1]
+    np.testing.assert_array_equal(long[0][:len(short[0])], short[0])
+    audit = audit_added_pairs(np.vstack([[[0,0,0]], long[0]]), 1, size=10)
+    assert audit['maximum_active_iou'] <= .2+1e-12
+    assert audit['maximum_new_pair_shared_fraction'] <= .2+1e-12

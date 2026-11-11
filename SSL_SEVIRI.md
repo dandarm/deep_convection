@@ -1536,3 +1536,38 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 `incremental_sampling_summary.json` registra conteggi iniziali, aggiunte e
 conservazione del manifest di partenza. La versione da 9.900 clip e il training
 che la utilizza mantengono i propri file e la propria configurazione.
+
+### Estensione della ricerca da tre a dieci blocchi
+
+`configs/ssl_incremental_patience10_20261111.json` porta a dieci il numero di
+blocchi consecutivi con accettazione inferiore al 10%. Ogni blocco contiene
+1.024 proposte complete: la prova confronta 3.072 e 10.240 proposte per giornata
+quando tutti i blocchi soddisfano il criterio di arresto. Seed, ordine delle
+proposte, origini ammissibili e limiti di sovrapposizione sono condivisi. La
+riproduzione esatta dei primi tre blocchi e la conservazione di tutti i loro
+candidati vengono verificate per ogni giornata.
+
+Il nuovo manifest conserva le 14.784 clip selezionate dopo tre blocchi e bilancia
+le aggiunte fra i sei mesi. `reuse_candidates_from` riutilizza anche i candidati
+già materializzati rimasti fuori dalla selezione precedente; `preserve_selected_from`
+identifica le clip da conservare nel training. I report distinguono nuovi file,
+candidati disponibili e nuove clip selezionate. Tutte le coppie contenenti una
+clip aggiunta rispetto al riferimento iniziale da 9.900 rispettano anche il
+limite del 20% di osservazioni pixel–istante comuni.
+
+Le partenze vengono estratte casualmente sulla griglia nativa di cinque minuti.
+Le finestre attuali contengono 16 frame della stessa giornata UTC: con osservazioni
+complete, le partenze ammissibili vanno dalle 00:00 alle 22:40. Questo vincolo
+riduce la copertura simultanea vicino alla mezzanotte. La diagnostica temporale
+confronta le stesse 93 giornate di training, distinguendo gli istanti realmente
+osservati e le ore ai confini della giornata.
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/build_seviri_ssl_incremental_dataset.py \
+  --config configs/ssl_incremental_patience10_20261111.json --workers 4
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python scripts/prepare_seviri_spaced_validation.py \
+  --config configs/ssl_incremental_patience10_20261111.json --wait-for-training
+```

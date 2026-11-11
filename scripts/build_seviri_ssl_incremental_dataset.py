@@ -55,6 +55,10 @@ def prepare_day(task):
     parent_day = json.loads((parent/'daily'/f'{day}.json').read_text())
     if before != parent_day['source_stamp']:
         raise ValueError('Parent observation metadata changed: '+day)
+    reuse = Path(config['reuse_candidates_from']) if config.get('reuse_candidates_from') else None
+    reused_day = json.loads((reuse/'daily'/f'{day}.json').read_text()) if reuse else None
+    if reused_day and reused_day['source_stamp'] != before:
+        raise ValueError('Reused candidates belong to different observation metadata')
     files, rows = {}, []
     for row in fixed_rows:
         name = row['file']
@@ -107,17 +111,44 @@ def prepare_day(task):
             max_iou=config['max_iou'], max_shared_fraction=config['max_shared_fraction'],
             block_size=config['block_size'], minimum_acceptance=config['minimum_acceptance'],
             patience=config['patience'], max_proposals=config['max_proposals'])
+        reusable = {}
+        if reused_day:
+            if blocks[:len(reused_day['blocks'])] != reused_day['blocks']:
+                raise ValueError('Extended search must reproduce every original proposal block')
+            for row in reused_day['clips']:
+                slot = int((pd.Timestamp(row['start_time'])-midnight).total_seconds()/300)
+                reusable[(slot, row['origin_y'], row['origin_x'])] = row
+            if not set(reusable) <= set(map(tuple, np.concatenate([fixed, additions]))):
+                raise ValueError('Extended search must retain every previously accepted candidate')
         audit = audit_added_pairs(np.concatenate([fixed, additions]), len(fixed))
         if (audit['maximum_active_iou'] > config['max_iou']+1e-12 or
                 audit['maximum_new_pair_shared_fraction'] > config['max_shared_fraction']+1e-12):
             raise ValueError('Independent pair audit failed')
         # Persist the proposal diagnostics before the more expensive clip writes.
+        reuse_count = len(reusable) if reused_day else len(fixed)
+        new_count = len(fixed)+len(additions)-reuse_count
         write_json(output/'sampling_daily'/f'{day}.json', dict(day=day, fixed_samples=len(fixed),
-            added_samples=len(additions), stopping_reason=reason, blocks=blocks, **audit))
+            added_samples=len(additions), reused_candidate_samples=reuse_count,
+            newly_materialized_samples=new_count, stopping_reason=reason, blocks=blocks, **audit))
         additions = additions[np.lexsort((additions[:, 2], additions[:, 1], additions[:, 0]))]
+        new_events = []
+        for event in additions:
+            previous = reusable.get(tuple(event))
+            if previous is None:
+                new_events.append(event)
+                continue
+            name = previous['file']
+            original, destination = reuse/'candidate_clips'/name, output/'candidate_clips'/name
+            if not destination.exists():
+                os.link(original, destination)
+            if not os.path.samefile(original, destination):
+                raise ValueError('Reuse must preserve the exact existing candidate file')
+            files[name] = reused_day['clip_files'][name]
+            rows.append(dict(previous))
+        new_events = np.asarray(new_events, dtype=np.int64).reshape(-1, 3)
         added_rows, windows = [], []
-        for slot in np.unique(additions[:, 0]):
-            origins = additions[additions[:, 0] == slot, 1:]
+        for slot in np.unique(new_events[:, 0]):
+            origins = new_events[new_events[:, 0] == slot, 1:]
             indices = windows_by_start[int(slot)]
             stamp = midnight+pd.Timedelta(minutes=int(slot)*5)
             windows.append((indices, origins))
@@ -142,6 +173,8 @@ def prepare_day(task):
     result = dict(identity=identity, day=day, store=record['store'], shape=record['shape'],
         source_stamp=before, clips=rows, clip_files=files, fixed_samples=len(fixed),
         added_samples=len(additions), blocks=blocks, stopping_reason=reason,
+        reused_candidate_samples=reuse_count, newly_materialized_samples=new_count,
+        original_proposal_blocks_reproduced=bool(reused_day),
         complete_windows=len(windows_by_start), elapsed_seconds=time.monotonic()-started,
         **chronological_audit, **audit)
     write_json(committed, result)
@@ -162,6 +195,16 @@ def build(args):
     inventory = json.loads(Path(config['inventory']).read_text())
     config.update(output=str(output), archive=inventory['root'], parent_dataset=str(parent),
         parent_samples=len(fixed), parent_manifest_sha256=file_digest(parent_manifest))
+    preserved = fixed
+    preserve_manifest = None
+    if config.get('preserve_selected_from'):
+        previous = Path(config['preserve_selected_from'])
+        preserved = pd.read_csv(previous/'training_crop_moments.csv')
+        preserve_manifest = previous/'training/dataset/train.csv'
+        if (set(preserved.clip_id) != set(pd.read_csv(preserve_manifest).clip_id)
+                or not set(fixed.clip_id) <= set(preserved.clip_id)):
+            raise ValueError('The preserved selection must include every original parent clip')
+        config.update(preserved_samples=len(preserved), preserved_manifest_sha256=file_digest(preserve_manifest))
     protocol = json.loads((parent/'training/dataset/protocol.json').read_text())
     if config['domain'] != protocol['domain_lonlat']:
         raise ValueError('Preserve the parent geographic domain')
@@ -193,20 +236,27 @@ def build(args):
             results.append(result)
             write_json(output/'progress.json', dict(status='incremental_sampling',
                 completed_days=len(results), total_days=len(records), parent_samples=len(fixed),
-                added_candidates=sum(r['added_samples'] for r in results), last_day=result['day'], updated_unix=time.time()))
+                added_candidates=sum(r['added_samples'] for r in results),
+                newly_materialized_samples=sum(r['newly_materialized_samples'] for r in results),
+                last_day=result['day'], updated_unix=time.time()))
             print(f"{len(results)}/{len(records)} {result['day']}: {result['fixed_samples']} fixed + "
-                  f"{result['added_samples']} added; {result['stopping_reason']}; {result['elapsed_seconds']:.0f} s", flush=True)
+                  f"{result['added_samples']} accepted additions ({result['newly_materialized_samples']} new files); "
+                  f"{result['stopping_reason']}; {result['elapsed_seconds']:.0f} s", flush=True)
     if args.limit_days and args.limit_days < len(tasks):
         return
     candidates = pd.DataFrame([r for result in results for r in result['clips']])
-    selected = balanced_extension(fixed, candidates, seed=config['seed']+3)
-    if not set(fixed.clip_id) <= set(selected.clip_id) or len(selected) > config['target_samples']:
+    selected = balanced_extension(preserved, candidates, seed=config['seed']+3)
+    if not set(preserved.clip_id) <= set(selected.clip_id) or len(selected) > config['target_samples']:
         raise ValueError('Extension must preserve its parent and respect the sample ceiling')
     if file_digest(parent_manifest) != config['parent_manifest_sha256']:
         raise ValueError('Parent manifest changed during preparation')
+    if preserve_manifest and file_digest(preserve_manifest) != config['preserved_manifest_sha256']:
+        raise ValueError('The preserved selection changed during preparation')
     finalize(config, results, hashes, selected=selected)
     write_json(output/'incremental_sampling_summary.json', dict(parent_samples=len(fixed),
         total_candidates=len(candidates), selected_samples=len(selected), added_selected=len(selected)-len(fixed),
+        preserved_samples=len(preserved), new_selected_since_previous=len(selected)-len(preserved),
+        newly_materialized_samples=sum(r['newly_materialized_samples'] for r in results),
         parent_manifest_sha256=config['parent_manifest_sha256'], parent_clips_preserved=True,
         stopping_days=pd.Series([r['stopping_reason'] for r in results]).value_counts().to_dict(),
         added_pair_limit=config['max_shared_fraction']))
