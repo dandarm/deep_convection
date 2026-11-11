@@ -111,7 +111,7 @@ def audit_added_pairs(events, fixed_count, *, size=224, frames=16):
         new_pairs_checked=int(new_pairs.sum()))
 
 
-def balanced_extension(fixed, candidates, *, seed, world_size=4):
+def balanced_extension(fixed, candidates, *, seed, world_size=4, target=None):
     """Keep every fixed clip and balance the expanded total over calendar months."""
     if fixed.empty or fixed.clip_id.duplicated().any() or candidates.clip_id.duplicated().any():
         raise ValueError('Unique clip identities and a nonempty fixed manifest are required')
@@ -119,11 +119,12 @@ def balanced_extension(fixed, candidates, *, seed, world_size=4):
         raise ValueError('Every fixed clip must be present in the candidate pool')
     fixed = fixed.copy(); candidates = candidates.copy()
     fixed['month'] = fixed.day.str[:7]; candidates['month'] = candidates.day.str[:7]
-    months = sorted(fixed.month.unique())
-    if set(months) != set(candidates.month.unique()):
-        raise ValueError('Preserve the original observation months')
+    months = sorted(candidates.month.unique())
     quantum = world_size//np.gcd(world_size, len(months))
-    per_month = int(candidates.groupby('month').size().min())//quantum*quantum
+    capacity = int(candidates.groupby('month').size().min())
+    if target is not None:
+        capacity = min(capacity, target//len(months))
+    per_month = capacity//quantum*quantum
     if per_month < fixed.groupby('month').size().max():
         raise ValueError('Balanced extension cannot discard fixed clips')
     rng = np.random.default_rng(seed)

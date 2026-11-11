@@ -272,6 +272,29 @@ def finalize(config, results, hashes, *, selected=None):
                 original_proposal_blocks_reproduced=all(r['original_proposal_blocks_reproduced'] for r in results))
             protocol.update(continuation)
             summary.update(continuation)
+    if config.get('sampling_mode') == 'continuous_uniform':
+        for name in ('temporal_streams', 'initial_start_jitter_frames', 'min_gap_frames',
+                     'max_gap_frames', 'surplus_clips_removed_for_equal_rank_sizes'):
+            protocol.pop(name, None)
+        starts = pd.to_datetime(selected.start_time, utc=True)
+        continuous = dict(sampling_mode='continuous_uniform', coverage_weight=0., border_boost=0.,
+            parent_dataset=config.get('parent_dataset'), parent_samples=config['parent_samples'],
+            parent_manifest_sha256=config['parent_manifest_sha256'],
+            preserved_candidates=config['preserved_candidates'],
+            added_samples=len(selected)-config['parent_samples'],
+            newly_materialized_samples=sum(r['newly_materialized_samples'] for r in results),
+            max_shared_observation_fraction_new=config['max_shared_fraction'],
+            shared_fraction_scope='Every pair involving a new clip; existing candidates preserved',
+            measured_maximum_new_pair_shared_fraction=max(r['maximum_new_pair_shared_fraction'] for r in results),
+            proposal_block_size=config['block_size'], minimum_acceptance_rate=config['minimum_acceptance'],
+            stopping_patience=config['patience'], maximum_proposals_per_day=config['max_proposals'],
+            cross_midnight_clips=int((starts.dt.normalize() !=
+                (starts+pd.Timedelta(minutes=75)).dt.normalize()).sum()),
+            temporal_schedule='All complete five-minute starts across consecutive eligible daily stores',
+            temporal_context='Existing and accepted clips on both sides of UTC day boundaries',
+            parallel_schedule='Two deterministic phases of nonadjacent UTC days', ddp_world_size=4)
+        protocol.update(continuous, sampling='Uniform random admissible starts and spatial origins with continuous temporal overlap checks')
+        summary.update(continuous)
     protocol.pop('frame_cache', None)
     protocol.pop('selected_starts_per_six_hour_bin', None)
     write_json(dataset/'protocol.json', protocol)
