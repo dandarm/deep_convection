@@ -206,36 +206,20 @@ errori nei gradienti, ricostruzioni ed esempi di previsione. I risultati sono
 letti dai report delle epoche completate, senza eseguire inferenza.
 
 [`notebooks/study_seviri_ssl_dataset.ipynb`](notebooks/study_seviri_ssl_dataset.ipynb)
-raccoglie le distribuzioni del dataset: origini dei crop, date delle osservazioni,
-tempi iniziali distinti, dominio geografico, separazione temporale e
-normalizzazione. Confronta il campionamento storico sulla griglia spaziale con
-il ricampionamento a risoluzione di un pixel entro il dominio concordato.
-Mostra inoltre il dataset del 10 novembre: 131.072 clip su 93 giornate di
-gennaio–giugno 2022, con contributi mensili uniformi, e le sue validation da
-512 e 10.240 clip. La validation estesa precedente conserva una figura
-di copertura e un'identità separate.
+presenta la copertura mensile e giornaliera dell'archivio e il dataset finale
+da **17.568 clip**, su 93 date di gennaio–giugno 2022. Una sola cella raccoglie
+la mappa delle origini con esempi dei perimetri dei crop ogni 5°, gli
+istogrammi e il fermo immagine dell'animazione geostazionaria.
+La descrizione di dati, sampling, validation e normalizzazione ha una sezione
+separata. La historical variability resta come riferimento temporaneo per
+interpretare i primi esperimenti.
 
-Il dataset iniziale con **IoU spaziale massima 0,20 fra clip che condividono
-frame** contiene 9.900 clip sulle stesse 93 giornate, con 1.650 clip per mese.
-Dodici sequenze temporali asincrone propongono origini spaziali uniformi fra
-quelle ammissibili. Il dataset usa 26.450 istanti SEVIRI distinti e mantiene
-le validation calendariali. Il notebook confronta la copertura dei manifest
-e collega una GIF geostazionaria ricavata dalle clip effettivamente selezionate.
-Le mappe composite mostrano piccoli punti arancioni e perimetri dello stesso
-colore ogni 5° lungo tutti e quattro i bordi del campionamento.
-Training e validation sono materializzati in file di clip compressi senza
-perdita, complessivamente 94 GiB, destinati alla RAM condivisa del nodo.
-Protocollo e comandi nella sezione «Origini uniformi e partenze asincrone»
-di `SSL_SEVIRI.md`.
-
-Il campionatore continuo in
-`scripts/build_seviri_ssl_continuous_dataset.py` estende le clip attraverso
-mezzanotte e i cambi di anno usando tutti i frame RSS consecutivi ammissibili.
-La selezione risultante contiene 17.568 clip, comprese tutte le 16.536
-precedenti e 134 clip che attraversano mezzanotte. Il campionatore controlla
-entrambe le giornate confinanti con gli stessi limiti di sovrapposizione. Configurazione riproducibile e
-istruzioni per nuovi anni nella sezione «Campionamento continuo tra archivi
-giornalieri» di `SSL_SEVIRI.md`.
+La legenda della copertura distingue il numero di combinazioni geometriche
+ottenibili sull'archivio, usando stride temporale di un frame e spaziale di
+un pixel, dalle 17.568 clip effettivamente selezionate. Il conteggio delle
+combinazioni include le finestre complete attraverso mezzanotte.
+La procedura corrente, gli input fissati e i comandi sono documentati in
+[`SEVIRI_SSL_DATASET.md`](SEVIRI_SSL_DATASET.md).
 
 [`notebooks/study_seviri_cloud_mask_probe.ipynb`](notebooks/study_seviri_cloud_mask_probe.ipynb)
 presenta i probe CMA/CT/RDT e i controlli sulle rappresentazioni, con periodi di
@@ -248,7 +232,7 @@ Il kernel è `Python (deep_convection)`. Rieseguire le celle dall'inizio aggiorn
 le figure e gli export CSV. `SHOW_TABLES = True` abilita le tabelle opzionali;
 `USE_WIDGETS = True` abilita i selettori nel notebook di training. Gli output
 correnti sono in `results/training_study_20261110/`,
-`results/dataset_study_20261110/` e `results/radiometric_probes_study_20261110/`.
+`results/dataset_study_final_20261111/` e `results/radiometric_probes_study_20261110/`.
 Le revisioni precedenti restano nelle rispettive directory dei risultati.
 Protocollo e ripresa sono in `SSL_SEVIRI.md`.
 

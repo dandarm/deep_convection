@@ -1,5 +1,9 @@
 # Confronto degli obiettivi SSL SEVIRI
 
+La procedura corrente della raccolta da 17.568 clip è descritta in
+[SEVIRI_SSL_DATASET.md](SEVIRI_SSL_DATASET.md), con i soli passaggi necessari
+alla costruzione e all'utilizzo del dataset finale.
+
 Implementazione iniziale dell'handoff
 [`handoff_codex_ssl_seviri.md`](handoff_codex_ssl_seviri.md), avviata il
 24 ottobre 2026. Il primo esperimento prioritario è la previsione causale.

@@ -198,7 +198,7 @@ def manifest_coverage_figure(frame, root, *, title):
         color=CROP_COLOR, s=CROP_ORIGIN_POINT_SIZE, linewidths=0,
         transform=ccrs.PlateCarree(), rasterized=True)
     draw_boundary_crops(geo,origins,root)
-    geo.legend(loc='upper right',fontsize=8,framealpha=.9)
+    geo.legend(loc='upper right',fontsize=8,framealpha=.95).set_zorder(10)
     geo.set_title(f'{title}: crop origins')
     lines = geo.gridlines(draw_labels=True, linewidth=.3, alpha=.4)
     lines.top_labels = lines.right_labels = False
