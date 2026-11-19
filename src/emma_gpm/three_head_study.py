@@ -154,8 +154,9 @@ def learning_figure(suite,names=None,heads=('cma','ct','rdt')):
     names=names or ['E0-Rand','E0-RGB','E1-Single-cma','E1-Single-ct','E1-Single-rdt','E1-Joint3']
     if not any(suite['runs'].get(name,{}).get('history') for name in names):
         return None
-    fig,axes=plt.subplots(1,len(heads),figsize=(5.7*len(heads),4.5))
+    fig,axes=plt.subplots(1,len(heads),figsize=(5.7*len(heads),5.1))
     for ax,head in zip(np.atleast_1d(axes),heads):
+        ratios=[]
         for name in names:
             run=suite['runs'].get(name)
             if not run or head not in run['config']['heads'] or not run['history']:
@@ -163,9 +164,21 @@ def learning_figure(suite,names=None,heads=('cma','ct','rdt')):
             history=run['history']
             ax.plot([row['updates'] for row in history],
                     [row['validation']['losses'][head] for row in history],label=name)
+            ratios.extend(row['updates']/row['epoch'] for row in history if row.get('epoch'))
         ax.set(xscale='log',yscale='log',xlabel='Optimizer updates',ylabel='Validation loss',title=head.upper())
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:.3g}'))
         ax.yaxis.set_minor_formatter(FuncFormatter(lambda value, _: f'{value:.3g}'))
+        if ratios and (max(ratios)-min(ratios)) < 1e-3:
+            upe=float(np.median(ratios))
+            sec=ax.secondary_xaxis(-0.22,functions=(lambda u, r=upe: np.asarray(u)/r,
+                                                    lambda e, r=upe: np.asarray(e)*r))
+            sec.set_xlabel(f'Epoch ({upe:g} updates/epoch)')
+            max_ep=max(row['epoch'] for name in names for row in suite['runs'].get(name,{}).get('history',[]) if row.get('epoch'))
+            ticks=[t for t in (1,2,5,10,20,30,60,120,250) if t<=max_ep*1.05]
+            if ticks:
+                sec.set_xticks(ticks)
+            sec.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:g}'))
+            sec.xaxis.set_minor_formatter(FuncFormatter(lambda value, _: ''))
         ax.grid(alpha=.2);ax.legend(fontsize=8)
     fig.tight_layout()
     return fig
