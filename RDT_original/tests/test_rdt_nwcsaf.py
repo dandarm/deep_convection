@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
 import numpy as np
 import pytest
+
+_RDT_ROOT = Path(__file__).resolve().parents[1]
+if str(_RDT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_RDT_ROOT))
 
 from rdt_nwcsaf import (
     NwcSafRdtConfig,
@@ -340,4 +346,60 @@ def test_calibrated_rdt_model_and_seviri_surrogates() -> None:
     assert t_tropo.shape == (16, 16)
     assert nwpconv.shape == (16, 16)
     assert np.all((t_tropo >= 198.0) & (t_tropo <= 228.0))
+
+
+def test_ct_prefilter_boundary_preserves_15m_cooling_and_target_mask() -> None:
+    """Ensure cloud-mask pre-filtering does not mark interior cells as border-limited or disable 15m trends."""
+    h, w = 48, 48
+    area = np.full((h, w), 25.0, dtype=np.float32)
+    yy, xx = np.mgrid[:h, :w]
+    dist = np.hypot(yy - 24.0, xx - 24.0)
+
+    # Cloud mask cuts along xx >= 21 so the cell contour touches ~cloud_mask
+    cloud_mask = (dist <= 9.0) & (xx >= 21)
+
+    frames = []
+    # 4 slots (0, 5, 10, 15 min) with a cooling tower at (24, 24)
+    for core_t in [244.0, 239.0, 234.0, 229.0]:
+        ir108 = np.full((h, w), 288.0, dtype=np.float32)
+        tower = core_t + 1.8 * dist
+        ir108 = np.minimum(ir108, tower)
+        frames.append(_make_7ch_frame(ir108, btd_wv62_ir108=-3.0))
+
+    clip = np.stack(frames, axis=0)
+    times = [
+        "2022-07-01T00:00:00Z",
+        "2022-07-01T00:05:00Z",
+        "2022-07-01T00:10:00Z",
+        "2022-07-01T00:15:00Z",
+    ]
+
+    # Corrected default (separate_observation_support=True)
+    out_corr = run_nwcsaf_rdt_sequence(
+        clip, times=times, area_km2=area, cloud_mask=cloud_mask
+    )
+    cells_slot3 = out_corr["frame_records"][3]["cells"]
+    assert len(cells_slot3) == 1
+    cell_corr = next(iter(cells_slot3.values()))
+    assert cell_corr["border"] is False
+    assert cell_corr["valid_15m_trend"] is True
+    assert np.isfinite(cell_corr["cooling_15m_k"])
+    assert cell_corr["cooling_15m_k"] < -10.0
+    assert bool(out_corr["valid_observation"][3].all()) is True
+    assert bool(out_corr["valid_15m_target_mask"][3, 24, 24]) is True
+    assert np.isfinite(out_corr["cooling_15m_map_k"][3, 24, 24])
+
+    # Legacy mode (separate_observation_support=False) marks cell as border=True and disables 15m cooling
+    out_leg = run_nwcsaf_rdt_sequence(
+        clip,
+        times=times,
+        area_km2=area,
+        cloud_mask=cloud_mask,
+        separate_observation_support=False,
+    )
+    cell_leg = next(iter(out_leg["frame_records"][3]["cells"].values()))
+    assert cell_leg["border"] is True
+    assert cell_leg["valid_15m_trend"] is False
+    assert np.isnan(cell_leg["cooling_15m_k"])
+
 

@@ -190,19 +190,23 @@ class _LazyVerticalProfile(dict):  # type: ignore[type-arg]
 
     def __init__(self, hierarchy: ThresholdSliceHierarchy, seed_yx: tuple[int, int], t_min_k: float) -> None:
         super().__init__()
-        self._hierarchy = hierarchy
+        self._hierarchy: ThresholdSliceHierarchy | None = hierarchy
         self._seed_yx = seed_yx
         self._min_key = hierarchy._key(max(hierarchy.cfg.tcold_k, float(np.floor(t_min_k))))
         self._max_key = hierarchy._key(hierarchy.cfg.twarm_k)
 
+    def detach(self) -> None:
+        """Drop reference to the heavy hierarchy object so it can be garbage collected."""
+        self._hierarchy = None
+
     def __contains__(self, key: object) -> bool:
         if super().__contains__(key):
             return True
-        return isinstance(key, int) and (self._min_key <= key <= self._max_key)
+        return self._hierarchy is not None and isinstance(key, int) and (self._min_key <= key <= self._max_key)
 
     def __getitem__(self, key: int) -> float:
         if not super().__contains__(key):
-            if self._min_key <= key <= self._max_key:
+            if self._hierarchy is not None and self._min_key <= key <= self._max_key:
                 lv = self._hierarchy.threshold_from_key(key)
                 val = self._hierarchy.area_containing_seed(lv, self._seed_yx)
                 super().__setitem__(key, val)
@@ -296,15 +300,15 @@ def detect_rdt_cells(
     if ct_cloudy_mask is not None:
         valid_mask = valid_mask & np.asarray(ct_cloudy_mask, dtype=bool)
 
+    attribute_support = observation_support if separate_observation_support else valid_mask
     hierarchy = ThresholdSliceHierarchy(ir108, area, valid_mask, cfg)
     if not valid_mask.any():
-        return np.zeros(area.shape, dtype=np.int32), {}, hierarchy, valid_mask
+        return np.zeros(area.shape, dtype=np.int32), {}, hierarchy, attribute_support
 
     # Spatial gradient of IR108 in K/km for inner and peripheral gradient attributes
     # Cloud-type screening selects detection candidates. Finite clear pixels
     # still provide observed radiometry and spatial-gradient support. The
     # explicit legacy default preserves the original reference implementation.
-    attribute_support = observation_support if separate_observation_support else valid_mask
     gy_pix, gx_pix = np.gradient(np.where(attribute_support, ir108, np.nan))
     pixel_step_km = np.sqrt(np.maximum(area, 1e-6))
     grad_ir_km = np.hypot(gy_pix, gx_pix) / pixel_step_km
@@ -707,4 +711,4 @@ def detect_rdt_cells(
             "tropopause_temp_k": local_tropo,
         }
 
-    return labels, cells, hierarchy, valid_mask
+    return labels, cells, hierarchy, attribute_support

@@ -144,7 +144,7 @@ class NwcSafCmaCtTracker:
         prev_1h_quality: np.ndarray | None = None
         if len(self._history) >= self._steps_1h:
             entry_1h = self._history[-self._steps_1h]
-            prev_1h_cube = entry_1h.cube_7ch.astype(np.float32)
+            prev_1h_cube = entry_1h.cube_7ch
             prev_1h_cma = entry_1h.cma
             prev_1h_ct = entry_1h.ct
             prev_1h_quality = entry_1h.cma_quality

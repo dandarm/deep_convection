@@ -20,6 +20,7 @@ import sys
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
+from scipy import ndimage
 import xarray as xr
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +35,8 @@ from CT_original.ct_nwcsaf.ancillary import (
 )
 from CT_original.ct_nwcsaf.config import NwcSafCmaCtConfig
 from CT_original.ct_nwcsaf.pipeline import NwcSafCmaCtTracker
-from emma_gpm.rdt.pure_gen_utls import PureGenUtlsTracker
+from RDT_original.rdt_nwcsaf.config import NwcSafRdtConfig
+from RDT_original.rdt_nwcsaf.pipeline import NwcSafRdtTracker
 from emma_gpm.rdt.storage import DomainFrameReader
 from scripts.build_rdt_pure_gen_utls_week import _geometry
 
@@ -62,11 +64,11 @@ PALETTE_CMA = {
 
 LEGEND_CMA = [
     ("0: Clear Sky", PALETTE_CMA[0]),
-    ("1: Cloud Filled (Opaque/Thick)", PALETTE_CMA[1]),
-    ("2: Cloud Contaminated (Thin/Edge)", PALETTE_CMA[2]),
+    ("1: Cloud Filled", PALETTE_CMA[1]),
+    ("2: Cloud Contaminated", PALETTE_CMA[2]),
 ]
 
-# Testa 2: Cloud Type Piano A (5 Macro-Regimi Fisici: Clear Sky + 4 Cloud Classes)
+# Testa 2: Cloud Type (5 Macro-Regimi Fisici: Clear Sky + 4 Cloud Classes)
 PALETTE_5_REGIMES = {
     0: (30, 41, 59),     # Clear Sky: dark slate #1E293B
     1: (245, 158, 11),   # Low / Boundary-Layer: warm amber #F59E0B
@@ -77,16 +79,16 @@ PALETTE_5_REGIMES = {
 
 LEGEND_5_REGIMES = [
     ("0: Clear Sky", PALETTE_5_REGIMES[0]),
-    ("1: Low Cloud (>650 hPa)", PALETTE_5_REGIMES[1]),
-    ("2: Mid Cloud (450-650 hPa)", PALETTE_5_REGIMES[2]),
-    ("3: High Opaque (<450 hPa)", PALETTE_5_REGIMES[3]),
+    ("1: Low Cloud", PALETTE_5_REGIMES[1]),
+    ("2: Mid Cloud", PALETTE_5_REGIMES[2]),
+    ("3: High Opaque", PALETTE_5_REGIMES[3]),
     ("4: Cirrus & Multilayer", PALETTE_5_REGIMES[4]),
 ]
 
 # Testa 3: RDT Pure-IR (5 Classi del Ciclo di Vita Convettivo)
 PALETTE_RDT_5 = {
     0: (30, 41, 59),     # Background / Clear or Warm Cloud: dark slate #1E293B
-    1: (71, 85, 105),    # Cold Non-Convective Anvil: steel blue-grey #475569
+    1: (59, 130, 246),   # Cold Non-Convective Anvil: vivid royal blue #3B82F6
     2: (250, 224, 20),   # Triggering / Growing Updraft: vivid lemon yellow #FAE014
     3: (255, 136, 0),    # Mature / Decaying Convective Core: vivid orange #FF8800
     4: (235, 0, 85),     # Severe / Overshooting Top (OT): vivid crimson-magenta #EB0055
@@ -94,10 +96,10 @@ PALETTE_RDT_5 = {
 
 LEGEND_RDT_5 = [
     ("0: Clear / Non-Cold", PALETTE_RDT_5[0]),
-    ("1: Cold Anvil (Non-Conv)", PALETTE_RDT_5[1]),
-    ("2: Triggering / Growing (Giallo)", PALETTE_RDT_5[2]),
-    ("3: Mature / Decaying (Arancione)", PALETTE_RDT_5[3]),
-    ("4: Severe / OT (Rosso-Magenta)", PALETTE_RDT_5[4]),
+    ("1: Cold Anvil", PALETTE_RDT_5[1]),
+    ("2: Triggering / Growing", PALETTE_RDT_5[2]),
+    ("3: Mature / Decaying", PALETTE_RDT_5[3]),
+    ("4: Severe / OT", PALETTE_RDT_5[4]),
 ]
 
 
@@ -140,20 +142,47 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageF
             return ImageFont.load_default()
 
 
+def _scene_tropopause_temp_k(cube: np.ndarray) -> float:
+    """Estimate scene scalar tropopause proxy (K) from WV_062 and IR_108 over cold cloud (< 235 K)."""
+    cold_c = np.isfinite(cube[4]) & (cube[4] < 235.0)
+    if int(np.count_nonzero(cold_c)) >= 50:
+        t_tr_c = float(
+            0.6 * np.nanpercentile(cube[0][cold_c], 10)
+            + 0.4 * np.nanpercentile(cube[4][cold_c], 5)
+        )
+    else:
+        t_tr_c = 215.0
+    return float(np.clip(t_tr_c, 205.0, 226.0))
+
+
 def render_color_map(
     class_map: np.ndarray,
     palette: dict[int, tuple[int, int, int]],
     is_earth_disk: np.ndarray,
     is_coast_or_grid: np.ndarray,
     target_wh: tuple[int, int],
+    *,
+    preserve_high_classes: bool = False,
 ) -> Image.Image:
-    """Render a 2D integer class map into an RGB PIL Image with coastlines and space background."""
+    """Render a 2D integer class map into an RGB PIL Image with coastlines and pure black space background."""
     H, W = class_map.shape
-    rgb_arr = np.full((H, W, 3), 30, dtype=np.uint8)
+    if preserve_high_classes:
+        work_map = class_map.copy()
+        conv_dil = ndimage.maximum_filter(
+            np.where(is_earth_disk & (class_map >= 2), class_map, 0), size=2
+        )
+        work_map = np.where(conv_dil >= 2, np.maximum(work_map, conv_dil), work_map)
+        # Ensure 1-4 px Overshooting Tops (class 4) survive the ~3x panel downsample
+        ot_dil = ndimage.maximum_filter(is_earth_disk & (class_map == 4), size=4)
+        work_map[ot_dil & is_earth_disk] = 4
+    else:
+        work_map = class_map
+
+    rgb_arr = np.zeros((H, W, 3), dtype=np.uint8)
     for c_val, rgb in palette.items():
-        m = is_earth_disk & (class_map == c_val)
+        m = is_earth_disk & (work_map == c_val)
         rgb_arr[m] = rgb
-    rgb_arr[~is_earth_disk] = (35, 42, 54)
+    rgb_arr[~is_earth_disk] = (0, 0, 0)
     rgb_arr[is_coast_or_grid] = (235, 240, 245)
     img = Image.fromarray(rgb_arr)
     return img.resize(target_wh, resample=Image.Resampling.NEAREST)
@@ -166,13 +195,13 @@ def render_channel_thumbnail(
     is_coast_or_grid: np.ndarray,
     target_wh: tuple[int, int],
 ) -> Image.Image:
-    """Render a single SEVIRI channel with inverted grayscale enhancement and subtle coastlines."""
+    """Render a single SEVIRI channel with inverted grayscale enhancement, pure black space, and subtle coastlines."""
     t_min, t_max = float(spec["t_min"]), float(spec["t_max"])
     valid_tb = np.where(np.isfinite(tb_map), tb_map, t_min)
     norm = np.clip((t_max - valid_tb) / (t_max - t_min), 0.0, 1.0)
     gray = (norm * 255.0).astype(np.uint8)
     rgb_arr = np.stack([gray, gray, gray], axis=-1)
-    rgb_arr[~is_earth_disk] = (35, 42, 54)
+    rgb_arr[~is_earth_disk] = (0, 0, 0)
     rgb_arr[is_coast_or_grid] = (140, 200, 250)  # Subtle cyan coastlines
     img = Image.fromarray(rgb_arr)
     return img.resize(target_wh, resample=Image.Resampling.BILINEAR)
@@ -191,42 +220,30 @@ def compose_three_heads_frame(
     """Compose the Full HD 1920x1080 dashboard frame with 7 SEVIRI channels + 3 Probing Heads.
 
     Layout:
-    - Top slim bar: Title + Timestamp + Convective stats
+    - Top slim bar: Title + Timestamp
     - Row 1 (4 channels): WV_062, WV_073, IR_087, IR_097
     - Row 2 (3 channels): IR_108, IR_120, IR_134 (centered)
-    - Row 3 (3 Probing Heads): Testa 1 (CMA), Testa 2 (CT Piano A 5-class), Testa 3 (RDT 5-class)
+    - Row 3 (3 Probing Heads): Testa 1 (CMA), Testa 2 (CT), Testa 3 (RDT)
     - Map legends only (no text slides).
     """
     canvas = Image.new("RGB", (1920, 1080), color=(12, 16, 24))
     draw = ImageDraw.Draw(canvas)
 
     f_title = _load_font(17, bold=True)
-    f_sub = _load_font(14, bold=True)
+    f_sub = _load_font(15, bold=True)
     f_card_hdr = _load_font(14, bold=True)
     f_leg = _load_font(13, bold=True)
-
-    # Compute instant convective metrics
-    conv_mask = rdt_5 >= 2
-    n_conv = int(conv_mask.sum())
-    n_ot = int((rdt_5 == 4).sum())
-    ho_recall = (int((conv_mask & (ct_5 == 3)).sum()) / max(1, n_conv)) * 100.0 if n_conv > 0 else 100.0
 
     # -------------------------------------------------------------------------
     # 1. Main Header Strip (y: 0..42)
     # -------------------------------------------------------------------------
     draw.rectangle([0, 0, 1920, 42], fill=(18, 25, 38))
     draw.line([(0, 42), (1920, 42)], fill=(40, 55, 78), width=1)
-    hdr_left = "SEVIRI 7-CH IR  |  3-HEAD PROBING: CMA + CLOUD TYPE (PIANO A) + RDT CONVEZIONE"
-    if period_label:
-        hdr_left += f"  [{period_label}]"
+    hdr_left = "SEVIRI 7-CH IR  |  3-HEAD PROBING: CLOUD MASK + CLOUD TYPE + RDT CONVEZIONE"
     draw.text((48, 11), hdr_left, fill=(245, 248, 255), font=f_title)
 
-    hdr_right = (
-        f"UTC: {timestamp_str}  |  "
-        f"Pixel Convettivi: {n_conv:,} (OT: {n_ot})  |  "
-        f"Nidificazione in High Opaque: {ho_recall:.1f}%"
-    )
-    draw.text((1170, 12), hdr_right, fill=(130, 225, 255), font=f_sub)
+    hdr_right = f"{timestamp_str} UTC"
+    draw.text((1685, 12), hdr_right, fill=(130, 225, 255), font=f_sub)
 
     # -------------------------------------------------------------------------
     # 2. Section 1: SEVIRI Channels in 2 Rows (Row 1: 4 ch, Row 2: 3 ch)
@@ -246,7 +263,7 @@ def compose_three_heads_frame(
         )
 
         draw.rectangle([col_x, row1_y0, col_x + ch_w, row1_y0 + 22], fill=(24, 34, 50))
-        ch_title = f"{spec['name']} ({spec['wl']}) — {spec['desc']}  [{spec['t_min']:.0f}–{spec['t_max']:.0f} K]"
+        ch_title = f"{spec['name']} ({spec['wl']})  [{spec['t_min']:.0f}–{spec['t_max']:.0f} K]"
         draw.text((col_x + 8, row1_y0 + 3), ch_title, fill=(225, 238, 255), font=f_card_hdr)
 
         canvas.paste(thumb, (col_x, row1_y0 + 22))
@@ -265,14 +282,14 @@ def compose_three_heads_frame(
         )
 
         draw.rectangle([col_x, row2_y0, col_x + ch_w, row2_y0 + 22], fill=(24, 34, 50))
-        ch_title = f"{spec['name']} ({spec['wl']}) — {spec['desc']}  [{spec['t_min']:.0f}–{spec['t_max']:.0f} K]"
+        ch_title = f"{spec['name']} ({spec['wl']})  [{spec['t_min']:.0f}–{spec['t_max']:.0f} K]"
         draw.text((col_x + 8, row2_y0 + 3), ch_title, fill=(225, 238, 255), font=f_card_hdr)
 
         canvas.paste(thumb, (col_x, row2_y0 + 22))
         draw.rectangle([col_x, row2_y0 + 22, col_x + ch_w, row2_y0 + 22 + ch_h], outline=(50, 70, 98), width=1)
 
     # -------------------------------------------------------------------------
-    # 3. Section 2: The 3 Probing Heads (Row 3: CMA, CT Piano A, RDT)
+    # 3. Section 2: The 3 Probing Heads (Row 3: CMA, CT, RDT)
     # -------------------------------------------------------------------------
     bot_w, bot_h = 596, 311
     bot_gap = 18
@@ -281,18 +298,25 @@ def compose_three_heads_frame(
 
     probes = [
         {
-            "title": "TESTA 1: CLOUD MASK (CMA PURE-IR)",
+            "title": "TESTA 1: CLOUD MASK",
             "map": render_color_map(cma_3, PALETTE_CMA, is_earth_disk, is_coast_or_grid, (bot_w, bot_h)),
             "legend": LEGEND_CMA,
         },
         {
-            "title": "TESTA 2: CLOUD TYPE PIANO A (4 CLASSI NUBE + CLEAR SKY)",
+            "title": "TESTA 2: CLOUD TYPE",
             "map": render_color_map(ct_5, PALETTE_5_REGIMES, is_earth_disk, is_coast_or_grid, (bot_w, bot_h)),
             "legend": LEGEND_5_REGIMES,
         },
         {
-            "title": "TESTA 3: RDT CONVEZIONE (CICLO DI VITA NIDIFICATO)",
-            "map": render_color_map(rdt_5, PALETTE_RDT_5, is_earth_disk, is_coast_or_grid, (bot_w, bot_h)),
+            "title": "TESTA 3: RDT CONVEZIONE",
+            "map": render_color_map(
+                rdt_5,
+                PALETTE_RDT_5,
+                is_earth_disk,
+                is_coast_or_grid,
+                (bot_w, bot_h),
+                preserve_high_classes=True,
+            ),
             "legend": LEGEND_RDT_5,
         },
     ]
@@ -340,7 +364,7 @@ def encode_mp4_and_gif(
     gif_out_path: Path,
     fps: int = 2,
 ) -> None:
-    """Encode a list of 1920x1080 RGB frames into an H.264 MP4 and a 960x540 animated GIF."""
+    """Encode a list of 1920x1080 RGB frames into an all-intra (-g 1) H.264 MP4 and a 960x540 animated GIF."""
     cmd = [
         "ffmpeg",
         "-y",
@@ -362,28 +386,35 @@ def encode_mp4_and_gif(
         "fast",
         "-crf",
         "18",
+        "-g",
+        "1",
         "-pix_fmt",
         "yuv420p",
         "-movflags",
         "+faststart",
         str(video_path),
     ]
-    raw_payload = b"".join([np.ascontiguousarray(fr, dtype=np.uint8).tobytes() for fr in video_frames])
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    _, err_bytes = proc.communicate(input=raw_payload)
+    assert proc.stdin is not None
+    for fr in video_frames:
+        proc.stdin.write(np.ascontiguousarray(fr, dtype=np.uint8).tobytes())
+    proc.stdin.close()
+    err_bytes = proc.stderr.read() if proc.stderr is not None else b""
+    proc.wait()
     if proc.returncode != 0:
         err = err_bytes.decode("utf-8", errors="replace") if err_bytes else ""
         raise RuntimeError(f"FFmpeg failed ({proc.returncode}): {err}")
 
+    gif_stride = max(1, len(video_frames) // 72)
     gif_frames = [
         Image.fromarray(fr).resize((960, 540), resample=Image.Resampling.BOX)
-        for fr in video_frames
+        for fr in video_frames[::gif_stride]
     ]
     gif_frames[0].save(
         gif_out_path,
         save_all=True,
         append_images=gif_frames[1:],
-        duration=int(1000 / fps),
+        duration=max(80, int(1000 * gif_stride / max(1, fps))),
         loop=0,
     )
 
@@ -396,8 +427,10 @@ def render_archive_period_video(
     start_idx: int = 0,
     num_5min_slots: int = 36,
     render_every_n_slots: int = 1,
+    warmup_slots: int = 12,
+    fps: int = 3,
 ) -> dict[str, object]:
-    """Run CMA, CT Piano A, and RDT on a Zarr archive window and render MP4 + GIF + Peak Preview PNG."""
+    """Run CMA, CT, and RDT_original on a Zarr archive window and render MP4 + GIF + Peak Preview PNG."""
     out_dir.mkdir(parents=True, exist_ok=True)
     geom = _geometry(zarr_path)
     area_km2 = geom["area_km2"]
@@ -411,49 +444,142 @@ def render_archive_period_video(
     is_coast = coast_mask & is_earth_disk
 
     with xr.open_zarr(zarr_path, consolidated=True, chunks=None) as ds_x:
-        all_times = pd.DatetimeIndex(ds_x.time.values)
+        raw_times = pd.DatetimeIndex(ds_x.time.values)
+
+    sorted_order = np.argsort(raw_times.asi8)
+    all_times = raw_times[sorted_order]
+
+    # For 20200917.zarr (Medicane Ianos), apply the documented payload-order swap at 162:193
+    is_ianos_20200917 = zarr_path.name == "20200917.zarr" and len(all_times) == 288
+    if is_ianos_20200917:
+        corrected_order = np.concatenate(
+            [
+                sorted_order[:162],
+                sorted_order[181:193],
+                sorted_order[162:181],
+                sorted_order[193:],
+            ]
+        ).astype(np.int64)
+        payload_times = raw_times[corrected_order]
+    else:
+        payload_times = all_times
 
     window_times = all_times[start_idx : start_idx + num_5min_slots]
-    if len(window_times) < 4:
+    window_payload_times = payload_times[start_idx : start_idx + num_5min_slots]
+    if len(window_times) <= warmup_slots:
         raise ValueError(f"Not enough timestamps in {zarr_path} for window starting at {start_idx}")
 
     reader = DomainFrameReader(zarr_path.parent.parent)
     ct_cfg = NwcSafCmaCtConfig.full_domain_pure_ir()
     ct_tracker = NwcSafCmaCtTracker(ct_cfg)
-    rdt_tracker = PureGenUtlsTracker()
+    rdt_cfg = NwcSafRdtConfig(
+        enforce_stretched_mask=False,
+        nwp_conv_filter=False,
+        discri_scheme="GEN",
+        parallax=False,
+    )
+    rdt_tracker = NwcSafRdtTracker(
+        rdt_cfg,
+        use_ancillary_ct=True,
+        use_hrw_amv=False,
+        use_parallax_correction=False,
+        separate_observation_support=True,
+    )
 
-    video_frames: list[np.ndarray] = []
+    video_path = out_dir / f"three_heads_probing_{period_tag}.mp4"
+    gif_path = out_dir / f"three_heads_probing_{period_tag}.gif"
+
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-vcodec",
+        "rawvideo",
+        "-s",
+        "1920x1080",
+        "-pix_fmt",
+        "rgb24",
+        "-r",
+        str(fps),
+        "-i",
+        "-",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-g",
+        "1",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(video_path),
+    ]
+    ffmpeg_proc = subprocess.Popen(
+        ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    )
+    assert ffmpeg_proc.stdin is not None
+
+    total_expected_render = ((len(window_times) - 1 - warmup_slots) // render_every_n_slots) + 1
+    gif_stride = max(1, total_expected_render // 72)
+    gif_frames: list[Image.Image] = []
+    rendered_frames_count = 0
+
     peak_conv_pixels = -1
+    peak_score = -1
     peak_frame: np.ndarray | None = None
     peak_ts_str = ""
 
     total_conv_pixels = 0
     total_conv_in_ho = 0
+    total_conv_in_ho_or_mid = 0
     total_conv_in_cma = 0
     total_ot_pixels = 0
+    total_cell_pixels = 0
+    total_cool15_pixels = 0
 
-    print(f"\n>>> Rendering {period_tag} ({period_label}): {window_times[0]} -> {window_times[-1]} ({len(window_times)} slots)", flush=True)
+    print(
+        f"\n>>> Rendering {period_tag} ({period_label}): "
+        f"{window_times[0]} -> {window_times[-1]} ({len(window_times)} slots, warmup={warmup_slots})",
+        flush=True,
+    )
 
-    for idx, ts in enumerate(window_times):
-        cube = reader.load(ts)
+    for idx, (ts, load_ts) in enumerate(zip(window_times, window_payload_times)):
+        cube = reader.load(load_ts)
         ct_res = ct_tracker.step(cube, lat_deg=lat_deg, lon_deg=lon_deg, land_mask=land_mask)
-        rdt_res = rdt_tracker.step_frame(cube, ts, area_km2, lat_deg=lat_deg, lon_deg=lon_deg)
+        tropo_k = _scene_tropopause_temp_k(cube)
+        rdt_res = rdt_tracker.step_frame(
+            cube,
+            ts,
+            area_km2,
+            lat_deg=lat_deg,
+            lon_deg=lon_deg,
+            tropopause_temp_k=tropo_k,
+        )
 
         cma_3 = map_cma_to_3_classes(ct_res.cma, ct_res.cma_cloudsnow)
         ct_5 = map_ct_to_5_regimes(ct_res.ct)
         rdt_5 = map_rdt_semantic_to_5_classes(rdt_res["semantic_label"])
 
-        # After 3-frame warm-up (15 min), accumulate stats and render frames
-        if idx >= 3:
+        if idx >= warmup_slots:
             conv_m = rdt_5 >= 2
             n_conv = int(conv_m.sum())
             n_ot = int((rdt_5 == 4).sum())
             total_conv_pixels += n_conv
             total_ot_pixels += n_ot
             total_conv_in_ho += int((conv_m & (ct_5 == 3)).sum())
+            total_conv_in_ho_or_mid += int((conv_m & np.isin(ct_5, [2, 3])).sum())
             total_conv_in_cma += int((conv_m & (ct_res.cma_cloudsnow == 1)).sum())
+            for c_info in rdt_res["cells"].values():
+                npx = int(c_info["pixel_count"])
+                total_cell_pixels += npx
+                if np.isfinite(c_info.get("cooling_15m_k", np.nan)):
+                    total_cool15_pixels += npx
 
-            if (idx - 3) % render_every_n_slots == 0:
+            if (idx - warmup_slots) % render_every_n_slots == 0:
                 ts_str = ts.strftime("%Y-%m-%d %H:%M")
                 frame = compose_three_heads_frame(
                     cube=cube,
@@ -465,12 +591,28 @@ def render_archive_period_video(
                     timestamp_str=ts_str,
                     period_label=period_label,
                 )
-                video_frames.append(frame)
+                ffmpeg_proc.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
+                if rendered_frames_count % gif_stride == 0:
+                    gif_frames.append(
+                        Image.fromarray(frame).resize((960, 540), resample=Image.Resampling.BOX)
+                    )
+                rendered_frames_count += 1
 
-                if n_conv > peak_conv_pixels:
+                # Prioritize frames with strong convective activity AND confirmed Overshooting Tops for the preview PNG
+                frame_score = n_conv + 150 * n_ot
+                if frame_score > peak_score:
+                    peak_score = frame_score
                     peak_conv_pixels = n_conv
-                    peak_frame = frame
+                    peak_frame = frame.copy()
                     peak_ts_str = ts.strftime("%Y%m%dT%H%MZ")
+                del frame
+
+            if (idx + 1) % 36 == 0:
+                print(
+                    f"    ... slot {idx + 1}/{len(window_times)} ({ts.strftime('%H:%M UTC')}) | "
+                    f"cumul conv={total_conv_pixels:,}, OT={total_ot_pixels:,}",
+                    flush=True,
+                )
 
         del ct_res, rdt_res, cube, cma_3, ct_5, rdt_5
         if (idx + 1) % 6 == 0:
@@ -480,34 +622,56 @@ def render_archive_period_video(
     del ct_tracker, rdt_tracker, reader
     gc.collect()
 
-    video_path = out_dir / f"three_heads_probing_{period_tag}.mp4"
-    gif_path = out_dir / f"three_heads_probing_{period_tag}.gif"
-    preview_path = out_dir / f"three_heads_preview_{period_tag}_{peak_ts_str}.png"
+    ffmpeg_proc.stdin.close()
+    err_bytes = ffmpeg_proc.stderr.read() if ffmpeg_proc.stderr is not None else b""
+    ffmpeg_proc.wait()
+    if ffmpeg_proc.returncode != 0:
+        err = err_bytes.decode("utf-8", errors="replace") if err_bytes else ""
+        raise RuntimeError(f"FFmpeg failed ({ffmpeg_proc.returncode}): {err}")
 
-    encode_mp4_and_gif(video_frames, video_path, gif_path, fps=3)
+    preview_path = out_dir / f"three_heads_preview_{period_tag}_{peak_ts_str}.png"
     if peak_frame is not None:
         Image.fromarray(peak_frame).save(preview_path)
+        del peak_frame
+
+    if gif_frames:
+        gif_frames[0].save(
+            gif_path,
+            save_all=True,
+            append_images=gif_frames[1:],
+            duration=max(80, int(1000 * gif_stride / max(1, fps))),
+            loop=0,
+        )
+    del gif_frames
+    gc.collect()
 
     ho_recall = (total_conv_in_ho / max(1, total_conv_pixels)) * 100.0
+    ho_mid_recall = (total_conv_in_ho_or_mid / max(1, total_conv_pixels)) * 100.0
     cma_recall = (total_conv_in_cma / max(1, total_conv_pixels)) * 100.0
+    cool15_pct = (total_cool15_pixels / max(1, total_cell_pixels)) * 100.0
     info = {
         "period_tag": period_tag,
         "period_label": period_label,
         "zarr_archive": str(zarr_path),
-        "start_utc": str(window_times[3]),
+        "warmup_start_utc": str(window_times[0]),
+        "start_utc": str(window_times[warmup_slots]),
         "end_utc": str(window_times[-1]),
-        "rendered_frames": len(video_frames),
+        "rendered_frames": rendered_frames_count,
+        "fps": int(fps),
+        "step_minutes": int(5 * render_every_n_slots),
         "total_convective_pixels": int(total_conv_pixels),
         "peak_frame_convective_pixels": int(peak_conv_pixels),
         "total_overshooting_top_pixels": int(total_ot_pixels),
         "convective_recall_in_high_opaque_pct": float(ho_recall),
+        "convective_recall_in_high_or_mid_opaque_pct": float(ho_mid_recall),
         "convective_recall_in_cma_pct": float(cma_recall),
+        "valid_15m_cooling_cell_pixels_pct": float(cool15_pct),
         "video_mp4": str(video_path),
         "animated_gif": str(gif_path),
         "peak_preview_png": str(preview_path),
     }
     print(
-        f"  [OK] {period_tag}: {len(video_frames)} frames | "
+        f"  [OK] {period_tag}: {rendered_frames_count} frames | "
         f"Conv pixels: {total_conv_pixels:,} (Peak: {peak_conv_pixels:,}, OT: {total_ot_pixels:,}) | "
         f"HO Recall: {ho_recall:.2f}% | Video: {video_path.name}",
         flush=True,
@@ -524,70 +688,128 @@ def main():
     legacy_out_dir = staging_root / "probing_spec_video_20261027"
     legacy_out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Curated list of multi-year periods with intense convective activity across Europe & Mediterranean
+    # Curated list of long multi-hour / full-day intense convective periods from 2020 and 2022
+    # Format: (zarr_path, period_tag, period_label, start_idx, num_5min_slots, render_every_n_slots, warmup_slots, fps)
     periods = [
         (
-            Path(r"E:\Datasets\Deep_convection\staging\nwcsaf_rdt_pilot\rss_zarr\2026\20261027.zarr"),
-            "20261027_med_atlantic",
-            "2026-10-27 Autunno Med/Atlantico",
-            0,
-            46,
-            2,  # every 10 min
-        ),
-        (
-            Path(r"E:\Datasets\Deep_convection\staging\nwcsaf_rdt_archive_scan\rss_zarr_pilot\2024\20240829.zarr"),
-            "20240829_summer_mcs",
-            "2024-08-29 Convezione Estiva MCS",
-            0,
-            36,
-            1,  # every 5 min
-        ),
-        (
-            Path(r"E:\Datasets\Deep_convection\staging\nwcsaf_rdt_archive_scan\rss_zarr_pilot\2025\20250801.zarr"),
-            "20250801_alpine_po_valley",
-            "2025-08-01 Temporali Alpini/Mediterranei",
-            0,
-            36,
-            1,  # every 5 min
-        ),
-        (
-            Path(r"E:\Datasets\Deep_convection\staging\nwcsaf_rdt_archive_scan\rss_zarr_video_batch\candidate_015\2025\20250720.zarr"),
-            "20250720_severe_summer",
-            "2025-07-20 Supercelle & MCS Estivi",
-            0,
-            36,
+            Path(r"E:\Datasets\MSG-SEVIRI\2020\20200917.zarr"),
+            "20200917_medicane_ianos",
+            "2020-09-17 Medicane Ianos (Mar Ionio — Giornata Intera 24h)",
+            0,    # 00:00 UTC -> 23:55 UTC (full 288-slot day, matching old Ianos video)
+            288,
             1,
+            0,    # Render all 288 slots from 00:00 UTC
+            3,
         ),
         (
-            Path(r"E:\Datasets\Deep_convection\staging\nwcsaf_rdt_archive_scan\rss_zarr_video_batch\candidate_016\2025\20250908.zarr"),
-            "20250908_med_storms",
-            "2025-09-08 Convezione Profonda Mediterranea",
-            0,
-            36,
+            Path(r"E:\Datasets\MSG-SEVIRI\2020\20200711.zarr"),
+            "20200711_summer_convective_outbreak",
+            "2020-07-11 Outbreak Temporalesco Estivo (Giornata Intera 24h)",
+            0,    # 00:00 UTC -> 23:55 UTC (full 288-slot day)
+            288,
             1,
+            0,
+            3,
         ),
         (
-            Path(r"E:\Datasets\Deep_convection\staging\nwcsaf_rdt_archive_scan\rss_zarr_video_batch\candidate_019\2025\20250605.zarr"),
-            "20250605_continental_outbreak",
-            "2025-06-05 Outbreak Convettivo Europeo",
-            0,
-            36,
+            Path(r"E:\Datasets\MSG-SEVIRI\2020\20200715.zarr"),
+            "20200715_alpine_med_storms",
+            "2020-07-15 Sistemi Convettivi Alpini & Mediterranei (Giornata Intera 24h)",
+            0,    # 00:00 UTC -> 23:55 UTC (full 288-slot day)
+            288,
             1,
+            0,
+            3,
         ),
         (
-            Path(r"E:\Datasets\Deep_convection\staging\nwcsaf_rdt_archive_scan\rss_zarr_video_batch\candidate_009\2024\20240904.zarr"),
-            "20240904_late_summer_storms",
-            "2024-09-04 Sistemi Convettivi Settembrini",
-            0,
-            36,
+            Path(r"E:\Datasets\MSG-SEVIRI\2022\20220924.zarr"),
+            "20220924_med_mcs_outbreak",
+            "2022-09-24 Outbreak MCS V-Shaped Mediterraneo & Italia (17h)",
+            72,   # 06:00 UTC start (1h spin-up -> renders 07:00 to 23:55 UTC = 204 frames)
+            216,
             1,
+            12,
+            3,
+        ),
+        (
+            Path(r"E:\Datasets\MSG-SEVIRI\2022\20220925.zarr"),
+            "20220925_extreme_ot_mcs",
+            "2022-09-25 MCS Estremo Tirreno/Adriatico — Top 199 K (13.5h)",
+            0,    # 00:00 UTC start (30m spin-up -> renders 00:30 to 13:55 UTC = 162 frames)
+            168,
+            1,
+            6,
+            3,
+        ),
+        (
+            Path(r"E:\Datasets\MSG-SEVIRI\2022\20220522.zarr"),
+            "20220522_euro_supercells",
+            "2022-05-22 Outbreak Europeo di Supercelle & MCS (13h)",
+            120,  # 10:00 UTC start, 2.5h before initiation (1h spin-up -> renders 11:00 to 23:55 UTC = 156 frames)
+            168,
+            1,
+            12,
+            3,
+        ),
+        (
+            Path(r"E:\Datasets\MSG-SEVIRI\2022\20220912.zarr"),
+            "20220912_deep_tropopause_storms",
+            "2022-09-12 Convezione Profonda & Overshooting 197.5 K (13h)",
+            120,  # 10:00 UTC start, 2.5h before initiation (1h spin-up -> renders 11:00 to 23:55 UTC = 156 frames)
+            168,
+            1,
+            12,
+            3,
+        ),
+        (
+            Path(r"E:\Datasets\MSG-SEVIRI\2022\20220528.zarr"),
+            "20220528_med_continental_mcs",
+            "2022-05-28 Sistemi Convettivi Mesoscala & Temporali Diurni (13h)",
+            96,   # 08:00 UTC start, 2h before initiation (1h spin-up -> renders 09:00 to 21:55 UTC = 156 frames)
+            168,
+            1,
+            12,
+            3,
+        ),
+        (
+            Path(r"E:\Datasets\MSG-SEVIRI\2022\20220506.zarr"),
+            "20220506_widespread_med_convection",
+            "2022-05-06 Ciclone Convettivo Mediterraneo Esteso (13.5h)",
+            0,    # 00:00 UTC start (30m spin-up -> renders 00:30 to 13:55 UTC = 162 frames)
+            168,
+            1,
+            6,
+            3,
+        ),
+        (
+            Path(r"E:\Datasets\MSG-SEVIRI\2022\20220628.zarr"),
+            "20220628_alpine_west_med_severe",
+            "2022-06-28 Supercelle Alpine & Mediterraneo Occidentale (13h)",
+            108,  # 09:00 UTC start, 2h before initiation (1h spin-up -> renders 10:00 to 22:55 UTC = 156 frames)
+            168,
+            1,
+            12,
+            3,
         ),
     ]
 
-    summaries = []
-    for zarr_path, tag, label, s_idx, n_slots, step_n in periods:
+    summary_json = out_dir / "three_heads_videos_summary.json"
+    existing_summaries = {}
+    if summary_json.exists():
+        try:
+            existing_doc = json.loads(summary_json.read_text(encoding="utf-8"))
+            for p in existing_doc.get("periods", []):
+                existing_summaries[p["period_tag"]] = p
+        except Exception:
+            pass
+
+    for zarr_path, tag, label, s_idx, n_slots, step_n, w_slots, fps_val in periods:
         if not zarr_path.exists():
             print(f"Skipping missing archive: {zarr_path}", flush=True)
+            continue
+        v_path = out_dir / f"three_heads_probing_{tag}.mp4"
+        if v_path.exists() and tag in existing_summaries and tag != "20220924_med_mcs_outbreak":
+            print(f"Skipping already rendered video: {v_path.name}", flush=True)
             continue
         info = render_archive_period_video(
             zarr_path=zarr_path,
@@ -597,30 +819,25 @@ def main():
             start_idx=s_idx,
             num_5min_slots=n_slots,
             render_every_n_slots=step_n,
+            warmup_slots=w_slots,
+            fps=fps_val,
         )
-        summaries.append(info)
+        existing_summaries[tag] = info
 
-        # Copy 20261027 outputs to legacy_out_dir as well so existing paths remain up to date
-        if tag == "20261027_med_atlantic":
-            import shutil
-            shutil.copy2(info["video_mp4"], legacy_out_dir / "seviri_channels_and_probing_regimes_20261027.mp4")
-            shutil.copy2(info["animated_gif"], legacy_out_dir / "seviri_channels_and_probing_regimes_20261027.gif")
-            shutil.copy2(info["peak_preview_png"], legacy_out_dir / "probing_spec_preview_20261027T1200Z.png")
+        summary_doc = {
+            "title": "Multi-Period 3-Head VideoMAE Probing Videos (CMA + CT + RDT_original)",
+            "piano_b_excluded": True,
+            "heads": [
+                "Testa 1: Cloud Mask (CMA Pure-IR)",
+                "Testa 2: Cloud Type (0=Clear Sky + 4 Cloud Regimes)",
+                "Testa 3: RDT_original Convective Lifecycle (5 Classes, NwcSafRdtTracker)",
+            ],
+            "num_periods_rendered": len(existing_summaries),
+            "periods": list(existing_summaries.values()),
+        }
+        summary_json.write_text(json.dumps(summary_doc, indent=2), encoding="utf-8")
 
-    summary_doc = {
-        "title": "Multi-Period 3-Head VideoMAE Probing Videos (CMA + CT Piano A + RDT)",
-        "piano_b_excluded": True,
-        "heads": [
-            "Testa 1: Cloud Mask (CMA Pure-IR)",
-            "Testa 2: Cloud Type Piano A (0=Clear Sky + 4 Cloud Regimes)",
-            "Testa 3: RDT Pure-IR Convective Lifecycle (5 Classes)",
-        ],
-        "num_periods_rendered": len(summaries),
-        "periods": summaries,
-    }
-    summary_json = out_dir / "three_heads_videos_summary.json"
-    summary_json.write_text(json.dumps(summary_doc, indent=2), encoding="utf-8")
-    print(f"\nAll {len(summaries)} multi-period 3-head videos generated! Summary: {summary_json}", flush=True)
+    print(f"\nAll {len(existing_summaries)} multi-period 3-head videos generated! Summary: {summary_json}", flush=True)
 
 
 if __name__ == "__main__":

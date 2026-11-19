@@ -14,6 +14,7 @@ Connects all 6 stages of the official EUMETSAT NWC SAF RDT-CW algorithm:
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 import numpy as np
 
@@ -58,12 +59,14 @@ class NwcSafRdtTracker:
         use_ancillary_ct: bool = False,
         use_hrw_amv: bool = False,
         use_parallax_correction: bool = False,
+        separate_observation_support: bool = True,
     ) -> None:
         self.cfg = cfg or NwcSafRdtConfig()
         self.calibrated_model = calibrated_model
         self.use_ancillary_ct = use_ancillary_ct
         self.use_hrw_amv = use_hrw_amv
         self.use_parallax_correction = use_parallax_correction
+        self.separate_observation_support = bool(separate_observation_support)
         self.reset()
 
     def reset(self) -> None:
@@ -75,6 +78,7 @@ class NwcSafRdtTracker:
         self.prev_wv062: np.ndarray | None = None
         self.prev_time_min: float | None = None
         self.track_histories: dict[int, list[dict[str, Any]]] = {}
+        self.obs_history: deque[np.ndarray] = deque(maxlen=4)
         self.next_track_id: int = 1
         self.frame_index: int = 0
 
@@ -126,6 +130,7 @@ class NwcSafRdtTracker:
                 self.prev_ir = None
                 self.prev_wv062 = None
                 self.track_histories.clear()
+                self.obs_history.clear()
                 dt_minutes = float(self.cfg.expected_cadence_minutes)
 
         # Optional NWC SAF GEO-CT radiative cloud mask & thin cirrus filtering
@@ -165,7 +170,9 @@ class NwcSafRdtTracker:
             self.cfg,
             ct_cloudy_mask=cloud_mask,
             tropopause_temp_k=tropopause_temp_k,
+            separate_observation_support=self.separate_observation_support,
         )
+        self.obs_history.append(np.asarray(valid_obs_mask, dtype=bool))
 
         # Stage 3: 4-step tracking & trajectory linking
         parents, children, edges, primary_parent, events, convective_parent = track_rdt_cells(
@@ -190,8 +197,11 @@ class NwcSafRdtTracker:
         vertical_cat_map = np.full((h, w), -1, dtype=np.int8)
         base_threshold_map_k = np.full((h, w), np.nan, dtype=np.float32)
         top_threshold_map_k = np.full((h, w), np.nan, dtype=np.float32)
+        cooling_15m_map_k = np.full((h, w), np.nan, dtype=np.float32)
+        area_change_15m_map_km2 = np.full((h, w), np.nan, dtype=np.float32)
         ot_candidate_mask = np.zeros((h, w), dtype=bool)
         ot_confirmed_mask = np.zeros((h, w), dtype=bool)
+        tracked_15m_mask = np.zeros((h, w), dtype=bool)
         quality_mask = np.where(
             valid_obs_mask, QUALITY_OBSERVATION_VALID, 0
         ).astype(np.uint8)
@@ -312,7 +322,7 @@ class NwcSafRdtTracker:
                 "t_mean_k": cell["t_mean_k"],
                 "contrast_k": cell["contrast_k"],
                 "area_km2": cell["area_km2"],
-                "vertical_profile": cell["vertical_profile"],
+                "vertical_profile": dict(cell["vertical_profile"]),
                 "btd_wv62_ir108_max_k": cell["btd_wv62_ir108_max_k"],
                 "btd_wv62_ir108_p90_k": cell["btd_wv62_ir108_p90_k"],
                 "cooling_rate_k_per_h": cell["cooling_rate_k_per_h"],
@@ -333,6 +343,14 @@ class NwcSafRdtTracker:
             vertical_cat_map[bbox][mask] = int(cell["vertical_cat"])
             base_threshold_map_k[bbox][mask] = float(cell["t_bt_k"])
             top_threshold_map_k[bbox][mask] = float(cell["t_st_k"])
+            cool_15m_val = float(cell.get("cooling_15m_k", np.nan))
+            if np.isfinite(cool_15m_val):
+                cooling_15m_map_k[bbox][mask] = cool_15m_val
+                if len(new_hist) >= 4:
+                    tracked_15m_mask[bbox] |= mask
+            da_15m_val = float(cell.get("area_change_15m_km2", np.nan))
+            if np.isfinite(da_15m_val):
+                area_change_15m_map_km2[bbox][mask] = da_15m_val
             semantic_label[bbox][mask] = int(cell["class_id"])
 
             ot_cand_local = ot_res["candidate_mask"]
@@ -383,6 +401,19 @@ class NwcSafRdtTracker:
                 t_surf_k=tsurf_val, t_tropo_k=ttropo_val, fill_value=0,
             ).astype(bool)
 
+        if len(self.obs_history) == 4:
+            obs_4frame_valid = np.logical_and.reduce(list(self.obs_history))
+            valid_15m_target_mask = obs_4frame_valid & ((curr_labels == 0) | tracked_15m_mask)
+        else:
+            valid_15m_target_mask = np.zeros((h, w), dtype=bool)
+
+        # Detach heavy hierarchy references from cells before advancing
+        from .detection import _LazyVerticalProfile
+        for c in curr_cells.values():
+            vp = c.get("vertical_profile")
+            if isinstance(vp, _LazyVerticalProfile):
+                vp.detach()
+
         # Advance state to next slot
         self.prev_labels = curr_labels
         self.prev_cells = curr_cells
@@ -402,8 +433,12 @@ class NwcSafRdtTracker:
             "vertical_cat_map": vertical_cat_map,
             "base_threshold_map_k": base_threshold_map_k,
             "top_threshold_map_k": top_threshold_map_k,
+            "cooling_15m_map_k": cooling_15m_map_k,
+            "area_change_15m_map_km2": area_change_15m_map_km2,
             "ot_candidate_mask": ot_candidate_mask,
             "ot_confirmed_mask": ot_confirmed_mask,
+            "valid_observation": valid_obs_mask,
+            "valid_15m_target_mask": valid_15m_target_mask,
             "quality_mask": quality_mask,
             "cells": curr_cells,
             "forecasts": forecasts,
@@ -427,6 +462,7 @@ def run_nwcsaf_rdt_sequence(
     use_ancillary_ct: bool = False,
     use_hrw_amv: bool = False,
     use_parallax_correction: bool = False,
+    separate_observation_support: bool = True,
     u700_ms: np.ndarray | float | None = None,
     v700_ms: np.ndarray | float | None = None,
     t_surf_k: np.ndarray | float | None = None,
@@ -447,6 +483,7 @@ def run_nwcsaf_rdt_sequence(
         use_ancillary_ct=use_ancillary_ct,
         use_hrw_amv=use_hrw_amv,
         use_parallax_correction=use_parallax_correction,
+        separate_observation_support=separate_observation_support,
     )
 
     semantic_labels = np.zeros((num_t, h, w), dtype=np.uint8)
@@ -457,8 +494,12 @@ def run_nwcsaf_rdt_sequence(
     vertical_cat_maps = np.full((num_t, h, w), -1, dtype=np.int8)
     base_threshold_maps = np.full((num_t, h, w), np.nan, dtype=np.float32)
     top_threshold_maps = np.full((num_t, h, w), np.nan, dtype=np.float32)
+    cooling_15m_maps = np.full((num_t, h, w), np.nan, dtype=np.float32)
+    area_change_15m_maps = np.full((num_t, h, w), np.nan, dtype=np.float32)
     ot_candidate_masks = np.zeros((num_t, h, w), dtype=bool)
     ot_confirmed_masks = np.zeros((num_t, h, w), dtype=bool)
+    valid_observations = np.zeros((num_t, h, w), dtype=bool)
+    valid_15m_target_masks = np.zeros((num_t, h, w), dtype=bool)
     quality_masks = np.zeros((num_t, h, w), dtype=np.uint8)
 
     frame_records: list[dict[str, Any]] = []
@@ -526,8 +567,12 @@ def run_nwcsaf_rdt_sequence(
         vertical_cat_maps[t_idx] = step_out["vertical_cat_map"]
         base_threshold_maps[t_idx] = step_out["base_threshold_map_k"]
         top_threshold_maps[t_idx] = step_out["top_threshold_map_k"]
+        cooling_15m_maps[t_idx] = step_out["cooling_15m_map_k"]
+        area_change_15m_maps[t_idx] = step_out["area_change_15m_map_km2"]
         ot_candidate_masks[t_idx] = step_out["ot_candidate_mask"]
         ot_confirmed_masks[t_idx] = step_out["ot_confirmed_mask"]
+        valid_observations[t_idx] = step_out["valid_observation"]
+        valid_15m_target_masks[t_idx] = step_out["valid_15m_target_mask"]
         quality_masks[t_idx] = step_out["quality_mask"]
 
         frame_records.append(step_out)
@@ -556,8 +601,12 @@ def run_nwcsaf_rdt_sequence(
         "vertical_cat_map": vertical_cat_maps,
         "base_threshold_map_k": base_threshold_maps,
         "top_threshold_map_k": top_threshold_maps,
+        "cooling_15m_map_k": cooling_15m_maps,
+        "area_change_15m_map_km2": area_change_15m_maps,
         "ot_candidate_mask": ot_candidate_masks,
         "ot_confirmed_mask": ot_confirmed_masks,
+        "valid_observation": valid_observations,
+        "valid_15m_target_mask": valid_15m_target_masks,
         "quality_mask": quality_masks,
         "frame_records": frame_records,
         "cell_table": cell_table,

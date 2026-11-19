@@ -94,7 +94,7 @@ def render_vis_albedo_thumbnail(
     norm = np.power(valid / r_max, gamma)
     gray = (np.clip(norm, 0.0, 1.0) * 255.0).astype(np.uint8)
     rgb = np.stack([gray, gray, gray], axis=-1)
-    rgb[~is_earth_disk] = (35, 42, 54)
+    rgb[~is_earth_disk] = (0, 0, 0)
     rgb[is_coast] = (255, 220, 100)  # Subtle warm gold coastline for high contrast on dark sea
     return Image.fromarray(rgb).resize(target_wh, resample=Image.Resampling.BILINEAR)
 
@@ -124,7 +124,7 @@ def render_day_natural_rgb(
     g = _scale(vis08, 90.0, 0.72)
     b = _scale(vis06, 90.0, 0.72)
     rgb = np.stack([r, g, b], axis=-1)
-    rgb[~is_earth_disk] = (35, 42, 54)
+    rgb[~is_earth_disk] = (0, 0, 0)
     rgb[is_coast] = (245, 245, 220)
     return Image.fromarray(rgb).resize(target_wh, resample=Image.Resampling.BILINEAR)
 
@@ -140,7 +140,7 @@ def render_ir108_thumbnail(
     norm = np.clip((t_max - valid) / (t_max - t_min), 0.0, 1.0)
     gray = (norm * 255.0).astype(np.uint8)
     rgb = np.stack([gray, gray, gray], axis=-1)
-    rgb[~is_earth_disk] = (35, 42, 54)
+    rgb[~is_earth_disk] = (0, 0, 0)
     rgb[is_coast] = (140, 200, 250)
     return Image.fromarray(rgb).resize(target_wh, resample=Image.Resampling.BILINEAR)
 
@@ -163,32 +163,20 @@ def compose_visible_vs_cma_frame(
     draw = ImageDraw.Draw(canvas)
 
     f_title = _load_font(17, bold=True)
-    f_sub = _load_font(14, bold=True)
+    f_sub = _load_font(15, bold=True)
     f_card_hdr = _load_font(13, bold=True)
     f_leg = _load_font(12, bold=True)
-
-    # Compute cloud fraction in VIS006 (>16% reflectance) vs CMA Pure-IR
-    valid_disk = is_earth_disk & np.isfinite(vis06) & np.isfinite(ir108)
-    vis_cloud_pct = float((vis06[valid_disk] > 16.0).mean() * 100.0)
-    cma_cloud_pct = float((cma_3[valid_disk] >= 1).mean() * 100.0)
-    cma_opaque_pct = float((np.isin(ct_5[valid_disk], [1, 2, 3])).mean() * 100.0)
-    cirrus_pct = float((ct_5[valid_disk] == 4).mean() * 100.0)
 
     # Header bar
     draw.rectangle([0, 0, 1920, 44], fill=(18, 25, 38))
     draw.line([(0, 44), (1920, 44)], fill=(40, 55, 78), width=1)
     draw.text(
-        (40, 12),
-        f"CONFRONTO DIURNO: VIS006 / VIS008 / RGB vs 3 TESTE PURE-IR  [{period_label}]",
+        (48, 12),
+        "CONFRONTO DIURNO: VIS006 / VIS008 / RGB vs 3 TESTE PURE-IR",
         fill=(245, 248, 255),
         font=f_title,
     )
-    hdr_right = (
-        f"UTC: {timestamp_str}  |  "
-        f"Nubi Vis: {vis_cloud_pct:.1f}%  |  "
-        f"Opache IR: {cma_opaque_pct:.1f}% + Cirri IR: {cirrus_pct:.1f}% (CMA: {cma_cloud_pct:.1f}%)"
-    )
-    draw.text((1060, 14), hdr_right, fill=(130, 230, 255), font=f_sub)
+    draw.text((1685, 13), f"{timestamp_str} UTC", fill=(130, 230, 255), font=f_sub)
 
     # Top Row: 4 Optical / Radiometric Views (VIS006, VIS008, Day Natural RGB, IR_108)
     top_w, top_h = 444, 390
@@ -198,22 +186,22 @@ def compose_visible_vs_cma_frame(
 
     top_panels = [
         (
-            "1. VIS006 (0.6 µm Visibile Rosso) — Riflettanza Nubi",
+            "VIS_006 (0.6 µm)",
             render_vis_albedo_thumbnail(vis06, is_earth_disk, is_coast, (top_w, top_h)),
             "Bianco = Nubi riflettenti a occhio nudo | Scuro = Mare e terra sereni",
         ),
         (
-            "2. VIS008 (0.8 µm Vicino Infrarosso) — Nubi & Vegetazione",
+            "VIS_008 (0.8 µm)",
             render_vis_albedo_thumbnail(vis08, is_earth_disk, is_coast, (top_w, top_h)),
-            "Contrasto netto coste/vegetazione | Scuro = Mare sereno (albedo < 6%)",
+            "Contrasto netto coste/vegetazione | Scuro = Mare sereno",
         ),
         (
-            "3. RGB Naturale Diurno (IR_016, VIS008, VIS006)",
+            "RGB Naturale Diurno (1.6 / 0.8 / 0.6 µm)",
             render_day_natural_rgb(vis06, vis08, ir016, is_earth_disk, is_coast, (top_w, top_h)),
-            "Bianco = Nubi basse acqua | Ciano = Ghiaccio/Incudini | Verde = Terra | Blu scuro = Mare",
+            "Bianco = Nubi acqua | Ciano = Ghiaccio/Incudini | Verde = Terra | Blu scuro = Mare",
         ),
         (
-            "4. IR_108 (10.8 µm Finestra Termica) [210–310 K]",
+            "IR_108 (10.8 µm)  [210–310 K]",
             render_ir108_thumbnail(ir108, is_earth_disk, is_coast, (top_w, top_h)),
             "Rileva anche i cirri d'alta quota semitrasparenti nel visibile",
         ),
@@ -228,7 +216,7 @@ def compose_visible_vs_cma_frame(
         draw.rectangle([cx, top_y0 + 24 + top_h + 4, cx + top_w, top_y0 + 24 + top_h + 28], fill=(18, 24, 36))
         draw.text((cx + 8, top_y0 + 24 + top_h + 9), p_sub, fill=(180, 210, 240), font=f_leg)
 
-    # Bottom Row: The 3 Probing Heads (CMA, CT Piano A, RDT with Orange Mature Core)
+    # Bottom Row: The 3 Probing Heads (CMA, CT, RDT)
     bot_w, bot_h = 596, 420
     bot_gap = 18
     bot_x0 = 48
@@ -236,17 +224,17 @@ def compose_visible_vs_cma_frame(
 
     probes = [
         {
-            "title": "TESTA 1: CLOUD MASK (CMA PURE-IR CON LINEA DI COSTA)",
+            "title": "TESTA 1: CLOUD MASK",
             "map": render_color_map(cma_3, PALETTE_CMA, is_earth_disk, is_coast, (bot_w, bot_h)),
             "legend": LEGEND_CMA,
         },
         {
-            "title": "TESTA 2: CLOUD TYPE PIANO A (4 CLASSI NUBE + CLEAR SKY)",
+            "title": "TESTA 2: CLOUD TYPE",
             "map": render_color_map(ct_5, PALETTE_5_REGIMES, is_earth_disk, is_coast, (bot_w, bot_h)),
             "legend": LEGEND_5_REGIMES,
         },
         {
-            "title": "TESTA 3: RDT CONVEZIONE (MATURO IN ARANCIONE, OT IN ROSSO-MAGENTA)",
+            "title": "TESTA 3: RDT CONVEZIONE",
             "map": render_color_map(rdt_5, PALETTE_RDT_5, is_earth_disk, is_coast, (bot_w, bot_h)),
             "legend": LEGEND_RDT_5,
         },
@@ -326,7 +314,7 @@ def render_daytime_visible_comparison(
 
     reader = DomainFrameReader(zarr_path.parent.parent)
     ct_tracker = NwcSafCmaCtTracker(NwcSafCmaCtConfig.full_domain_pure_ir())
-    rdt_tracker = PureGenUtlsTracker()
+    rdt_tracker = PureGenUtlsTracker(separate_observation_support=True)
 
     video_frames: list[np.ndarray] = []
     peak_conv = -1

@@ -769,6 +769,8 @@ def discriminate_and_classify_cell(
         and not prev_cell.get("border", False)
     )
     growth_valid = bool(temporal_valid and event == "continuation")
+    valid_15m_trend = bool(np.isfinite(trends.get("cooling_15m_k", np.nan)))
+    valid_15m_growth = bool(np.isfinite(trends.get("area_change_15m_km2", np.nan)))
 
     return {
         "vertical_cat": int(vertical_cat),
@@ -789,6 +791,8 @@ def discriminate_and_classify_cell(
         "reason": discri_reason,
         "temporal_valid": temporal_valid,
         "growth_valid": growth_valid,
+        "valid_15m_trend": valid_15m_trend,
+        "valid_15m_growth": valid_15m_growth,
         "phase_valid": bool(temporal_valid or is_convective),
         **trends,
     }

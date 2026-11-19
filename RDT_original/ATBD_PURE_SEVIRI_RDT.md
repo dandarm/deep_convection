@@ -484,3 +484,19 @@ I vettori dei pesi $\boldsymbol{\beta}$ sono stratificati per **6 categorie vert
 | **Dati Fulmini a Terra ($LGH$)** | **Assenti:** i fulmini non sono rilevabili dai canali termici IR | **Assenti:** non utilizzati nel benchmark (reti proprietarie a pagamento) | Opzionali (ATDnet / EUCLID): forzano convettività se presenti $\ge 1\text{--}2$ fulmini |
 | **Allineamento Geometrico 3D Parallasse** | **Attivo al suolo** sia su maschere che su sfondo IR (zero bordi bianchi) | **Attivo al suolo** sia su maschere che su sfondo IR (zero bordi bianchi) | Attivo (opzionale, proietta i poligoni dei contorni al suolo) |
 | **Autonomia da Dati Esterni** | **100% Autonomo:** solo SEVIRI, zero leakage, zero dipendenze esterne | Richiede reanalisi ERA5 e pesi statistici radar | Richiede modelli NWP operativi, pacchetti CT/HRW e radar/fulmini |
+
+---
+
+### 3.3 Separazione tra Supporto Osservativo e Pre-filtro di Nuvolosità (`separate_observation_support`)
+
+Nel calcolo dei predittori spaziali e temporali (`detect_rdt_cells` in `RDT_original/rdt_nwcsaf/detection.py` e `NwcSafRdtTracker` in `RDT_original/rdt_nwcsaf/pipeline.py`), il supporto osservativo valido dei pixel satellitari:
+
+$$
+\text{observation\_support} = \text{finite\_obs} \land \text{not\_stretched}
+$$
+
+è tenuto rigorosamente distinto dalla maschera di screening nuvoloso `ct_cloudy_mask` ($\text{valid\_mask} = \text{observation\_support} \land \text{ct\_cloudy\_mask}$):
+
+1. **Gerarchia di slicing termico (`ThresholdSliceHierarchy`):** usa `valid_mask` per restringere i candidati delle celle ai soli pixel nuvolosi opachi selezionati da `ct_cloudy_mask`.
+2. **Gradiente termico spaziale ($\nabla T_{10.8}$) e flag di bordo (`cell["border"]`):** quando `separate_observation_support=True` (attivo di default in `NwcSafRdtTracker` e `PureGenUtlsTracker`), sia il calcolo di $\nabla T_{10.8}$ sia la dilatazione `invalid_neighbour_mask = binary_dilation(~attribute_support)` usano `attribute_support = observation_support`. In questo modo il contorno esterno della maschera di nube non viene scambiato per un bordo di osservazione mancante, preservando i trend temporali a 5, 15 e 60 minuti (`cooling_15m_k`, `area_change_15m_km2`, `valid_15m_trend`, `valid_15m_target_mask`) per tutte le celle interne al dominio osservato.
+

@@ -57,24 +57,53 @@ class CmaResult:
 def compute_local_3x3_stats(
     field: np.ndarray,
     valid_mask: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute 3x3 local standard deviation, mean, minimum, and maximum over valid pixels."""
-    arr = np.where(valid_mask, np.asarray(field, dtype=np.float64), 0.0)
-    w = valid_mask.astype(np.float64)
-    count = ndimage.uniform_filter(w, size=3, mode="nearest") * 9.0
-    sum_x = ndimage.uniform_filter(arr, size=3, mode="nearest") * 9.0
-    sum_x2 = ndimage.uniform_filter(arr * arr, size=3, mode="nearest") * 9.0
+    compute_min_max: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Compute 3x3 local standard deviation, mean, minimum, and maximum over valid pixels in float32."""
+    f32 = np.asarray(field, dtype=np.float32)
+    vm = np.asarray(valid_mask, dtype=bool)
+
+    arr = np.zeros_like(f32)
+    np.copyto(arr, f32, where=vm)
+
+    count = ndimage.uniform_filter(vm.astype(np.float32), size=3, mode="nearest")
+    count *= 9.0
+
+    sum_x = ndimage.uniform_filter(arr, size=3, mode="nearest")
+    sum_x *= 9.0
+
+    sum_x2 = ndimage.uniform_filter(arr * arr, size=3, mode="nearest")
+    sum_x2 *= 9.0
 
     safe_count = np.maximum(count, 1.0)
     mean = sum_x / safe_count
-    var = np.maximum(0.0, (sum_x2 / safe_count) - mean * mean)
-    sd = np.where(count >= 2.0, np.sqrt(var), 0.0).astype(np.float32)
-    mean_f32 = np.where(count >= 1.0, mean, field).astype(np.float32)
+    del sum_x
 
-    arr_for_min = np.where(valid_mask, field, np.inf)
-    arr_for_max = np.where(valid_mask, field, -np.inf)
-    local_min = ndimage.minimum_filter(arr_for_min, size=3, mode="nearest").astype(np.float32)
-    local_max = ndimage.maximum_filter(arr_for_max, size=3, mode="nearest").astype(np.float32)
+    var = np.maximum(0.0, (sum_x2 / safe_count) - (mean * mean))
+    del sum_x2, safe_count
+
+    sd = np.zeros_like(f32)
+    np.sqrt(var, out=var)
+    np.copyto(sd, var, where=(count >= 2.0))
+    del var
+
+    mean_f32 = np.copy(f32)
+    np.copyto(mean_f32, mean, where=(count >= 1.0))
+    del mean, count
+
+    local_min = None
+    local_max = None
+    if compute_min_max:
+        arr_ext = np.full_like(f32, np.inf)
+        np.copyto(arr_ext, f32, where=vm)
+        local_min = ndimage.minimum_filter(arr_ext, size=3, mode="nearest")
+
+        arr_ext.fill(-np.inf)
+        np.copyto(arr_ext, f32, where=vm)
+        local_max = ndimage.maximum_filter(arr_ext, size=3, mode="nearest")
+        del arr_ext
+
+    del arr
     return sd, mean_f32, local_min, local_max
 
 
@@ -401,10 +430,10 @@ def compute_nwcsaf_cma(
     mean_t108 = np.where(land, mean_t108_land, mean_t108_sea)
     max_t108 = np.where(land, max_t108_land, max_t108_sea)
 
-    sd_swd_sea, _, _, _ = compute_local_3x3_stats(swd, sea_valid)
-    sd_swd_land, _, _, _ = compute_local_3x3_stats(swd, land_valid)
-    sd_btd87_sea, _, _, _ = compute_local_3x3_stats(t108_minus_t87, sea_valid)
-    sd_btd87_land, _, _, _ = compute_local_3x3_stats(t108_minus_t87, land_valid)
+    sd_swd_sea, _, _, _ = compute_local_3x3_stats(swd, sea_valid, compute_min_max=False)
+    sd_swd_land, _, _, _ = compute_local_3x3_stats(swd, land_valid, compute_min_max=False)
+    sd_btd87_sea, _, _, _ = compute_local_3x3_stats(t108_minus_t87, sea_valid, compute_min_max=False)
+    sd_btd87_land, _, _, _ = compute_local_3x3_stats(t108_minus_t87, land_valid, compute_min_max=False)
     sd_btd = np.where(
         land,
         np.maximum(sd_swd_land, sd_btd87_land),
@@ -728,17 +757,14 @@ def compute_nwcsaf_cma(
             & (sd_t108 < cfg.dust_sd_t108_max_land_k)
         )
         dust_detected = dust_sea | dust_land
-        cma_dust = np.where(
-            ~valid,
-            int(CmaDustClass.FILL_VALUE),
-            np.where(dust_detected, int(CmaDustClass.DUST), int(CmaDustClass.NO_DUST)),
-        ).astype(np.uint8)
+        cma_dust = np.full(shape, np.uint8(CmaDustClass.NO_DUST), dtype=np.uint8)
+        cma_dust[dust_detected] = np.uint8(CmaDustClass.DUST)
+        cma_dust[~valid] = np.uint8(CmaDustClass.FILL_VALUE)
     else:
-        cma_dust = np.where(valid, int(CmaDustClass.UNDEFINED), int(CmaDustClass.FILL_VALUE)).astype(
-            np.uint8
-        )
+        cma_dust = np.full(shape, np.uint8(CmaDustClass.UNDEFINED), dtype=np.uint8)
+        cma_dust[~valid] = np.uint8(CmaDustClass.FILL_VALUE)
 
-    cma_volcanic = np.full(shape, int(CmaVolcanicClass.FILL_VALUE), dtype=np.uint8)
+    cma_volcanic = np.full(shape, np.uint8(CmaVolcanicClass.NO_VOLCANIC_PLUME), dtype=np.uint8)
     if cfg.enable_volcanic_detection:
         # ATBD Section 2.2.1.2.9 (p. 54): T12.0 - T10.8 > T12.0T10.8threshold_volcan
         # Decreases linearly from 1.2 K (at T10.8 <= 223.15 K) down to 0.65 K (at T10.8 >= t108_thr + 20 K),
@@ -761,52 +787,27 @@ def compute_nwcsaf_cma(
             & (ice_btd > -0.5)
             & (~(cma_dust == int(CmaDustClass.DUST)))
         )
-        cma_volcanic = np.where(
-            ~valid,
-            int(CmaVolcanicClass.FILL_VALUE),
-            np.where(
-                volc_detected,
-                int(CmaVolcanicClass.VOLCANIC_PLUME),
-                int(CmaVolcanicClass.NO_VOLCANIC_PLUME),
-            ),
-        ).astype(np.uint8)
+        cma_volcanic[volc_detected] = np.uint8(CmaVolcanicClass.VOLCANIC_PLUME)
+        cma_volcanic[~valid] = np.uint8(CmaVolcanicClass.FILL_VALUE)
     else:
-        cma_volcanic = np.where(
-            valid, int(CmaVolcanicClass.UNDEFINED), int(CmaVolcanicClass.FILL_VALUE)
-        ).astype(np.uint8)
+        cma_volcanic[valid] = np.uint8(CmaVolcanicClass.UNDEFINED)
+        cma_volcanic[~valid] = np.uint8(CmaVolcanicClass.FILL_VALUE)
 
-    cma_smoke = np.where(
-        valid, int(CmaSmokeClass.UNDEFINED), int(CmaSmokeClass.FILL_VALUE)
-    ).astype(np.uint8)
+    cma_smoke = np.full(shape, np.uint8(CmaSmokeClass.UNDEFINED), dtype=np.uint8)
+    cma_smoke[~valid] = np.uint8(CmaSmokeClass.FILL_VALUE)
 
     # -------------------------------------------------------------------------
-    # STEP 11: Assemble `cma`, `cma_cloudsnow`, and `cma_quality` (ATBD 2.2.2.4)
+    # STEP 11: Assemble cma, cma_cloudsnow, and cma_quality (ATBD 2.2.2.4)
     # -------------------------------------------------------------------------
-    cma_out = np.where(
-        ~valid,
-        int(CmaClass.FILL_VALUE),
-        np.where(cloudy, int(CmaClass.CLOUDY), int(CmaClass.CLOUD_FREE)),
-    ).astype(np.uint8)
+    cma_out = np.full(shape, np.uint8(CmaClass.CLOUD_FREE), dtype=np.uint8)
+    cma_out[cloudy] = np.uint8(CmaClass.CLOUDY)
+    cma_out[~valid] = np.uint8(CmaClass.FILL_VALUE)
 
-    cma_cloudsnow = np.full(shape, int(CmaCloudSnowClass.FILL_VALUE), dtype=np.uint8)
-    cma_cloudsnow = np.where(
-        ~valid,
-        int(CmaCloudSnowClass.FILL_VALUE),
-        np.where(
-            thin_cirrus_over_snow,
-            int(CmaCloudSnowClass.THIN_ICE_CLOUD_OVER_SNOW),
-            np.where(
-                pure_snow_or_ice,
-                int(CmaCloudSnowClass.SNOW_OR_ICE),
-                np.where(
-                    cloudy,
-                    int(CmaCloudSnowClass.CLOUD),
-                    int(CmaCloudSnowClass.CLOUD_FREE),
-                ),
-            ),
-        ),
-    ).astype(np.uint8)
-
+    cma_cloudsnow = np.full(shape, np.uint8(CmaCloudSnowClass.CLOUD_FREE), dtype=np.uint8)
+    cma_cloudsnow[cloudy] = np.uint8(CmaCloudSnowClass.CLOUD)
+    cma_cloudsnow[pure_snow_or_ice] = np.uint8(CmaCloudSnowClass.SNOW_OR_ICE)
+    cma_cloudsnow[thin_cirrus_over_snow] = np.uint8(CmaCloudSnowClass.THIN_ICE_CLOUD_OVER_SNOW)
+    cma_cloudsnow[~valid] = np.uint8(CmaCloudSnowClass.FILL_VALUE)
     # Quality assessment (ATBD Section 2.2.1.2.2.18, p. 31):
     # - Interpolated (4): pixels reclassified by coastal/snow-edge/isolated spatial filtering
     # - Questionable (2): pixels detected by temporal/stationary tests or cold inversion restoral

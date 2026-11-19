@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SEVIRI 7-CH IR &amp; 3-Head Probing — Player Frame-by-Frame</title>
+  <style>
+    :root {
+      --bg-dark: #0b0f19;
+      --bg-card: #121927;
+      --bg-hover: #1e293b;
+      --border: #223249;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-strong: #0284c7;
+      --amber: #f59e0b;
+      --crimson: #eb0055;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background: var(--bg-dark);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    header h1 {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      color: #fff;
+    }
+    header .subtitle {
+      font-size: 13px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .workspace {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .sidebar {
+      width: 380px;
+      background: var(--bg-card);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 14px 10px;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .sidebar-section {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      padding: 8px 10px 4px 10px;
+      margin-top: 6px;
+    }
+    .video-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 10px 12px;
+      text-align: left;
+      cursor: pointer;
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .video-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--border);
+    }
+    .video-btn.active {
+      background: #172554;
+      border-color: var(--accent);
+    }
+    .video-btn .v-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .video-btn.active .v-title {
+      color: var(--accent);
+    }
+    .video-btn .v-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .main-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #080c14;
+    }
+    .video-stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      position: relative;
+      overflow: hidden;
+    }
+    video {
+      max-width: 100%;
+      max-height: 100%;
+      border-radius: 6px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+      background: #000;
+      outline: none;
+    }
+    .control-deck {
+      background: var(--bg-card);
+      border-top: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .cache-alert {
+      background: #7f1d1d;
+      border: 1px solid #ef4444;
+      color: #fee2e2;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+    .scrubber-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      font-size: 13px;
+    }
+    .frame-badge {
+      font-family: monospace;
+      font-weight: 700;
+      color: #fff;
+      background: #1e293b;
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .utc-badge {
+      font-family: monospace;
+      font-weight: 700;
+      color: var(--accent);
+      background: #0c4a6e;
+      padding: 4px 12px;
+      border-radius: 4px;
+      border: 1px solid var(--accent-strong);
+      font-size: 13px;
+    }
+    .duration-badge {
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .scrubber-container {
+      position: relative;
+      display: flex;
+      align-items: center;
+      width: 100%;
+    }
+    input[type="range"].frame-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 14px;
+      background: #1e293b;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="range"].frame-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid #ffffff;
+      cursor: grab;
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.8);
+    }
+    input[type="range"].frame-slider::-webkit-slider-thumb:active {
+      cursor: grabbing;
+      background: var(--amber);
+    }
+    .frame-ticks {
+      display: flex;
+      justify-content: space-between;
+      padding: 0 8px;
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: monospace;
+      user-select: none;
+    }
+    .buttons-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .btn-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .ctrl-btn {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      padding: 7px 14px;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .ctrl-btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--accent);
+    }
+    .ctrl-btn.primary {
+      background: var(--accent-strong);
+      border-color: var(--accent);
+      color: #fff;
+      min-width: 110px;
+    }
+    .ctrl-btn.primary:hover {
+      background: #0369a1;
+    }
+    select.speed-select {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      padding: 6px 10px;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .kbd-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .kbd-hint kbd {
+      background: #1e293b;
+      border: 1px solid #475569;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #e2e8f0;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SEVIRI 7-CH IR &amp; 3-HEAD PROBING — PLAYER INTERATTIVO FRAME-BY-FRAME</h1>
+    <div class="subtitle" id="currentVideoTitle">Seleziona un periodo</div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar" id="playlistSidebar"></aside>
+
+    <main class="main-view">
+      <div class="video-stage">
+        <video id="mainVideo" preload="auto" playsinline loop></video>
+      </div>
+
+      <div class="control-deck">
+        <div id="cacheAlert" class="cache-alert" style="display: none;"></div>
+
+        <div class="scrubber-header">
+          <div class="frame-badge" id="frameCounter">Frame: 1 / 1</div>
+          <div id="eventDescription" style="color: #cbd5e1; font-weight: 600;"></div>
+          <div class="duration-badge" id="durationDisplay"></div>
+          <div class="utc-badge" id="utcDisplay">UTC: ----</div>
+        </div>
+
+        <div class="scrubber-container">
+          <input type="range" id="frameSlider" class="frame-slider" min="0" max="287" value="0" step="1" />
+        </div>
+        <div class="frame-ticks" id="frameTicks"></div>
+
+        <div class="buttons-row">
+          <div class="btn-group">
+            <button class="ctrl-btn" id="btnFirst" title="Primo Frame (Home)">⏮ Inizio</button>
+            <button class="ctrl-btn" id="btnPrev" title="Frame Precedente (Freccia Sinistra)">◀ -1 Frame</button>
+            <button class="ctrl-btn primary" id="btnPlayPause" title="Play / Pausa (Spazio)">▶ Play</button>
+            <button class="ctrl-btn" id="btnNext" title="Frame Successivo (Freccia Destra)">+1 Frame ▶</button>
+            <button class="ctrl-btn" id="btnLast" title="Ultimo Frame (End)">Fine ⏭</button>
+          </div>
+
+          <div class="btn-group">
+            <label for="speedSelect" style="font-size: 12px; color: var(--text-muted);">Velocità:</label>
+            <select id="speedSelect" class="speed-select">
+              <option value="0.33">0.33x (1 fps · Molto lento)</option>
+              <option value="0.66">0.66x (2 fps · Lento)</option>
+              <option value="1" selected>1.0x (3 fps · Nativo)</option>
+              <option value="2">2.0x (6 fps · Veloce)</option>
+              <option value="3">3.0x (9 fps · Rapido)</option>
+            </select>
+            <button class="ctrl-btn" id="btnFullscreen" title="Schermo Intero">⛶ Schermo Intero</button>
+          </div>
+
+          <div class="kbd-hint">
+            Scorciatoie: <kbd>←</kbd> <kbd>→</kbd> sposta di 1 frame &nbsp;|&nbsp; <kbd>Spazio</kbd> Play/Pausa &nbsp;|&nbsp; Clicca o trascina il cursore blu
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const BASE_3HEADS = "file:///E:/Datasets/Deep_convection/staging/nwcsaf_cma_ct_pilot/three_heads_convective_videos";
+    const BASE_VIS = "file:///E:/Datasets/Deep_convection/staging/nwcsaf_cma_ct_pilot/visible_vs_cma_daytime_comparisons";
+
+    const VIDEOS = [
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20200917_medicane_ianos",
+        title: "2020-09-17 · Medicane Ianos (Mar Ionio — 24h Intere)",
+        meta: "288 frame · Cadenza 5 min · 00:00–23:55 UTC · Durata: 96s · OT: 13.936 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20200917_medicane_ianos.mp4`,
+        fps: 3,
+        numFrames: 288,
+        startUtc: "2020-09-17T00:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20200711_summer_convective_outbreak",
+        title: "2020-07-11 · Outbreak Temporalesco Estivo (24h Intere)",
+        meta: "288 frame · Cadenza 5 min · 00:00–23:55 UTC · Durata: 96s · OT: 27.901 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20200711_summer_convective_outbreak.mp4`,
+        fps: 3,
+        numFrames: 288,
+        startUtc: "2020-07-11T00:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20200715_alpine_med_storms",
+        title: "2020-07-15 · Sistemi Convettivi Alpini & Mediterranei (24h Intere)",
+        meta: "288 frame · Cadenza 5 min · 00:00–23:55 UTC · Durata: 96s · OT: 13.648 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20200715_alpine_med_storms.mp4`,
+        fps: 3,
+        numFrames: 288,
+        startUtc: "2020-07-15T00:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20220628_alpine_west_med_severe",
+        title: "2022-06-28 · Supercelle Alpine & Med Occidentale (13h)",
+        meta: "156 frame · Cadenza 5 min · 10:00–22:55 UTC · Durata: 52s · OT: 40.246 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20220628_alpine_west_med_severe.mp4`,
+        fps: 3,
+        numFrames: 156,
+        startUtc: "2022-06-28T10:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20220912_deep_tropopause_storms",
+        title: "2022-09-12 · Convezione Profonda & Top 197.5 K (13h)",
+        meta: "156 frame · Cadenza 5 min · 11:00–23:55 UTC · Durata: 52s · OT: 23.028 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20220912_deep_tropopause_storms.mp4`,
+        fps: 3,
+        numFrames: 156,
+        startUtc: "2022-09-12T11:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20220522_euro_supercells",
+        title: "2022-05-22 · Outbreak Europeo Supercelle & MCS (13h)",
+        meta: "156 frame · Cadenza 5 min · 11:00–23:55 UTC · Durata: 52s · OT: 19.627 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20220522_euro_supercells.mp4`,
+        fps: 3,
+        numFrames: 156,
+        startUtc: "2022-05-22T11:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20220528_med_continental_mcs",
+        title: "2022-05-28 · MCS & Temporali Diurni Continentali (13h)",
+        meta: "156 frame · Cadenza 5 min · 09:00–21:55 UTC · Durata: 52s · OT: 17.974 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20220528_med_continental_mcs.mp4`,
+        fps: 3,
+        numFrames: 156,
+        startUtc: "2022-05-28T09:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20220925_extreme_ot_mcs",
+        title: "2022-09-25 · MCS Estremo Tirreno/Adriatico 199 K (13.5h)",
+        meta: "162 frame · Cadenza 5 min · 00:30–13:55 UTC · Durata: 54s · OT: 13.923 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20220925_extreme_ot_mcs.mp4`,
+        fps: 3,
+        numFrames: 162,
+        startUtc: "2022-09-25T00:30:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20220924_med_mcs_outbreak",
+        title: "2022-09-24 · Outbreak MCS V-Shaped Med & Italia (17h)",
+        meta: "204 frame · Cadenza 5 min · 07:00–23:55 UTC · Durata: 68s · OT: 3.855 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20220924_med_mcs_outbreak.mp4`,
+        fps: 3,
+        numFrames: 204,
+        startUtc: "2022-09-24T07:00:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Video Lunghi a 3 Teste (2020 Giornate Intere 24h & 2022 Outbreak 13–17h — RDT_original)",
+        id: "20220506_widespread_med_convection",
+        title: "2022-05-06 · Ciclone Convettivo Mediterraneo Esteso (13.5h)",
+        meta: "162 frame · Cadenza 5 min · 00:30–13:55 UTC · Durata: 54s · OT: 1.912 px",
+        src: `${BASE_3HEADS}/three_heads_probing_20220506_widespread_med_convection.mp4`,
+        fps: 3,
+        numFrames: 162,
+        startUtc: "2022-05-06T00:30:00Z",
+        stepMinutes: 5
+      },
+      {
+        section: "Confronti Diurni Visibile (VIS006 / VIS008 / RGB)",
+        id: "vis_20261027_med_atlantic",
+        title: "2026-10-27 · Visibile vs 3 Teste",
+        meta: "15 frame · Cadenza 15 min · 09:15–12:45 UTC",
+        src: `${BASE_VIS}/visible_vs_cma_probing_20261027_med_atlantic.mp4`,
+        fps: 2,
+        numFrames: 15,
+        startUtc: "2026-10-27T09:15:00Z",
+        stepMinutes: 15
+      },
+      {
+        section: "Confronti Diurni Visibile (VIS006 / VIS008 / RGB)",
+        id: "vis_20250720_severe_summer",
+        title: "2025-07-20 · Visibile vs 3 Teste",
+        meta: "11 frame · Cadenza 15 min · 12:15–14:45 UTC",
+        src: `${BASE_VIS}/visible_vs_cma_probing_20250720_severe_summer.mp4`,
+        fps: 2,
+        numFrames: 11,
+        startUtc: "2025-07-20T12:15:00Z",
+        stepMinutes: 15
+      },
+      {
+        section: "Confronti Diurni Visibile (VIS006 / VIS008 / RGB)",
+        id: "vis_20250605_continental_outbreak",
+        title: "2025-06-05 · Visibile vs 3 Teste",
+        meta: "11 frame · Cadenza 15 min · 12:15–14:45 UTC",
+        src: `${BASE_VIS}/visible_vs_cma_probing_20250605_continental_outbreak.mp4`,
+        fps: 2,
+        numFrames: 11,
+        startUtc: "2025-06-05T12:15:00Z",
+        stepMinutes: 15
+      },
+      {
+        section: "Confronti Diurni Visibile (VIS006 / VIS008 / RGB)",
+        id: "vis_20250801_alpine_po_valley",
+        title: "2025-08-01 · Visibile vs 3 Teste",
+        meta: "11 frame · Cadenza 15 min · 11:15–13:45 UTC",
+        src: `${BASE_VIS}/visible_vs_cma_probing_20250801_alpine_po_valley.mp4`,
+        fps: 2,
+        numFrames: 11,
+        startUtc: "2025-08-01T11:15:00Z",
+        stepMinutes: 15
+      }
+    ];
+
+    const videoEl = document.getElementById("mainVideo");
+    const sliderEl = document.getElementById("frameSlider");
+    const frameCounterEl = document.getElementById("frameCounter");
+    const utcDisplayEl = document.getElementById("utcDisplay");
+    const durationDisplayEl = document.getElementById("durationDisplay");
+    const cacheAlertEl = document.getElementById("cacheAlert");
+    const titleEl = document.getElementById("currentVideoTitle");
+    const descEl = document.getElementById("eventDescription");
+    const playPauseBtn = document.getElementById("btnPlayPause");
+    const sidebarEl = document.getElementById("playlistSidebar");
+    const ticksEl = document.getElementById("frameTicks");
+    const speedSelectEl = document.getElementById("speedSelect");
+
+    let currentSpec = VIDEOS[0];
+    let isScrubbing = false;
+
+    function formatFrameUtc(spec, frameIdx) {
+      const t0 = new Date(spec.startUtc).getTime();
+      const tCur = new Date(t0 + frameIdx * spec.stepMinutes * 60000);
+      const yyyy = tCur.getUTCFullYear();
+      const mm = String(tCur.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(tCur.getUTCDate()).padStart(2, "0");
+      const hh = String(tCur.getUTCHours()).padStart(2, "0");
+      const mi = String(tCur.getUTCMinutes()).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd} ${hh}:${mi} UTC`;
+    }
+
+    function buildSidebar() {
+      sidebarEl.innerHTML = "";
+      let lastSection = "";
+      VIDEOS.forEach((v, idx) => {
+        if (v.section !== lastSection) {
+          lastSection = v.section;
+          const secHdr = document.createElement("div");
+          secHdr.className = "sidebar-section";
+          secHdr.textContent = v.section;
+          sidebarEl.appendChild(secHdr);
+        }
+        const btn = document.createElement("button");
+        btn.className = "video-btn" + (idx === 0 ? " active" : "");
+        btn.dataset.id = v.id;
+        btn.innerHTML = `<span class="v-title">${v.title}</span><span class="v-meta">${v.meta}</span>`;
+        btn.addEventListener("click", () => loadVideo(v));
+        sidebarEl.appendChild(btn);
+      });
+    }
+
+    function buildTicks(numFrames) {
+      ticksEl.innerHTML = "";
+      const steps = Math.min(numFrames, 12);
+      for (let i = 0; i < steps; i++) {
+        const fIdx = Math.round((i * (numFrames - 1)) / Math.max(1, steps - 1));
+        const sp = document.createElement("span");
+        sp.textContent = `F${fIdx + 1}`;
+        ticksEl.appendChild(sp);
+      }
+    }
+
+    function updateUiForFrame(frameIdx) {
+      const clamped = Math.max(0, Math.min(currentSpec.numFrames - 1, frameIdx));
+      if (!isScrubbing) {
+        sliderEl.value = clamped;
+      }
+      frameCounterEl.textContent = `Frame: ${clamped + 1} / ${currentSpec.numFrames}`;
+      utcDisplayEl.textContent = formatFrameUtc(currentSpec, clamped);
+    }
+
+    function seekToFrame(frameIdx) {
+      const clamped = Math.max(0, Math.min(currentSpec.numFrames - 1, frameIdx));
+      videoEl.pause();
+      updatePlayButton();
+      videoEl.currentTime = (clamped + 0.05) / currentSpec.fps;
+      updateUiForFrame(clamped);
+    }
+
+    function currentFrameIndex() {
+      return Math.min(
+        currentSpec.numFrames - 1,
+        Math.max(0, Math.floor(videoEl.currentTime * currentSpec.fps + 0.001))
+      );
+    }
+
+    function updatePlayButton() {
+      playPauseBtn.textContent = videoEl.paused ? "▶ Play" : "⏸ Pausa";
+    }
+
+    function loadVideo(spec) {
+      currentSpec = spec;
+      document.querySelectorAll(".video-btn").forEach(b => {
+        b.classList.toggle("active", b.dataset.id === spec.id);
+      });
+      titleEl.textContent = spec.title;
+      descEl.textContent = spec.meta;
+      sliderEl.max = spec.numFrames - 1;
+      sliderEl.value = 0;
+      buildTicks(spec.numFrames);
+
+      cacheAlertEl.style.display = "none";
+      videoEl.src = spec.src;
+      videoEl.playbackRate = parseFloat(speedSelectEl.value);
+      videoEl.currentTime = 0;
+      updateUiForFrame(0);
+      updatePlayButton();
+    }
+
+    // Video duration and cache sanity check on loadedmetadata
+    videoEl.addEventListener("loadedmetadata", () => {
+      const actualDur = videoEl.duration;
+      const expectedDur = currentSpec.numFrames / currentSpec.fps;
+      if (durationDisplayEl && isFinite(actualDur)) {
+        durationDisplayEl.textContent = `Durata: ${actualDur.toFixed(1)}s (${currentSpec.numFrames} frame @ ${currentSpec.fps} fps)`;
+      }
+      if (isFinite(actualDur) && actualDur < (expectedDur - 3.0)) {
+        cacheAlertEl.style.display = "block";
+        cacheAlertEl.innerHTML = `⚠️ <strong>Attenzione Cache Browser:</strong> Il browser ha caricato una versione precedente da <strong>${actualDur.toFixed(1)}s</strong> invece del file aggiornato da <strong>${expectedDur.toFixed(1)}s</strong> (${currentSpec.numFrames} frame).<br>Per visualizzare l'intera sequenza lunga, premi <strong>Ctrl + F5</strong> (oppure Shift + F5 / ricarica forzata).`;
+      } else {
+        cacheAlertEl.style.display = "none";
+      }
+    });
+
+    // Slider scrubbing events (instant frame seek on click or drag)
+    sliderEl.addEventListener("mousedown", () => { isScrubbing = true; videoEl.pause(); updatePlayButton(); });
+    sliderEl.addEventListener("mouseup", () => { isScrubbing = false; });
+    sliderEl.addEventListener("input", () => {
+      const targetFrame = parseInt(sliderEl.value, 10);
+      videoEl.pause();
+      updatePlayButton();
+      videoEl.currentTime = (targetFrame + 0.05) / currentSpec.fps;
+      frameCounterEl.textContent = `Frame: ${targetFrame + 1} / ${currentSpec.numFrames}`;
+      utcDisplayEl.textContent = formatFrameUtc(currentSpec, targetFrame);
+    });
+    sliderEl.addEventListener("change", () => {
+      isScrubbing = false;
+      const targetFrame = parseInt(sliderEl.value, 10);
+      seekToFrame(targetFrame);
+    });
+
+    window.addEventListener("mouseup", () => {
+      if (isScrubbing) {
+        isScrubbing = false;
+      }
+    });
+
+    videoEl.addEventListener("timeupdate", () => {
+      if (!isScrubbing) {
+        updateUiForFrame(currentFrameIndex());
+      }
+    });
+    videoEl.addEventListener("play", updatePlayButton);
+    videoEl.addEventListener("pause", updatePlayButton);
+
+    // Button controls
+    playPauseBtn.addEventListener("click", () => {
+      if (videoEl.paused) {
+        videoEl.play();
+      } else {
+        videoEl.pause();
+      }
+    });
+    document.getElementById("btnPrev").addEventListener("click", () => {
+      seekToFrame(currentFrameIndex() - 1);
+    });
+    document.getElementById("btnNext").addEventListener("click", () => {
+      seekToFrame(currentFrameIndex() + 1);
+    });
+    document.getElementById("btnFirst").addEventListener("click", () => {
+      seekToFrame(0);
+    });
+    document.getElementById("btnLast").addEventListener("click", () => {
+      seekToFrame(currentSpec.numFrames - 1);
+    });
+    speedSelectEl.addEventListener("change", () => {
+      videoEl.playbackRate = parseFloat(speedSelectEl.value);
+    });
+    document.getElementById("btnFullscreen").addEventListener("click", () => {
+      if (videoEl.requestFullscreen) {
+        videoEl.requestFullscreen();
+      }
+    });
+
+    // Keyboard shortcuts
+    window.addEventListener("keydown", (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== " ") return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        seekToFrame(currentFrameIndex() - 1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        seekToFrame(currentFrameIndex() + 1);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        if (videoEl.paused) videoEl.play(); else videoEl.pause();
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        seekToFrame(0);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        seekToFrame(currentSpec.numFrames - 1);
+      }
+    });
+
+    buildSidebar();
+    loadVideo(VIDEOS[0]);
+  </script>
+</body>
+</html>
